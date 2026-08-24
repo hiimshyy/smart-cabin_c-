@@ -1,0 +1,27 @@
+# Build artifacts
+build/
+*.o
+*.d
+
+# Compiled binaries (root-level)
+/face_recog_app
+/enroll_faces
+/capture_person
+/add_person
+
+# Runtime data (mỗi user có dataset riêng)
+faces/
+db/*.fdb
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+# Kiro CLI resume marker
+chat
+
+# Legacy vendor binary is tracked, but not build outputs
+!legacy/retinaface_demo_a733
