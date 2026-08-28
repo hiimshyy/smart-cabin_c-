@@ -29,6 +29,7 @@ public:
 
     int embedding_dim() const { return dim_; }
     const std::string& model_path() const { return path_; }
+    bool               model_loaded() const { return ctx_ != nullptr; }
 
 private:
     std::string       path_;

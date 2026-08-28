@@ -1,8 +1,6 @@
-// RetinaFace realtime demo on Orange Pi A733 NPU with optional face recognition.
-// Pipeline (detect only):
-//   USB cam (V4L2 MJPG) → letterbox 320 → NPU → decode+NMS → overlay.
-// Pipeline (with recognition, when --recog-model provided):
-//   above → for each face → align 112 → recog NPU → cosine match vs .fdb DB.
+// SCRFD + MobileFaceNet realtime demo on Orange Pi A733 NPU.
+// Pipeline: USB cam / RTSP → letterbox 640 → NPU (SCRFD) → decode+NMS →
+//           align 112 → NPU (MobileFaceNet) → cosine match vs .fdb DB.
 
 #include <cstdio>
 #include <cstdlib>
@@ -23,15 +21,15 @@
 
 #include <awnn_lib.h>
 
-#include "anchors.h"
-#include "retinaface_pre.h"
-#include "retinaface_post.h"
+#include "detect_pre.h"
+#include "detection.h"
+#include "scrfd_post.h"
 #include "face_align.h"
 #include "face_recog.h"
 #include "face_db.h"
 
-static constexpr int NPU_INPUT_W = 320;
-static constexpr int NPU_INPUT_H = 320;
+static constexpr int NPU_INPUT_W = 640;
+static constexpr int NPU_INPUT_H = 640;
 static constexpr int CAM_W       = 640;
 static constexpr int CAM_H       = 480;
 
@@ -77,8 +75,6 @@ static void capture_worker(cv::VideoCapture* cap, FrameSlot* slot) {
 }
 
 // -------- Display thread ----------
-// Same shape as capture slot: main writes latest annotated frame; display
-// thread does imshow + waitKey. Main is no longer blocked by X11 rendering.
 struct DisplaySlot {
     std::mutex               mtx;
     std::condition_variable  cv_new;
@@ -90,8 +86,15 @@ struct DisplaySlot {
 
 static void display_worker(const char* win_name, DisplaySlot* slot,
                            std::atomic<bool>* stop_flag,
-                           FrameSlot* capture_slot) {
-    cv::namedWindow(win_name, cv::WINDOW_AUTOSIZE);
+                           FrameSlot* capture_slot,
+                           bool fullscreen) {
+    if (fullscreen) {
+        cv::namedWindow(win_name, cv::WINDOW_NORMAL);
+        cv::setWindowProperty(win_name, cv::WND_PROP_FULLSCREEN,
+                              cv::WINDOW_FULLSCREEN);
+    } else {
+        cv::namedWindow(win_name, cv::WINDOW_AUTOSIZE);
+    }
     cv::Mat local;
     uint64_t last_seq = 0;
     while (true) {
@@ -108,7 +111,6 @@ static void display_worker(const char* win_name, DisplaySlot* slot,
         int k = cv::waitKey(1) & 0xFF;
         if (k == 'q' || k == 27) {
             stop_flag->store(true);
-            // Wake up capture consumer in main immediately
             if (capture_slot) capture_slot->cv_new.notify_all();
             std::lock_guard<std::mutex> lk(slot->mtx);
             slot->last_key = k;
@@ -122,7 +124,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr,
         "Usage: %s [detect.nb] [cam_id] [options]\n"
         "  positional args (optional):\n"
-        "    detect.nb   RetinaFace .nb path (default: model/Retinaface_resnet50_320_uint8_a733.nb)\n"
+        "    detect.nb   SCRFD .nb path (default: model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb)\n"
         "    cam_id      /dev/videoN index (default: 0)\n"
         "  options:\n"
         "    --frames N            Run N frames then exit with benchmark summary\n"
@@ -132,22 +134,15 @@ static void print_usage(const char* prog) {
         "    --face-db PATH        Load .fdb identity database\n"
         "    --match-thr F         Cosine similarity threshold for match (default 0.35)\n"
         "    --source URL          RTSP/HTTP/file source (uses GStreamer). Overrides cam_id.\n"
-        "                          e.g. rtsp://user:pass@ip:554/stream\n"
-        "    --gst-pipeline STR    Custom GStreamer pipeline (overrides --source pipeline).\n"
-        "                          Must end with `! appsink name=sink`\n"
-        "    --gst-latency MS      RTSP jitter buffer latency (default 100ms)\n",
+        "    --gst-pipeline STR    Custom GStreamer pipeline (must end with `! appsink`).\n"
+        "    --gst-latency MS      RTSP jitter buffer latency (default 100ms)\n"
+        "    --windowed            Show output in a normal window (default: fullscreen)\n"
+        "    --fullscreen          Force fullscreen (default on)\n",
         prog);
 }
 
-// Build a default GStreamer pipeline for RTSP or HTTP URL.
-// Uses software H.264 decode via libav (avdec_h264). Auto-fallback to
-// decodebin so the pipeline works for H.264, H.265, or any other codec
-// GStreamer knows how to decode.
+// Build a default GStreamer pipeline for RTSP/HTTP/file URL.
 static std::string build_gst_pipeline(const std::string& url, int latency_ms) {
-    // uridecodebin auto-picks source (rtspsrc, souphttpsrc, filesrc...)
-    // and auto-picks decoder. Simplest robust pipeline.
-    // OpenCV's GStreamer wrapper auto-finds the last appsink element,
-    // so we omit `name=` attribute.
     char buf[1024];
     std::snprintf(buf, sizeof(buf),
         "uridecodebin uri=%s buffer-duration=%d000000 ! "
@@ -158,7 +153,6 @@ static std::string build_gst_pipeline(const std::string& url, int latency_ms) {
     return std::string(buf);
 }
 
-// Detect if source looks like a URL (rtsp://, http://, file://, /path/to/video.mp4)
 static bool is_stream_source(const std::string& s) {
     return s.rfind("rtsp://", 0) == 0 ||
            s.rfind("http://", 0) == 0 ||
@@ -171,19 +165,19 @@ static bool is_stream_source(const std::string& s) {
 
 int main(int argc, char** argv) {
     // ---- Parse CLI --------------------------------------------------------
-    const char* det_model_path  = "model/Retinaface_resnet50_320_uint8_a733.nb";
+    const char* det_model_path   = "model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb";
     const char* recog_model_path = nullptr;
-    const char* face_db_path    = nullptr;
-    const char* source_url      = nullptr;
-    const char* custom_pipeline = nullptr;
+    const char* face_db_path     = nullptr;
+    const char* source_url       = nullptr;
+    const char* custom_pipeline  = nullptr;
     int   cam_id           = 0;
     int   max_frames       = 0;
     int   recog_dim        = 512;
     int   gst_latency_ms   = 100;
     bool  recog_rgb        = true;
+    bool  fullscreen       = true;
     float match_threshold  = 0.35f;
 
-    // Handle first two positional args if they don't look like flags
     int positional_idx = 0;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
@@ -211,6 +205,10 @@ int main(int argc, char** argv) {
             custom_pipeline = argv[++i];
         } else if (std::strcmp(a, "--gst-latency") == 0 && i + 1 < argc) {
             gst_latency_ms = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--windowed") == 0) {
+            fullscreen = false;
+        } else if (std::strcmp(a, "--fullscreen") == 0) {
+            fullscreen = true;
         } else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -220,7 +218,7 @@ int main(int argc, char** argv) {
     std::signal(SIGINT,  on_signal);
     std::signal(SIGTERM, on_signal);
 
-    // ---- 1) Open camera --------------------------------------------------
+    // ---- 1) Open camera ---------------------------------------------------
     cv::VideoCapture cap;
     bool is_stream = (custom_pipeline != nullptr) ||
                      (source_url != nullptr && is_stream_source(source_url));
@@ -232,8 +230,7 @@ int main(int argc, char** argv) {
         printf("[cam] GStreamer pipeline:\n  %s\n", pipeline.c_str());
         cap.open(pipeline, cv::CAP_GSTREAMER);
         if (!cap.isOpened()) {
-            fprintf(stderr, "Cannot open GStreamer stream. "
-                            "Check URL, network, and codec plugin availability.\n");
+            fprintf(stderr, "Cannot open GStreamer stream.\n");
             return 1;
         }
     } else {
@@ -259,50 +256,78 @@ int main(int argc, char** argv) {
     std::thread cap_th(capture_worker, &cap, &slot);
     printf("[cam] capture thread started\n");
 
-    // ---- 2) Init NPU + load detection model ------------------------------
+    // ---- 2) Init NPU. Load recognition FIRST, then detection.
+    // Ordering avoids some NBG resource-conflict edge cases seen with newer
+    // Acuity-compiled detection models blocking a second network creation.
     awnn_init();
-    Awnn_Context_t* det_ctx = awnn_create(det_model_path);
-    if (!det_ctx) {
-        fprintf(stderr, "awnn_create failed for detection model\n");
-        awnn_uninit();
-        return 2;
-    }
-    printf("[detect] loaded %s\n", det_model_path);
 
-    // ---- 3) Optionally load recognition model + DB -----------------------
+    // ---- 2a) Optionally load recognition model + DB (before detection) ---
     FaceRecognizer* recognizer = nullptr;
     FaceDB          face_db;
     bool            recog_enabled = false;
 
+    auto stop_capture_and_exit = [&](int code) {
+        {
+            std::lock_guard<std::mutex> lk(slot.mtx);
+            slot.stop = true;
+        }
+        slot.cv_new.notify_all();
+        if (cap_th.joinable()) cap_th.join();
+        cap.release();
+        return code;
+    };
+
     if (recog_model_path) {
         recognizer = new FaceRecognizer(recog_model_path, recog_dim, recog_rgb);
+        if (!recognizer->model_loaded()) {
+            fprintf(stderr, "[recog] failed to load %s — aborting\n", recog_model_path);
+            delete recognizer;
+            awnn_uninit();
+            return stop_capture_and_exit(2);
+        }
         printf("[recog] loaded %s (dim=%d, rgb=%d)\n",
                recog_model_path, recog_dim, recog_rgb ? 1 : 0);
         if (face_db_path && face_db.load(face_db_path)) {
             printf("[recog] loaded DB %s: %zu identities, dim=%d\n",
                    face_db_path, face_db.size(), face_db.dim());
         } else if (face_db_path) {
-            printf("[recog] WARN: cannot load DB %s — matching disabled\n",
-                   face_db_path);
+            printf("[recog] WARN: cannot load DB %s — matching disabled\n", face_db_path);
         } else {
             printf("[recog] no --face-db given — matching disabled\n");
         }
         recog_enabled = true;
     }
 
-    // ---- 4) Generate detection priors ------------------------------------
-    auto anchors = generate_retinaface_anchors(NPU_INPUT_W);
-    printf("[anchors] generated %zu priors\n", anchors.size());
+    // ---- 2b) Load detection model AFTER recognition ----------------------
+    Awnn_Context_t* det_ctx = awnn_create(det_model_path);
+    if (!det_ctx) {
+        fprintf(stderr, "awnn_create failed for detection model %s\n", det_model_path);
+        delete recognizer;
+        awnn_uninit();
+        return stop_capture_and_exit(2);
+    }
+    printf("[detect] loaded %s (input=%dx%d)\n",
+           det_model_path, NPU_INPUT_W, NPU_INPUT_H);
 
-    // ---- 5) Buffers + display --------------------------------------------
+    // ---- 3) Init SCRFD decoder ------------------------------------------
+    ScrfdDecoder scrfd;
+    if (!scrfd.init(det_ctx, NPU_INPUT_W)) {
+        fprintf(stderr, "[scrfd] init failed — aborting\n");
+        delete recognizer;
+        awnn_destroy(det_ctx);
+        awnn_uninit();
+        return stop_capture_and_exit(3);
+    }
+
+    // ---- 4) Buffers + display --------------------------------------------
     std::vector<uint8_t> npu_input(NPU_INPUT_W * NPU_INPUT_H * 3);
 
     DisplaySlot   disp_slot;
-    std::thread   disp_th(display_worker, "RetinaFace A733", &disp_slot, &g_stop, &slot);
+    std::thread   disp_th(display_worker, "Face Recog A733", &disp_slot, &g_stop, &slot, fullscreen);
     printf("[cam] display thread started\n");
 
-    std::vector<Detection>       dets;
-    std::vector<float>           emb;
+    std::vector<Detection> dets;
+    std::vector<float>     emb;
     dets.reserve(16);
     emb.reserve(recog_dim);
 
@@ -324,7 +349,6 @@ int main(int argc, char** argv) {
 
     while (true) {
         double t0 = now_ms();
-        // Wait for a NEW frame from capture thread (skip if same seq)
         {
             std::unique_lock<std::mutex> lk(slot.mtx);
             slot.cv_new.wait(lk, [&]{
@@ -340,10 +364,10 @@ int main(int argc, char** argv) {
         }
         double t1 = now_ms();
 
-        // ---- Preprocess ----
+        // ---- Preprocess (letterbox 640x640) ----
         PreInfo pre;
-        retinaface_preprocess(frame, npu_input.data(),
-                              NPU_INPUT_W, NPU_INPUT_H, pre);
+        detect_preprocess(frame, npu_input.data(),
+                          NPU_INPUT_W, NPU_INPUT_H, pre);
         double t2 = now_ms();
 
         // ---- Detection NPU ----
@@ -353,39 +377,41 @@ int main(int argc, char** argv) {
         float** dets_out = awnn_get_output_buffers(det_ctx);
         double t3 = now_ms();
 
-        // ---- Postprocess (decode + NMS) ----
-        retinaface_postprocess(dets_out[0], dets_out[1], dets_out[2],
-                               anchors, pre,
-                               /*conf=*/0.5f, /*nms=*/0.4f, dets);
+        // ---- SCRFD decode + NMS ----
+        scrfd.decode(dets_out, pre, /*score=*/0.5f, /*nms=*/0.4f, dets);
         double t4 = now_ms();
 
         // ---- Recognition (per face) ----
-        // Store name/score per detection (parallel array)
         std::vector<std::string> names(dets.size());
         std::vector<float>       sims(dets.size(), -1.0f);
+        // 'A'=align empty, 'E'=extract fail, 'D'=no DB, 'M'=matched, 'U'=unknown, '.'=not tried
+        std::vector<char>        stats(dets.size(), '.');
 
         double t_recog_total = 0.0;
         if (recog_enabled && recognizer) {
             for (size_t f = 0; f < dets.size(); ++f) {
                 align_face_112(frame, dets[f].landmarks, aligned);
-                if (aligned.empty()) continue;
-                if (!recognizer->extract(aligned, emb)) continue;
+                if (aligned.empty()) { stats[f] = 'A'; continue; }
+                if (!recognizer->extract(aligned, emb)) { stats[f] = 'E'; continue; }
                 if (face_db.size() > 0) {
                     float sim = 0.0f;
                     int   idx = face_db.match(emb, match_threshold, sim);
                     sims[f] = sim;
-                    if (idx >= 0) names[f] = face_db.all()[idx].name;
-                    else          names[f] = "unknown";
+                    if (idx >= 0) { names[f] = face_db.all()[idx].name; stats[f] = 'M'; }
+                    else          { names[f] = "unknown";               stats[f] = 'U'; }
+                } else {
+                    stats[f] = 'D';
                 }
             }
             t_recog_total = now_ms() - t4;
-            // Console log every ~10 frames to see similarity scores
+
             static int log_counter = 0;
             if (++log_counter % 10 == 0 && !dets.empty()) {
                 fprintf(stdout, "[recog] frame %d:", frame_id);
                 for (size_t f = 0; f < dets.size(); ++f) {
-                    fprintf(stdout, " f%zu={%s,%.3f}",
-                            f, names[f].empty() ? "-" : names[f].c_str(), sims[f]);
+                    fprintf(stdout, " f%zu={%s,%.3f,st=%c}",
+                            f, names[f].empty() ? "-" : names[f].c_str(),
+                            sims[f], stats[f]);
                 }
                 fprintf(stdout, "\n"); fflush(stdout);
             }
@@ -395,28 +421,24 @@ int main(int argc, char** argv) {
         // ---- Draw overlay ----
         for (size_t f = 0; f < dets.size(); ++f) {
             const auto& d = dets[f];
-            // Pick color: red = unknown, green = known/detect-only
             bool is_unknown = recog_enabled && names[f] == "unknown";
             cv::Scalar color = is_unknown
-                ? cv::Scalar(0,   0, 255)   // BGR red
-                : cv::Scalar(0, 255,   0);  // BGR green
+                ? cv::Scalar(0,   0, 255)   // red
+                : cv::Scalar(0, 255,   0);  // green
 
             cv::rectangle(frame,
                           cv::Point(cvRound(d.x1), cvRound(d.y1)),
                           cv::Point(cvRound(d.x2), cvRound(d.y2)),
                           color, 2);
-            // Label
             char lbl[128];
             if (recog_enabled && !names[f].empty()) {
-                std::snprintf(lbl, sizeof(lbl), "%s %.2f",
-                              names[f].c_str(), sims[f]);
+                std::snprintf(lbl, sizeof(lbl), "%s %.2f", names[f].c_str(), sims[f]);
             } else {
                 std::snprintf(lbl, sizeof(lbl), "%.0f%%", d.score * 100.0f);
             }
             cv::putText(frame, lbl,
                         cv::Point(cvRound(d.x1), cvRound(d.y1) - 6),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.6,
-                        color, 2);
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
             static const cv::Scalar lm_colors[5] = {
                 {0,0,255}, {0,255,255}, {255,0,255}, {0,255,0}, {255,0,0}
             };
@@ -448,12 +470,12 @@ int main(int argc, char** argv) {
         std::snprintf(det_hud, sizeof(det_hud), "faces: %zu | db: %zu",
                       dets.size(), face_db.size());
 
-        // Translucent gray bar behind HUD text (top 52 pixels)
+        // Translucent HUD background
         {
             cv::Rect bg_rect(0, 0, frame.cols, 52);
             cv::Mat  bg_roi   = frame(bg_rect);
             cv::Mat  bg_layer(bg_roi.size(), bg_roi.type(),
-                              cv::Scalar(40, 40, 40));   // dark gray
+                              cv::Scalar(40, 40, 40));
             cv::addWeighted(bg_layer, 0.55, bg_roi, 0.45, 0, bg_roi);
         }
 
@@ -464,7 +486,6 @@ int main(int argc, char** argv) {
                     cv::FONT_HERSHEY_SIMPLEX, 0.5,
                     cv::Scalar(0, 255, 0), 1);
 
-        // Hand-off to display thread (non-blocking)
         {
             std::lock_guard<std::mutex> lk(disp_slot.mtx);
             frame.copyTo(disp_slot.latest);
@@ -510,6 +531,7 @@ int main(int argc, char** argv) {
     }
     slot.cv_new.notify_all();
     if (cap_th.joinable()) cap_th.join();
+    cap.release();
 
     printf("[shutdown] stopping display thread...\n");
     {
@@ -523,7 +545,5 @@ int main(int argc, char** argv) {
     delete recognizer;
     awnn_destroy(det_ctx);
     awnn_uninit();
-    cap.release();
-    cv::destroyAllWindows();
     return 0;
 }

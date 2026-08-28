@@ -4,16 +4,11 @@
 // Usage:
 //   ./add_person --name X --image img1.jpg [--image img2.jpg ...]
 //                --db faces.fdb
-//                --det-model <retinaface.nb>
+//                --det-model <scrfd.nb>
 //                --recog-model <recog.nb>
-//                [--recog-dim N (default 512)]
-//                [--recog-bgr]
-//                [--replace]    (overwrite if name exists)
-//                [--merge]      (average with existing embedding if name exists)
+//                [--recog-dim N] [--recog-bgr]
+//                [--replace | --merge]
 //                [--min-face-px N (default 40)]
-//
-// Default behaviour when name already exists: fail with error.
-// Use --replace to overwrite or --merge to combine.
 
 #include <cstdio>
 #include <cstdlib>
@@ -29,35 +24,33 @@
 
 #include <awnn_lib.h>
 
-#include "anchors.h"
-#include "retinaface_pre.h"
-#include "retinaface_post.h"
+#include "detect_pre.h"
+#include "detection.h"
+#include "scrfd_post.h"
 #include "face_align.h"
 #include "face_recog.h"
 #include "face_db.h"
 
 namespace fs = std::filesystem;
 
-static constexpr int NPU_INPUT_W = 320;
-static constexpr int NPU_INPUT_H = 320;
+static constexpr int NPU_INPUT_W = 640;
+static constexpr int NPU_INPUT_H = 640;
 
-// Detect largest face and return the Detection. Returns false if none.
 static bool detect_largest_face(Awnn_Context_t* ctx,
-                                const std::vector<Anchor>& anchors,
+                                const ScrfdDecoder& scrfd,
                                 const cv::Mat& img_bgr,
                                 std::vector<uint8_t>& input_buf,
                                 Detection& out_best) {
     PreInfo pre;
-    retinaface_preprocess(img_bgr, input_buf.data(),
-                          NPU_INPUT_W, NPU_INPUT_H, pre);
+    detect_preprocess(img_bgr, input_buf.data(),
+                      NPU_INPUT_W, NPU_INPUT_H, pre);
     void* ins[] = { input_buf.data() };
     awnn_set_input_buffers(ctx, ins);
     awnn_run(ctx);
     float** outs = awnn_get_output_buffers(ctx);
 
     std::vector<Detection> dets;
-    retinaface_postprocess(outs[0], outs[1], outs[2],
-                           anchors, pre, 0.5f, 0.4f, dets);
+    scrfd.decode(outs, pre, 0.5f, 0.4f, dets);
     if (dets.empty()) return false;
 
     auto area = [](const Detection& d) {
@@ -73,7 +66,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr,
         "Usage: %s --name X --image img1.jpg [--image img2.jpg ...]\n"
         "           --db faces.fdb\n"
-        "           --det-model <retinaface.nb>\n"
+        "           --det-model <scrfd.nb>\n"
         "           --recog-model <recog.nb>\n"
         "           [--recog-dim N (default 512)]\n"
         "           [--recog-bgr    (feed BGR, default RGB)]\n"
@@ -126,8 +119,9 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    printf("[add] name=%s  db=%s  #images=%zu\n",
-           name.c_str(), db_path.c_str(), images.size());
+    printf("[add] name=%s  db=%s  #images=%zu  input=%dx%d\n",
+           name.c_str(), db_path.c_str(), images.size(),
+           NPU_INPUT_W, NPU_INPUT_H);
 
     // ---- Load / init DB ------------------------------------------------
     FaceDB db;
@@ -140,9 +134,8 @@ int main(int argc, char** argv) {
         printf("[add] loaded existing db: %zu identities, dim=%d\n",
                db.size(), db.dim());
         if (db.dim() != recog_dim) {
-            fprintf(stderr,
-                "[add] dim mismatch: db=%d vs --recog-dim=%d\n",
-                db.dim(), recog_dim);
+            fprintf(stderr, "[add] dim mismatch: db=%d vs --recog-dim=%d\n",
+                    db.dim(), recog_dim);
             return 3;
         }
     } else {
@@ -150,7 +143,6 @@ int main(int argc, char** argv) {
         printf("[add] db does not exist, will create new one\n");
     }
 
-    // ---- Name collision handling --------------------------------------
     int existing_idx = db.find(name);
     std::vector<float> existing_embedding;
     if (existing_idx >= 0) {
@@ -170,20 +162,35 @@ int main(int argc, char** argv) {
         db.remove_at(static_cast<size_t>(existing_idx));
     }
 
-    // ---- Init NPU -----------------------------------------------------
     awnn_init();
-    Awnn_Context_t* det_ctx = awnn_create(det_model.c_str());
-    if (!det_ctx) {
-        fprintf(stderr, "[add] failed to load detection model\n");
+    // Load recog BEFORE detect.
+    FaceRecognizer* recognizer = new FaceRecognizer(recog_model, recog_dim, recog_rgb);
+    if (!recognizer->model_loaded()) {
+        fprintf(stderr, "[add] failed to load recog model\n");
+        delete recognizer;
         awnn_uninit();
         return 5;
     }
-    FaceRecognizer* recognizer = new FaceRecognizer(recog_model, recog_dim, recog_rgb);
 
-    auto anchors = generate_retinaface_anchors(NPU_INPUT_W);
+    Awnn_Context_t* det_ctx = awnn_create(det_model.c_str());
+    if (!det_ctx) {
+        fprintf(stderr, "[add] failed to load detection model\n");
+        delete recognizer;
+        awnn_uninit();
+        return 5;
+    }
+
+    ScrfdDecoder scrfd;
+    if (!scrfd.init(det_ctx, NPU_INPUT_W)) {
+        fprintf(stderr, "[add] scrfd init failed\n");
+        delete recognizer;
+        awnn_destroy(det_ctx);
+        awnn_uninit();
+        return 5;
+    }
+
     std::vector<uint8_t> input_buf(NPU_INPUT_W * NPU_INPUT_H * 3);
 
-    // ---- Extract embedding from each image ----------------------------
     std::vector<std::vector<float>> new_embs;
     for (const auto& img_path : images) {
         cv::Mat img = cv::imread(img_path, cv::IMREAD_COLOR);
@@ -192,7 +199,7 @@ int main(int argc, char** argv) {
             continue;
         }
         Detection best;
-        if (!detect_largest_face(det_ctx, anchors, img, input_buf, best)) {
+        if (!detect_largest_face(det_ctx, scrfd, img, input_buf, best)) {
             fprintf(stderr, "  [%s] no face detected (skip)\n", img_path.c_str());
             continue;
         }
@@ -223,7 +230,6 @@ int main(int argc, char** argv) {
         return 6;
     }
 
-    // If merging, include existing embedding as one more sample
     if (!existing_embedding.empty()) {
         new_embs.push_back(existing_embedding);
     }
@@ -232,7 +238,6 @@ int main(int argc, char** argv) {
     printf("[add] identity '%s' now has embedding averaged from %zu sources\n",
            name.c_str(), new_embs.size());
 
-    // ---- Save ---------------------------------------------------------
     if (!db.save(db_path)) {
         fprintf(stderr, "[add] failed to save db %s\n", db_path.c_str());
         delete recognizer;

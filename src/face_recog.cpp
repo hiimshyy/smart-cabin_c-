@@ -25,10 +25,19 @@ FaceRecognizer::~FaceRecognizer() {
 }
 
 bool FaceRecognizer::extract(const cv::Mat& face, std::vector<float>& emb_out) {
-    if (!ctx_) return false;
+    if (!ctx_) {
+        static int _e = 0;
+        if (++_e <= 3) fprintf(stderr, "[recog] extract: ctx_ is NULL\n");
+        return false;
+    }
     if (face.empty() || face.type() != CV_8UC3 ||
         face.cols != 112 || face.rows != 112) {
-        fprintf(stderr, "[recog] bad input: expect 112x112 CV_8UC3\n");
+        static int _e = 0;
+        if (++_e <= 3) {
+            fprintf(stderr, "[recog] bad input: empty=%d type=%d dims=%dx%d "
+                    "(expected CV_8UC3 (type=16) 112x112)\n",
+                    face.empty(), face.type(), face.cols, face.rows);
+        }
         return false;
     }
 
@@ -55,7 +64,11 @@ bool FaceRecognizer::extract(const cv::Mat& face, std::vector<float>& emb_out) {
     awnn_run(ctx_);
     float** outs = awnn_get_output_buffers(ctx_);
     if (!outs || !outs[0]) {
-        fprintf(stderr, "[recog] output buffer null\n");
+        static int _e = 0;
+        if (++_e <= 3) {
+            fprintf(stderr, "[recog] NPU output null (outs=%p outs0=%p)\n",
+                    (void*)outs, outs ? (void*)outs[0] : nullptr);
+        }
         return false;
     }
 

@@ -1,16 +1,12 @@
 // capture_person: interactive tool to capture N face frames of ONE person
 // from the camera, saving into <out>/<name>/frame_NN.jpg.
-// Uses RetinaFace detection to gate captures (auto-shoot only when exactly
-// one clean face is present and bbox is large enough).
+// Uses SCRFD detection to gate captures (auto-shoot only when exactly one
+// clean face is present and bbox is large enough).
 //
 // Usage:
 //   ./capture_person --name alice [--out faces] [--count 5]
 //                    [--cam 0] [--min-face-px 100]
-//                    [--det-model model/Retinaface_resnet50_320_uint8_a733.nb]
-//
-// Controls (in preview window):
-//   SPACE : manual capture (bypass auto-gate)
-//   q/ESC : quit early
+//                    [--det-model model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb]
 
 #include <cstdio>
 #include <cstdlib>
@@ -30,14 +26,14 @@
 
 #include <awnn_lib.h>
 
-#include "anchors.h"
-#include "retinaface_pre.h"
-#include "retinaface_post.h"
+#include "detect_pre.h"
+#include "detection.h"
+#include "scrfd_post.h"
 
 namespace fs = std::filesystem;
 
-static constexpr int NPU_INPUT_W = 320;
-static constexpr int NPU_INPUT_H = 320;
+static constexpr int NPU_INPUT_W = 640;
+static constexpr int NPU_INPUT_H = 640;
 static constexpr int CAM_W       = 640;
 static constexpr int CAM_H       = 480;
 
@@ -57,7 +53,7 @@ static void print_usage(const char* p) {
         "  --count N         Frames to capture (default: 5)\n"
         "  --cam N           /dev/videoN (default: 0)\n"
         "  --min-face-px N   Skip when bbox width/height < N (default: 100)\n"
-        "  --det-model PATH  RetinaFace .nb (default: model/Retinaface_resnet50_320_uint8_a733.nb)\n"
+        "  --det-model PATH  SCRFD .nb (default: model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb)\n"
         "  --interval-ms N   Min ms between auto-captures (default: 500)\n"
         "  --no-preview      Headless mode (no window, purely auto)\n",
         p);
@@ -66,7 +62,7 @@ static void print_usage(const char* p) {
 int main(int argc, char** argv) {
     std::string name;
     std::string out_root  = "faces";
-    std::string det_model = "model/Retinaface_resnet50_320_uint8_a733.nb";
+    std::string det_model = "model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb";
     int  count            = 5;
     int  cam_id           = 0;
     int  min_face_px      = 100;
@@ -120,9 +116,16 @@ int main(int argc, char** argv) {
         awnn_uninit();
         return 4;
     }
-    printf("[capture] detection model loaded\n");
+    printf("[capture] detection model loaded (input=%dx%d, scrfd)\n",
+           NPU_INPUT_W, NPU_INPUT_H);
 
-    auto anchors = generate_retinaface_anchors(NPU_INPUT_W);
+    ScrfdDecoder scrfd;
+    if (!scrfd.init(det_ctx, NPU_INPUT_W)) {
+        fprintf(stderr, "[capture] scrfd init failed\n");
+        awnn_destroy(det_ctx);
+        awnn_uninit();
+        return 4;
+    }
     std::vector<uint8_t> npu_input(NPU_INPUT_W * NPU_INPUT_H * 3);
     std::vector<Detection> dets;
 
@@ -139,21 +142,18 @@ int main(int argc, char** argv) {
             fprintf(stderr, "grab failed\n");
             break;
         }
-        // Keep a pristine copy for saving (overlay drawing is destructive)
+        // Pristine copy for saving (overlay drawing is destructive).
         clean_frame = frame.clone();
 
-        // Detect
         PreInfo pre;
-        retinaface_preprocess(frame, npu_input.data(),
-                              NPU_INPUT_W, NPU_INPUT_H, pre);
+        detect_preprocess(frame, npu_input.data(),
+                          NPU_INPUT_W, NPU_INPUT_H, pre);
         void* ins[] = { npu_input.data() };
         awnn_set_input_buffers(det_ctx, ins);
         awnn_run(det_ctx);
         float** outs = awnn_get_output_buffers(det_ctx);
-        retinaface_postprocess(outs[0], outs[1], outs[2],
-                               anchors, pre, 0.5f, 0.4f, dets);
+        scrfd.decode(outs, pre, 0.5f, 0.4f, dets);
 
-        // Decide capture-worthiness: exactly one face, big enough
         std::string status;
         bool auto_ok = false;
         if (dets.empty()) {
@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Draw overlay
+        // Overlay
         for (const auto& d : dets) {
             cv::rectangle(frame,
                           cv::Point(cvRound(d.x1), cvRound(d.y1)),
@@ -191,8 +191,7 @@ int main(int argc, char** argv) {
             }
         }
         char hud[160];
-        std::snprintf(hud, sizeof(hud),
-                      "%s  |  captured %d/%d",
+        std::snprintf(hud, sizeof(hud), "%s  |  captured %d/%d",
                       status.c_str(), saved, count);
         cv::putText(frame, hud, cv::Point(6, 22),
                     cv::FONT_HERSHEY_SIMPLEX, 0.6,
@@ -204,7 +203,6 @@ int main(int argc, char** argv) {
                     cv::FONT_HERSHEY_SIMPLEX, 0.5,
                     cv::Scalar(0, 255, 0), 2);
 
-        // Auto-capture gate
         double t = now_ms();
         bool do_save = false;
         int  key = -1;
@@ -214,7 +212,7 @@ int main(int argc, char** argv) {
             key = cv::waitKey(1) & 0xFF;
         }
         if (auto_ok && (t - last_save_ms) >= interval_ms) do_save = true;
-        if (key == ' ') do_save = true;     // manual override (with or without gate)
+        if (key == ' ') do_save = true;
         if (key == 'q' || key == 27) break;
 
         if (do_save) {

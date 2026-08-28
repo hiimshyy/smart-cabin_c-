@@ -1,13 +1,13 @@
-// enroll_faces: standalone tool to build a face identity DB (.fdb) from a
-// folder of images. Layout:
+// enroll_faces: build a face identity DB (.fdb) from a folder of images.
+// Layout:
 //   <root>/
 //     alice/1.jpg 2.jpg ...
 //     bob/1.jpg   ...
 // One embedding per image is extracted, averaged per subfolder → 1 identity.
 //
 // Usage:
-//   enroll_faces --dir <root> --out <out.fdb> \
-//                --det-model <retinaface.nb> --recog-model <recog.nb> \
+//   enroll_faces --dir <root> --out <out.fdb>
+//                --det-model <scrfd.nb> --recog-model <recog.nb>
 //                [--recog-dim N] [--recog-bgr] [--min-face-px N]
 
 #include <cstdio>
@@ -24,29 +24,27 @@
 
 #include <awnn_lib.h>
 
-#include "anchors.h"
-#include "retinaface_pre.h"
-#include "retinaface_post.h"
+#include "detect_pre.h"
+#include "detection.h"
+#include "scrfd_post.h"
 #include "face_align.h"
 #include "face_recog.h"
 #include "face_db.h"
 
 namespace fs = std::filesystem;
 
-static constexpr int NPU_INPUT_W = 320;
-static constexpr int NPU_INPUT_H = 320;
+static constexpr int NPU_INPUT_W = 640;
+static constexpr int NPU_INPUT_H = 640;
 
-// Detect largest face in an image. Returns empty vector if no face.
-static void detect_largest_face(Awnn_Context_t* ctx,
-                                const std::vector<Anchor>& anchors,
+// Detect largest face in an image using SCRFD.
+static bool detect_largest_face(Awnn_Context_t* ctx,
+                                const ScrfdDecoder& scrfd,
                                 const cv::Mat& img_bgr,
                                 std::vector<uint8_t>& input_buf,
-                                Detection& out_best,
-                                bool& found) {
-    found = false;
+                                Detection& out_best) {
     PreInfo pre;
-    retinaface_preprocess(img_bgr, input_buf.data(),
-                          NPU_INPUT_W, NPU_INPUT_H, pre);
+    detect_preprocess(img_bgr, input_buf.data(),
+                      NPU_INPUT_W, NPU_INPUT_H, pre);
 
     void* ins[] = { input_buf.data() };
     awnn_set_input_buffers(ctx, ins);
@@ -54,24 +52,22 @@ static void detect_largest_face(Awnn_Context_t* ctx,
     float** outs = awnn_get_output_buffers(ctx);
 
     std::vector<Detection> dets;
-    retinaface_postprocess(outs[0], outs[1], outs[2],
-                           anchors, pre, 0.5f, 0.4f, dets);
-    if (dets.empty()) return;
+    scrfd.decode(outs, pre, 0.5f, 0.4f, dets);
+    if (dets.empty()) return false;
 
-    // Pick largest area
     auto area = [](const Detection& d) {
         return std::max(0.0f, d.x2 - d.x1) * std::max(0.0f, d.y2 - d.y1);
     };
     auto it = std::max_element(dets.begin(), dets.end(),
         [&](const Detection& a, const Detection& b){ return area(a) < area(b); });
     out_best = *it;
-    found = true;
+    return true;
 }
 
 static void print_usage(const char* prog) {
     fprintf(stderr,
         "Usage: %s --dir <root> --out <out.fdb>\n"
-        "           --det-model <retinaface.nb>\n"
+        "           --det-model <scrfd.nb>\n"
         "           --recog-model <recog.nb>\n"
         "           [--recog-dim N (default 512)]\n"
         "           [--recog-bgr    (feed BGR, default RGB)]\n"
@@ -112,21 +108,38 @@ int main(int argc, char** argv) {
     }
 
     printf("[enroll] dir=%s  out=%s\n", dir_path.c_str(), out_path.c_str());
-    printf("[enroll] det=%s\n", det_model.c_str());
+    printf("[enroll] det=%s (input=%dx%d, scrfd)\n",
+           det_model.c_str(), NPU_INPUT_W, NPU_INPUT_H);
     printf("[enroll] recog=%s (dim=%d rgb=%d)\n",
            recog_model.c_str(), recog_dim, recog_rgb ? 1 : 0);
 
     awnn_init();
-    Awnn_Context_t* det_ctx = awnn_create(det_model.c_str());
-    if (!det_ctx) {
-        fprintf(stderr, "[enroll] failed to load detection model\n");
+    // Load recog BEFORE detect (see main.cpp comment).
+    FaceRecognizer* recognizer = new FaceRecognizer(recog_model, recog_dim, recog_rgb);
+    if (!recognizer->model_loaded()) {
+        fprintf(stderr, "[enroll] failed to load recog model\n");
+        delete recognizer;
         awnn_uninit();
         return 2;
     }
 
-    FaceRecognizer* recognizer = new FaceRecognizer(recog_model, recog_dim, recog_rgb);
+    Awnn_Context_t* det_ctx = awnn_create(det_model.c_str());
+    if (!det_ctx) {
+        fprintf(stderr, "[enroll] failed to load detection model\n");
+        delete recognizer;
+        awnn_uninit();
+        return 2;
+    }
 
-    auto anchors = generate_retinaface_anchors(NPU_INPUT_W);
+    ScrfdDecoder scrfd;
+    if (!scrfd.init(det_ctx, NPU_INPUT_W)) {
+        fprintf(stderr, "[enroll] scrfd init failed\n");
+        delete recognizer;
+        awnn_destroy(det_ctx);
+        awnn_uninit();
+        return 2;
+    }
+
     std::vector<uint8_t> input_buf(NPU_INPUT_W * NPU_INPUT_H * 3);
 
     FaceDB db;
@@ -154,9 +167,8 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            Detection best; bool found = false;
-            detect_largest_face(det_ctx, anchors, img, input_buf, best, found);
-            if (!found) {
+            Detection best;
+            if (!detect_largest_face(det_ctx, scrfd, img, input_buf, best)) {
                 fprintf(stderr, "  [%s] no face in %s\n", person.c_str(),
                         img_entry.path().filename().string().c_str());
                 continue;

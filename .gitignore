@@ -20,8 +20,13 @@ db/*.fdb
 *.swp
 *~
 
-# Kiro CLI resume marker
+# Kiro CLI resume markers / session junk
 chat
+legacy/bug
+legacy/camera
+
+# YOLO person-detection models (not part of face_recog_app)
+model/person_det/
 
 # Legacy vendor binary is tracked, but not build outputs
 !legacy/retinaface_demo_a733

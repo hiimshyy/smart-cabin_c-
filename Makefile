@@ -6,9 +6,8 @@ SRC_DIR    := src
 AI_SDK     := /home/orangepi/ai-sdk
 
 # ---- Sources (all under src/) ----
-COMMON_SRCS := $(SRC_DIR)/retinaface_pre.cpp \
-               $(SRC_DIR)/retinaface_post.cpp \
-               $(SRC_DIR)/anchors.cpp
+COMMON_SRCS := $(SRC_DIR)/detect_pre.cpp \
+               $(SRC_DIR)/scrfd_post.cpp
 RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
                $(SRC_DIR)/face_recog.cpp \
                $(SRC_DIR)/face_db.cpp
@@ -83,4 +82,4 @@ clean:
 	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person
 
 run: $(TARGET)
-	./$(TARGET) model/Retinaface_resnet50_320_uint8_a733.nb
+	./$(TARGET) model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb
