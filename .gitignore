@@ -8,6 +8,7 @@ build/
 /enroll_faces
 /capture_person
 /add_person
+/probe_models
 
 # Runtime data (mỗi user có dataset riêng)
 faces/

@@ -20,6 +20,7 @@
 export FACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FACE_DET_MODEL="$FACE_ROOT/model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb"
 export FACE_RECOG_MODEL="$FACE_ROOT/model/face_recog/w600k_mbf_uint8_a733.nb"
+export FACE_PERSON_MODEL="$FACE_ROOT/model/person_det/yolov5s_rt_uint8_a733.nb"
 export FACE_DB_DIR="$FACE_ROOT/db"
 export FACE_DB_DEFAULT="$FACE_DB_DIR/faces_all.fdb"
 export FACE_FACES_DIR="$FACE_ROOT/faces"
@@ -33,6 +34,17 @@ export FACE_FACES_DIR="$FACE_ROOT/faces"
 
 # ---- Shell functions ----
 face_run() {
+    local db="${1:-$FACE_DB_DEFAULT}"
+    local thr="${2:-0.35}"
+    (cd "$FACE_ROOT" && ./face_recog_app "$FACE_DET_MODEL" \
+        --recog-model "$FACE_RECOG_MODEL" \
+        --recog-dim 512 --recog-bgr \
+        --face-db "$db" --match-thr "$thr" \
+        --person-model "$FACE_PERSON_MODEL")
+}
+
+# SCRFD-only mode (không tracker) — nhanh hơn, dùng khi scene không có occlusion
+face_run_lite() {
     local db="${1:-$FACE_DB_DEFAULT}"
     local thr="${2:-0.35}"
     (cd "$FACE_ROOT" && ./face_recog_app "$FACE_DET_MODEL" \
@@ -55,6 +67,7 @@ face_run_rtsp() {
         --recog-model "$FACE_RECOG_MODEL" \
         --recog-dim 512 --recog-bgr \
         --face-db "$db" --match-thr "$thr" \
+        --person-model "$FACE_PERSON_MODEL" \
         --source "$url" --gst-latency "$lat")
 }
 
@@ -117,6 +130,16 @@ face_bench() {
         --recog-model "$FACE_RECOG_MODEL" \
         --recog-dim 512 --recog-bgr \
         --face-db "$FACE_DB_DEFAULT" --match-thr 0.35 \
+        --person-model "$FACE_PERSON_MODEL" \
+        --frames "$n")
+}
+
+face_bench_lite() {
+    local n="${1:-100}"
+    (cd "$FACE_ROOT" && ./face_recog_app "$FACE_DET_MODEL" \
+        --recog-model "$FACE_RECOG_MODEL" \
+        --recog-dim 512 --recog-bgr \
+        --face-db "$FACE_DB_DEFAULT" --match-thr 0.35 \
         --frames "$n")
 }
 
@@ -132,6 +155,7 @@ face_bench_rtsp() {
         --recog-model "$FACE_RECOG_MODEL" \
         --recog-dim 512 --recog-bgr \
         --face-db "$db" --match-thr 0.35 \
+        --person-model "$FACE_PERSON_MODEL" \
         --source "$url" \
         --frames "$n")
 }
@@ -150,29 +174,33 @@ face_ls() {
 face_help() {
     cat <<'EOF'
 ==============================================================
- SCRFD + MobileFaceNet — Face Recognition Shortcuts (A733)
+ SCRFD + YOLO + MobileFaceNet — Face Recognition (A733)
 ==============================================================
- face_run [DB] [THR]           Live match (default DB: db/faces_all.fdb)
- face_run_rtsp URL [DB] [THR]  Live match từ RTSP camera (GStreamer)
- face_detect                   Detect-only (bỏ recognition)
- face_capture NAME [N] [MIN]   Chụp N frames của 1 người
- face_add NAME IMG [IMG...]    Thêm người từ ảnh (--replace/--merge)
- face_enroll [DIR] [OUT]       Rebuild toàn bộ DB
- face_bench [N]                Chạy N frames + in benchmark
- face_bench_rtsp URL [N]       Bench trên RTSP stream
- face_ls                       Liệt kê DB và enroll folders
- face_help                     In help này
+ Full pipeline (default: person tracker enabled):
+   face_run [DB] [THR]           Live match (YOLO+SCRFD+recog+tracker)
+   face_run_rtsp URL [DB] [THR]  Live match RTSP với tracker
+   face_bench [N]                Bench N frames pipeline đầy đủ
+   face_bench_rtsp URL [N]       Bench RTSP pipeline đầy đủ
+
+ Lite mode (SCRFD-only, no tracker — nhanh hơn ~1.5x):
+   face_run_lite [DB] [THR]      Live match (SCRFD+recog, không tracker)
+   face_bench_lite [N]           Bench SCRFD-only pipeline
+
+ Data management:
+   face_detect                   Detect-only (bỏ recognition)
+   face_capture NAME [N] [MIN]   Chụp N frames của 1 người
+   face_add NAME IMG [IMG...]    Thêm người từ ảnh (--replace/--merge)
+   face_enroll [DIR] [OUT]       Rebuild toàn bộ DB
+   face_ls                       Liệt kê DB và enroll folders
 
  Model default:
    detect: model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb (SCRFD)
+   person: model/person_det/yolov5s_rt_uint8_a733.nb (YOLOv5s COCO)
    recog : model/face_recog/w600k_mbf_uint8_a733.nb (MobileFaceNet 512-D)
 
- Ví dụ:
-   face_capture alice 8
-   face_add bob /photos/bob.jpg /photos/bob2.jpg
-   face_add alice new.jpg --merge
-   face_run
-   face_enroll                 # rebuild sau khi có folder mới
+ Use case chính (thang máy): dùng `face_run` (full pipeline).
+   Tracker duy trì ID người kể cả khi họ quay lưng, cache recog để giảm
+   tải NPU. Chấp nhận ~15 FPS đổi lấy identity persistence.
 ==============================================================
 EOF
 }

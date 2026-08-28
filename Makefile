@@ -7,7 +7,9 @@ AI_SDK     := /home/orangepi/ai-sdk
 
 # ---- Sources (all under src/) ----
 COMMON_SRCS := $(SRC_DIR)/detect_pre.cpp \
-               $(SRC_DIR)/scrfd_post.cpp
+               $(SRC_DIR)/scrfd_post.cpp \
+               $(SRC_DIR)/yolo_post.cpp \
+               $(SRC_DIR)/tracker.cpp
 RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
                $(SRC_DIR)/face_recog.cpp \
                $(SRC_DIR)/face_db.cpp
@@ -49,7 +51,7 @@ SDK_OBJS     := $(patsubst $(AI_SDK)/%.c,$(BUILD_DIR)/sdk_%.o,$(SDK_SRCS_C))
 # ---- Rules ----
 .PHONY: all clean run
 
-all: $(TARGET) enroll_faces capture_person add_person
+all: $(TARGET) enroll_faces capture_person add_person probe_models
 
 $(TARGET): $(APP_OBJS) $(SDK_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
@@ -67,6 +69,10 @@ add_person: $(ADD_OBJS) $(SDK_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS) -lstdc++fs
 	@echo "==> Built $@"
 
+probe_models: $(BUILD_DIR)/probe_models.o $(SDK_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
+	@echo "==> Built $@"
+
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
@@ -79,7 +85,7 @@ $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person
+	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person probe_models
 
 run: $(TARGET)
 	./$(TARGET) model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb
