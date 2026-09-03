@@ -147,6 +147,7 @@ static void print_usage(const char* prog) {
         "    --track-iou F         Min IoU for track association (default 0.3)\n"
         "    --track-max-miss N    Kill track after N missed frames (default 30)\n"
         "    --recog-retry N       Re-verify recognition every N frames (default 90)\n"
+        "    --ui-scale F          Overlay text/box scale. 0=auto(frame.h/480), 2.0=fix 2x\n"
         "    --source URL          RTSP/HTTP/file source (GStreamer)\n"
         "    --gst-pipeline STR    Custom GStreamer pipeline\n"
         "    --gst-latency MS      RTSP jitter buffer latency (default 100ms)\n"
@@ -175,6 +176,41 @@ static bool is_stream_source(const std::string& s) {
            s.find(".avi") != std::string::npos;
 }
 
+// Overlay sizing helper — keeps text/box visually proportional to frame.
+// Baseline is 480p; scale linearly with frame height so text looks the
+// same relative size on 720p / 1080p / etc.
+struct UiScale {
+    float scale       = 1.0f;   // multiplier vs baseline 480p
+    int   line_thick  = 2;      // rectangle line thickness (person track)
+    int   line_thin   = 1;      // rectangle line thickness (face bbox)
+    int   text_thick  = 2;      // putText thickness (labels)
+    int   text_thin   = 1;      // putText thickness (HUD)
+    float font_label  = 0.6f;   // putText fontScale (labels)
+    float font_hud    = 0.5f;   // putText fontScale (HUD)
+    int   hud_h       = 32;     // HUD background rectangle height (px)
+    int   hud_pad_x   = 6;
+    int   hud_text_y  = 20;
+    int   landmark_r  = 2;      // circle radius for face landmarks
+
+    static UiScale compute(int frame_h, float override_val) {
+        UiScale u;
+        // override_val > 0 forces that exact scale; 0 = auto by frame height
+        u.scale = (override_val > 0.0f) ? override_val
+                                        : std::max(1.0f, frame_h / 480.0f);
+        u.line_thick = std::max(1, (int)std::round(2.0f  * u.scale));
+        u.line_thin  = std::max(1, (int)std::round(1.0f  * u.scale));
+        u.text_thick = std::max(1, (int)std::round(1.5f  * u.scale));
+        u.text_thin  = std::max(1, (int)std::round(1.0f  * u.scale));
+        u.font_label = 0.6f * u.scale;
+        u.font_hud   = 0.5f * u.scale;
+        u.hud_h      = (int)std::round(32.0f * u.scale);
+        u.hud_pad_x  = (int)std::round(6.0f  * u.scale);
+        u.hud_text_y = (int)std::round(20.0f * u.scale);
+        u.landmark_r = std::max(1, (int)std::round(2.0f  * u.scale));
+        return u;
+    }
+};
+
 int main(int argc, char** argv) {
     // ---- Parse CLI --------------------------------------------------------
     const char* det_model_path    = "model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb";
@@ -192,6 +228,7 @@ int main(int argc, char** argv) {
     int   recog_retry      = 90;
     float track_iou        = 0.3f;
     float person_thr       = 0.5f;
+    float ui_scale_override = 0.0f;   // 0 = auto (scale by frame.rows / 480)
     bool  recog_rgb        = true;
     bool  fullscreen       = true;
     float match_threshold  = 0.35f;
@@ -218,6 +255,7 @@ int main(int argc, char** argv) {
         else if (sv("--track-iou"))      track_iou = (float)std::atof(argv[++i]);
         else if (sv("--track-max-miss")) track_max_miss = std::atoi(argv[++i]);
         else if (sv("--recog-retry"))    recog_retry = std::atoi(argv[++i]);
+        else if (sv("--ui-scale"))       ui_scale_override = (float)std::atof(argv[++i]);
         else if (sv("--source"))         source_url = argv[++i];
         else if (sv("--gst-pipeline"))   custom_pipeline = argv[++i];
         else if (sv("--gst-latency"))    gst_latency_ms = std::atoi(argv[++i]);
@@ -390,6 +428,8 @@ int main(int argc, char** argv) {
     StageStat s_cap, s_pre, s_yolo, s_scrfd, s_track, s_recog, s_draw, s_e2e;
     double run_start = now_ms();
     uint64_t last_seq = 0;
+    UiScale ui;                       // computed lazily on first frame
+    bool    ui_ready = false;
 
     while (true) {
         double t0 = now_ms();
@@ -404,6 +444,18 @@ int main(int argc, char** argv) {
         }
         if (frame.empty()) continue;
         double t1 = now_ms();
+
+        // Initialize UI scale once we know the frame size.
+        if (!ui_ready) {
+            ui = UiScale::compute(frame.rows, ui_scale_override);
+            printf("[ui] frame=%dx%d ui_scale=%.2f%s (font=%.2f/%.2f, "
+                   "line=%d/%d, hud_h=%d)\n",
+                   frame.cols, frame.rows, ui.scale,
+                   ui_scale_override > 0 ? " (manual)" : " (auto)",
+                   ui.font_label, ui.font_hud,
+                   ui.line_thick, ui.line_thin, ui.hud_h);
+            ui_ready = true;
+        }
 
         // ---- Preprocess (letterbox 640x640, shared for YOLO + SCRFD) ----
         PreInfo pre;
@@ -527,7 +579,7 @@ int main(int argc, char** argv) {
                 cv::rectangle(frame,
                               cv::Point(cvRound(t->x1), cvRound(t->y1)),
                               cv::Point(cvRound(t->x2), cvRound(t->y2)),
-                              color, 2);
+                              color, ui.line_thick);
                 char lbl[128];
                 if (known) {
                     std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f",
@@ -538,20 +590,23 @@ int main(int argc, char** argv) {
                     std::snprintf(lbl, sizeof(lbl), "#%d ...", t->id);
                 }
                 cv::putText(frame, lbl,
-                            cv::Point(cvRound(t->x1), cvRound(t->y1) - 6),
-                            cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+                            cv::Point(cvRound(t->x1),
+                                      cvRound(t->y1) - std::max(4, (int)(6 * ui.scale))),
+                            cv::FONT_HERSHEY_SIMPLEX, ui.font_label,
+                            color, ui.text_thick);
             }
             // Draw face bbox (small, thin) to visualize face detection quality
             for (const auto& fd : faces) {
                 cv::rectangle(frame,
                               cv::Point(cvRound(fd.x1), cvRound(fd.y1)),
                               cv::Point(cvRound(fd.x2), cvRound(fd.y2)),
-                              cv::Scalar(255, 255, 0), 1);   // cyan, thin
+                              cv::Scalar(255, 255, 0), ui.line_thin);   // cyan
                 for (int k = 0; k < 5; ++k) {
                     cv::circle(frame,
                                cv::Point(cvRound(fd.landmarks[k*2]),
                                          cvRound(fd.landmarks[k*2+1])),
-                               1, cv::Scalar(255, 255, 0), -1);
+                               std::max(1, ui.landmark_r / 2),
+                               cv::Scalar(255, 255, 0), -1);
                 }
             }
         } else {
@@ -565,7 +620,7 @@ int main(int argc, char** argv) {
                 cv::rectangle(frame,
                               cv::Point(cvRound(fd.x1), cvRound(fd.y1)),
                               cv::Point(cvRound(fd.x2), cvRound(fd.y2)),
-                              color, 2);
+                              color, ui.line_thick);
                 char lbl[128];
                 if (recog_enabled && !L.name.empty()) {
                     std::snprintf(lbl, sizeof(lbl), "%s %.2f", L.name.c_str(), L.sim);
@@ -573,8 +628,10 @@ int main(int argc, char** argv) {
                     std::snprintf(lbl, sizeof(lbl), "%.0f%%", fd.score * 100.0f);
                 }
                 cv::putText(frame, lbl,
-                            cv::Point(cvRound(fd.x1), cvRound(fd.y1) - 6),
-                            cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+                            cv::Point(cvRound(fd.x1),
+                                      cvRound(fd.y1) - std::max(4, (int)(6 * ui.scale))),
+                            cv::FONT_HERSHEY_SIMPLEX, ui.font_label,
+                            color, ui.text_thick);
                 static const cv::Scalar lm_colors[5] = {
                     {0,0,255}, {0,255,255}, {255,0,255}, {0,255,0}, {255,0,0}
                 };
@@ -582,7 +639,7 @@ int main(int argc, char** argv) {
                     cv::circle(frame,
                                cv::Point(cvRound(fd.landmarks[k*2]),
                                          cvRound(fd.landmarks[k*2+1])),
-                               2, lm_colors[k], -1);
+                               ui.landmark_r, lm_colors[k], -1);
                 }
             }
         }
@@ -618,15 +675,15 @@ int main(int argc, char** argv) {
                 fps, t1-t0, t2-t1, t4-t3, t_recog_total, faces.size());
         }
         {
-            cv::Rect bg_rect(0, 0, frame.cols, 32);
+            cv::Rect bg_rect(0, 0, frame.cols, ui.hud_h);
             cv::Mat  bg_roi   = frame(bg_rect);
             cv::Mat  bg_layer(bg_roi.size(), bg_roi.type(),
                               cv::Scalar(40, 40, 40));
             cv::addWeighted(bg_layer, 0.55, bg_roi, 0.45, 0, bg_roi);
         }
-        cv::putText(frame, hud, cv::Point(6, 20),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                    cv::Scalar(0, 255, 0), 1);
+        cv::putText(frame, hud, cv::Point(ui.hud_pad_x, ui.hud_text_y),
+                    cv::FONT_HERSHEY_SIMPLEX, ui.font_hud,
+                    cv::Scalar(0, 255, 0), ui.text_thin);
 
         {
             std::lock_guard<std::mutex> lk(disp_slot.mtx);
