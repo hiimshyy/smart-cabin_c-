@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <chrono>
 #include <vector>
 #include <csignal>
@@ -22,6 +23,8 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <map>
+#include <string>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -38,6 +41,9 @@
 #include "face_align.h"
 #include "face_recog.h"
 #include "face_db.h"
+#include "resident_db.h"
+#include "match_engine.h"
+#include "interaction.h"
 
 static constexpr int NPU_INPUT_W = 640;
 static constexpr int NPU_INPUT_H = 640;
@@ -139,7 +145,14 @@ static void print_usage(const char* prog) {
         "    --recog-model PATH    Enable face recognition, path to recog .nb\n"
         "    --recog-dim N         Embedding dimension (default 512)\n"
         "    --recog-bgr           Feed BGR to recog (default RGB swap on)\n"
-        "    --face-db PATH        Load .fdb identity database\n"
+        "    --face-db PATH        Load .fdb identity DB (TEST/DEV mode only,\n"
+        "                          no floor/language/audit — NOT for real cabin)\n"
+        "    --resident-db PATH    SQLite resident DB (OPERATIONAL mode: floor,\n"
+        "                          greeting, audit log). Takes precedence over --face-db.\n"
+        "    --cabin-id N          Cabin id recorded in match_events (default 1)\n"
+        "    --confirm-streak N    Frames of consecutive match to confirm (default 5)\n"
+        "    --cooldown-ms N       Per-resident cooldown between events (default 3000)\n"
+        "    --unknown-after-ms N  Present-but-unmatched timeout to log unknown (default 2000)\n"
         "    --match-thr F         Cosine similarity threshold (default 0.35)\n"
         "    --person-model PATH   Enable YOLO person detection + tracker\n"
         "    --person-thr F        Person score threshold (default 0.5)\n"
@@ -216,6 +229,7 @@ int main(int argc, char** argv) {
     const char* det_model_path    = "model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb";
     const char* recog_model_path  = nullptr;
     const char* face_db_path      = nullptr;
+    const char* resident_db_path  = nullptr;
     const char* person_model_path = nullptr;
     const char* source_url        = nullptr;
     const char* custom_pipeline   = nullptr;
@@ -226,6 +240,10 @@ int main(int argc, char** argv) {
     int   person_every     = 1;
     int   track_max_miss   = 30;
     int   recog_retry      = 90;
+    int   cabin_id         = 1;
+    int   confirm_streak   = 5;
+    double cooldown_ms      = 3000.0;
+    double unknown_after_ms = 2000.0;
     float track_iou        = 0.3f;
     float person_thr       = 0.5f;
     float ui_scale_override = 0.0f;   // 0 = auto (scale by frame.rows / 480)
@@ -248,6 +266,11 @@ int main(int argc, char** argv) {
         else if (sv("--recog-dim"))      recog_dim = std::atoi(argv[++i]);
         else if (std::strcmp(a, "--recog-bgr") == 0) recog_rgb = false;
         else if (sv("--face-db"))        face_db_path = argv[++i];
+        else if (sv("--resident-db"))    resident_db_path = argv[++i];
+        else if (sv("--cabin-id"))       cabin_id = std::atoi(argv[++i]);
+        else if (sv("--confirm-streak")) confirm_streak = std::max(1, std::atoi(argv[++i]));
+        else if (sv("--cooldown-ms"))    cooldown_ms = std::atof(argv[++i]);
+        else if (sv("--unknown-after-ms")) unknown_after_ms = std::atof(argv[++i]);
         else if (sv("--match-thr"))      match_threshold = (float)std::atof(argv[++i]);
         else if (sv("--person-model"))   person_model_path = argv[++i];
         else if (sv("--person-thr"))     person_thr = (float)std::atof(argv[++i]);
@@ -326,6 +349,17 @@ int main(int argc, char** argv) {
     FaceRecognizer* recognizer = nullptr;
     FaceDB          face_db;
     bool            recog_enabled = false;
+
+    // Resident-DB (operational) mode plumbing. When resident_db_path is set,
+    // matching goes through MatchEngine (multi-embedding) instead of the .fdb
+    // FaceDB, interaction sessions are tracked, and match_events are logged.
+    ResidentDB          resident_db;
+    MatchEngine         match_engine;
+    InteractionManager  interaction;
+    std::map<int64_t, Resident> resident_by_id;   // id -> metadata for overlay
+    std::map<std::string, int64_t> resident_id_by_name; // name/greeting -> id (tracker cache)
+    bool                use_resident_db = false;
+
     if (recog_model_path) {
         recognizer = new FaceRecognizer(recog_model_path, recog_dim, recog_rgb);
         if (!recognizer->model_loaded()) {
@@ -337,13 +371,57 @@ int main(int argc, char** argv) {
         }
         printf("[recog] loaded %s (dim=%d, rgb=%d)\n",
                recog_model_path, recog_dim, recog_rgb ? 1 : 0);
-        if (face_db_path && face_db.load(face_db_path)) {
+
+        // Prefer the operational SQLite path when --resident-db is given.
+        if (resident_db_path) {
+            if (!resident_db.open(resident_db_path)) {
+                fprintf(stderr, "[resident-db] failed to open %s\n", resident_db_path);
+                delete recognizer;
+                awnn_uninit();
+                shutdown_capture();
+                return 2;
+            }
+            std::vector<Resident>     residents;
+            std::vector<EmbeddingRow> embeddings;
+            if (!resident_db.load_active(residents, embeddings)) {
+                fprintf(stderr, "[resident-db] load_active failed on %s\n", resident_db_path);
+                resident_db.close();
+                delete recognizer;
+                awnn_uninit();
+                shutdown_capture();
+                return 2;
+            }
+            match_engine.build(embeddings, recog_dim);
+            for (const auto& r : residents) {
+                resident_by_id[r.id] = r;
+                resident_id_by_name[r.name] = r.id;
+                if (!r.greeting_name.empty()) resident_id_by_name[r.greeting_name] = r.id;
+            }
+
+            InteractionConfig icfg;
+            icfg.confirm_streak   = confirm_streak;
+            icfg.cooldown_ms      = cooldown_ms;
+            icfg.unknown_after_ms = unknown_after_ms;
+            interaction.set_config(icfg);
+
+            use_resident_db = true;
+            printf("[resident-db] loaded %zu residents, %zu embeddings (dim=%d) from %s\n",
+                   residents.size(), embeddings.size(), recog_dim, resident_db_path);
+            printf("[resident-db] cabin_id=%d confirm_streak=%d cooldown_ms=%.0f "
+                   "unknown_after_ms=%.0f\n",
+                   cabin_id, confirm_streak, cooldown_ms, unknown_after_ms);
+            if (match_engine.vector_count() == 0) {
+                printf("[resident-db] WARN: no embeddings loaded — everyone will be unknown\n");
+            }
+        } else if (face_db_path && face_db.load(face_db_path)) {
             printf("[recog] loaded DB %s: %zu identities, dim=%d\n",
                    face_db_path, face_db.size(), face_db.dim());
+            printf("[recog] NOTE: .fdb is TEST/DEV mode (no floor/language/audit). "
+                   "Use --resident-db for real cabin operation.\n");
         } else if (face_db_path) {
             printf("[recog] WARN: cannot load DB %s — matching disabled\n", face_db_path);
         } else {
-            printf("[recog] no --face-db given — matching disabled\n");
+            printf("[recog] no --face-db / --resident-db given — matching disabled\n");
         }
         recog_enabled = true;
     }
@@ -496,8 +574,17 @@ int main(int argc, char** argv) {
             float       sim = -1.0f;
             char        stat = '.';
             int         track_id = -1;
+            int64_t     resident_id = -1;   // resident-db mode
+            float       area = 0.0f;        // face bbox area (largest-face subject)
         };
         std::vector<FaceLabel> face_labels(faces.size());
+
+        // Collect (subject_key, MatchResult) for the interaction state machine.
+        // subject_key = track_id when the tracker is on; otherwise we use a
+        // single stable key (0) assigned to the largest face in the frame.
+        std::vector<std::pair<int, MatchResult>> subjects;
+        int    best_face_idx = -1;
+        float  best_face_area = -1.0f;
 
         double t_recog_total = 0.0;
         if (recog_enabled && recognizer) {
@@ -506,6 +593,10 @@ int main(int argc, char** argv) {
                 const auto& fd = faces[f];
                 float cx = 0.5f * (fd.x1 + fd.x2);
                 float cy = 0.5f * (fd.y1 + fd.y2);
+                float area = std::max(0.0f, (fd.x2 - fd.x1)) *
+                             std::max(0.0f, (fd.y2 - fd.y1));
+                face_labels[f].area = area;
+                if (area > best_face_area) { best_face_area = area; best_face_idx = (int)f; }
 
                 Track* linked_track = nullptr;
                 bool   need_recog   = true;
@@ -530,18 +621,47 @@ int main(int argc, char** argv) {
                 align_face_112(frame, fd.landmarks, aligned);
                 if (aligned.empty()) { face_labels[f].stat = 'A'; continue; }
                 if (!recognizer->extract(aligned, emb)) { face_labels[f].stat = 'E'; continue; }
-                if (face_db.size() == 0) { face_labels[f].stat = 'D'; continue; }
 
-                float sim = 0.0f;
-                int idx = face_db.match(emb, match_threshold, sim);
+                // ---- Matching: resident-db (MatchEngine) or legacy (.fdb) ----
                 std::string name;
-                char stat;
-                if (idx >= 0) { name = face_db.all()[idx].name; stat = 'M'; }
-                else          { name = "unknown";               stat = 'U'; }
+                char        stat;
+                float       sim = 0.0f;
+                int64_t     rid = -1;
+                if (use_resident_db) {
+                    if (match_engine.vector_count() == 0) {
+                        face_labels[f].stat = 'D';
+                        continue;
+                    }
+                    MatchResult mr = match_engine.match(emb, match_threshold);
+                    sim = mr.similarity;
+                    rid = mr.resident_id;
+                    if (rid >= 0) {
+                        auto it = resident_by_id.find(rid);
+                        // Prefer greeting_name for the overlay; fall back to name.
+                        if (it != resident_by_id.end() &&
+                            !it->second.greeting_name.empty()) {
+                            name = it->second.greeting_name;
+                        } else if (it != resident_by_id.end()) {
+                            name = it->second.name;
+                        } else {
+                            name = "id:" + std::to_string(rid);
+                        }
+                        stat = 'M';
+                    } else {
+                        name = "unknown";
+                        stat = 'U';
+                    }
+                } else {
+                    if (face_db.size() == 0) { face_labels[f].stat = 'D'; continue; }
+                    int idx = face_db.match(emb, match_threshold, sim);
+                    if (idx >= 0) { name = face_db.all()[idx].name; stat = 'M'; }
+                    else          { name = "unknown";               stat = 'U'; }
+                }
 
-                face_labels[f].name = name;
-                face_labels[f].sim  = sim;
-                face_labels[f].stat = stat;
+                face_labels[f].name        = name;
+                face_labels[f].sim         = sim;
+                face_labels[f].stat        = stat;
+                face_labels[f].resident_id = rid;
 
                 if (linked_track) {
                     tracker.record_recognition(linked_track->id, name, sim, frame_id);
@@ -564,6 +684,72 @@ int main(int argc, char** argv) {
                 fprintf(stdout, "\n"); fflush(stdout);
             }
         }
+
+        // ---- Interaction state machine + match_events (resident-db mode) ----
+        // Build one subject per visible face. subject_key:
+        //   - tracker on : the face's track_id (stable across frames)
+        //   - tracker off: the single largest face gets key 0 (others ignored,
+        //                  a cabin only greets the person in front of it)
+        // MatchResult resident_id/similarity come from face_labels; for cached
+        // tracker frames we resolve the resident_id back from the track's name.
+        if (use_resident_db) {
+            subjects.clear();
+            for (size_t f = 0; f < faces.size(); ++f) {
+                const FaceLabel& L = face_labels[f];
+                int subject_key;
+                if (use_tracker) {
+                    if (L.track_id < 0) continue;   // orphan face, no stable key
+                    subject_key = L.track_id;
+                } else {
+                    if ((int)f != best_face_idx) continue;  // only the largest face
+                    subject_key = 0;
+                }
+
+                MatchResult mr;
+                mr.similarity  = L.sim;
+                mr.resident_id = L.resident_id;
+                // Cached tracker frame: label carries a name but no resident_id.
+                // Resolve it from the name→id map so the session keeps its ID.
+                if (mr.resident_id < 0 && !L.name.empty() && L.name != "unknown") {
+                    auto it = resident_id_by_name.find(L.name);
+                    if (it != resident_id_by_name.end()) mr.resident_id = it->second;
+                }
+                subjects.emplace_back(subject_key, mr);
+            }
+
+            auto outcomes = interaction.update(subjects, now_ms());
+            for (const auto& oc : outcomes) {
+                MatchEvent ev;
+                ev.cabin_id    = cabin_id;
+                ev.similarity  = oc.similarity;
+                ev.latency_ms  = (int)std::lround(t_recog_total);
+                if (oc.confirmed) {
+                    ev.resident_id    = oc.resident_id;
+                    ev.action         = "matched";
+                    // floor_selected left 0 (none): auto floor-call is Proposal 2.
+                    ev.floor_selected = 0;
+                    resident_db.log_event(ev);
+                    resident_db.touch_resident(oc.resident_id);
+                    auto it = resident_by_id.find(oc.resident_id);
+                    const char* who = (it != resident_by_id.end())
+                        ? (it->second.greeting_name.empty()
+                               ? it->second.name.c_str()
+                               : it->second.greeting_name.c_str())
+                        : "?";
+                    int hf = (it != resident_by_id.end()) ? it->second.home_floor : 0;
+                    printf("[event] CONFIRMED resident_id=%lld (%s) sim=%.2f "
+                           "home_floor=%d%s\n",
+                           (long long)oc.resident_id, who, oc.similarity, hf,
+                           hf <= HOME_FLOOR_UNSET ? " [no floor -> greet only]" : "");
+                } else if (oc.unknown) {
+                    ev.resident_id = -1;   // NULL
+                    ev.action      = "unknown";
+                    resident_db.log_event(ev);
+                    printf("[event] UNKNOWN subject_key=%d sim=%.2f\n",
+                           oc.subject_key, oc.similarity);
+                }
+            }
+        }
         double t5 = now_ms();
 
         // ---- Draw overlay ----
@@ -582,8 +768,26 @@ int main(int argc, char** argv) {
                               color, ui.line_thick);
                 char lbl[128];
                 if (known) {
-                    std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f",
-                                  t->id, t->name.c_str(), t->match_sim);
+                    // In resident-db mode, append the home floor (or a marker
+                    // when unregistered) so the operator sees the destination.
+                    if (use_resident_db) {
+                        int hf = -999;
+                        auto nit = resident_id_by_name.find(t->name);
+                        if (nit != resident_id_by_name.end()) {
+                            auto rit = resident_by_id.find(nit->second);
+                            if (rit != resident_by_id.end()) hf = rit->second.home_floor;
+                        }
+                        if (hf > HOME_FLOOR_UNSET) {
+                            std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f F%d",
+                                          t->id, t->name.c_str(), t->match_sim, hf);
+                        } else {
+                            std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f F?",
+                                          t->id, t->name.c_str(), t->match_sim);
+                        }
+                    } else {
+                        std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f",
+                                      t->id, t->name.c_str(), t->match_sim);
+                    }
                 } else if (unknown_tried) {
                     std::snprintf(lbl, sizeof(lbl), "#%d unknown", t->id);
                 } else {
@@ -623,7 +827,20 @@ int main(int argc, char** argv) {
                               color, ui.line_thick);
                 char lbl[128];
                 if (recog_enabled && !L.name.empty()) {
-                    std::snprintf(lbl, sizeof(lbl), "%s %.2f", L.name.c_str(), L.sim);
+                    // resident-db mode: append home floor for the matched person.
+                    if (use_resident_db && L.resident_id >= 0) {
+                        auto rit = resident_by_id.find(L.resident_id);
+                        int hf = (rit != resident_by_id.end()) ? rit->second.home_floor : 0;
+                        if (hf > HOME_FLOOR_UNSET) {
+                            std::snprintf(lbl, sizeof(lbl), "%s %.2f F%d",
+                                          L.name.c_str(), L.sim, hf);
+                        } else {
+                            std::snprintf(lbl, sizeof(lbl), "%s %.2f F?",
+                                          L.name.c_str(), L.sim);
+                        }
+                    } else {
+                        std::snprintf(lbl, sizeof(lbl), "%s %.2f", L.name.c_str(), L.sim);
+                    }
                 } else {
                     std::snprintf(lbl, sizeof(lbl), "%.0f%%", fd.score * 100.0f);
                 }
@@ -738,6 +955,10 @@ int main(int argc, char** argv) {
     if (disp_th.joinable()) disp_th.join();
 
     printf("[shutdown] destroying NPU...\n");
+    if (use_resident_db) {
+        printf("[shutdown] flushing resident-db event writer...\n");
+        resident_db.close();
+    }
     delete recognizer;
     if (yolo_ctx) awnn_destroy(yolo_ctx);
     awnn_destroy(det_ctx);

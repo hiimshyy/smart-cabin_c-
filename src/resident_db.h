@@ -82,6 +82,10 @@ public:
                           const std::vector<float>& vec);
     bool    delete_embeddings(int64_t resident_id);
 
+    // Look up a resident id by exact name. Returns -1 if not found.
+    // Synchronous; used by migrate_fdb to decide skip vs overwrite.
+    int64_t find_resident(const std::string& name) const;
+
     // Flush pending async writes and stop the writer thread.
     void close();
 

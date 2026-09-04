@@ -278,22 +278,25 @@ void ResidentDB::flush_jobs(std::vector<WriteJob>& jobs) {
 // --------------------------------------------------------------------------
 // Phase 2 write API (synchronous — used by offline enroll tools)
 // --------------------------------------------------------------------------
+int64_t ResidentDB::find_resident(const std::string& name) const {
+    if (!db_) return -1;
+    sqlite3_stmt* st = nullptr;
+    const char* q = "SELECT id FROM residents WHERE name=? LIMIT 1;";
+    if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) return -1;
+    sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    int64_t id = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) id = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return id;
+}
+
 int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor) {
     if (!db_) return -1;
 
     // Try to find existing by name.
     {
-        sqlite3_stmt* st = nullptr;
-        const char* q = "SELECT id FROM residents WHERE name=? LIMIT 1;";
-        if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) == SQLITE_OK) {
-            sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
-            if (sqlite3_step(st) == SQLITE_ROW) {
-                int64_t id = sqlite3_column_int64(st, 0);
-                sqlite3_finalize(st);
-                return id;
-            }
-            sqlite3_finalize(st);
-        }
+        int64_t existing = find_resident(name);
+        if (existing >= 0) return existing;
     }
 
     // Insert new.

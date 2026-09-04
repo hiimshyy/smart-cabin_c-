@@ -15,13 +15,14 @@
 - ✅ **Task 1** — `Makefile`: thêm nhóm `DB_SRCS` (`resident_db.cpp` + `match_engine.cpp` + `interaction.cpp`) vào `APP_SRCS_CPP`; `-lsqlite3` vào `LIBS`. Sửa `src/match_engine.h` thiếu `#include <cstddef>` (g++ 12.2 trên Orange Pi chặt hơn). Build sạch cả 5 binary; `ldd` xác nhận `libsqlite3.so.0` link vào `face_recog_app`.
 
 **Đã xong (chưa commit — đang trong working tree):**
-- ✅ **Task 5** — `InteractionManager` (`src/interaction.h/.cpp`) state machine DETECTING→MATCHED→CONFIRMED + cooldown per-resident + unknown timeout. Unit test `tests/test_interaction.cpp` (48 checks pass, 9 scenarios). `interaction.cpp` đã thêm vào `DB_SRCS`; `nm` xác nhận symbols link vào `face_recog_app`. Tổng test hiện tại: **84 checks pass** (14 + 48 + 22).
+- ✅ **Task 5** — `InteractionManager` (`src/interaction.h/.cpp`) state machine DETECTING→MATCHED→CONFIRMED + cooldown per-resident + unknown timeout. Unit test `tests/test_interaction.cpp` (48 checks pass, 9 scenarios). Đã commit `98c2e11`.
+- ✅ **Task 4** — tool `migrate_fdb` (`src/migrate_fdb.cpp`) + target Makefile (link chỉ `-lsqlite3 -lpthread`, không NPU/OpenCV). Thêm `ResidentDB::find_resident()`. Test skip/overwrite/isolation OK.
+- ✅ **Task 6** — khâu nối `main.cpp`: cờ `--resident-db`/`--cabin-id`/`--confirm-streak`/`--cooldown-ms`/`--unknown-after-ms`; MatchEngine + InteractionManager + log_event/touch_resident; overlay floor; `.fdb` giữ làm chế độ test/dev.
+- ✅ **Task 7** — test tích hợp trên Orange Pi + camera USB (chi tiết ở checkbox Task 7).
+- Tổng unit test hiện tại: **84 checks pass** (14 MatchEngine + 48 InteractionManager + 22 ResidentDB).
 
-**Chưa xong — cần làm tiếp trên Orange Pi (theo thứ tự đề xuất):**
-1. **Task 4** — tool `migrate_fdb` + target Makefile.
-2. **Task 6** — khâu nối vào `main.cpp` (cờ CLI + vòng lặp + cleanup).
-3. **Task 7** — test tích hợp trên Orange Pi (cần camera + NPU).
-4. **Task 9, 10, 11** — Giai đoạn 2 (chuyển `enroll_faces`/`add_person`).
+**Giai đoạn 1 HOÀN TẤT.** Chưa xong:
+1. **Task 9, 10, 11** — Giai đoạn 2 (chuyển `enroll_faces`/`add_person` sang ghi SQLite).
 
 **Ghi chú build/test trên Orange Pi:**
 - `libsqlite3-dev` đã cài (v3.40.1). Chạy unit test: `bash tests/run_tests.sh` (dùng system sqlite).
@@ -60,35 +61,36 @@
   - [x] 3.5 Unit test: `tests/test_resident_db.cpp` — 22 checks pass (open tạo schema; round-trip; sentinel 0; delete; log_event kể cả NULL resident_id; touch tăng count sau flush).
     - _Requirements: R1.2, R1.3, R1.4, R1.5_
 
-- [ ] 4. Tool `migrate_fdb` (R3)
-  - [ ] 4.1 `src/migrate_fdb.cpp`: đọc `.fdb` → insert residents (`home_floor = 0` sentinel, req §6) + embeddings(source='id_photo'); trùng name skip mặc định, `--overwrite` thay thế; log tổng số resident chưa có tầng.
+- [x] 4. Tool `migrate_fdb` (R3)  ✅
+  - [x] 4.1 `src/migrate_fdb.cpp`: đọc `.fdb` qua `FaceDB::load` → mỗi identity `upsert_resident(name, home_floor=0)` + `add_embedding(source='id_photo')`; trùng name mặc định skip+log, `--overwrite` xóa embedding cũ rồi thêm; in `imported/skipped/failed` + cảnh báo N resident `home_floor=0`. Thêm helper `ResidentDB::find_resident(name)` (h+cpp), refactor `upsert_resident` dùng nó.
     - _Requirements: R3.1, R3.2, R3.3, §6_
-  - [ ] 4.2 Target `migrate_fdb` vào Makefile (không cần SDK NPU); in tổng kết import/skip.
+  - [x] 4.2 Target `migrate_fdb` vào Makefile: `MIGRATE_SRCS_CPP` = migrate_fdb + face_db + resident_db; link chỉ `-lsqlite3 -lpthread` (KHÔNG NPU/OpenCV/VIPhal, `ldd` xác nhận). Thêm vào `all` + `clean`.
     - _Requirements: R3.4, NFR build_
-  - [ ] 4.3 Test: fdb mẫu → SQLite đúng số residents/embeddings; chạy lại skip/overwrite đúng.
+  - [x] 4.3 Test trên `db/faces_all.fdb` (1 identity): fresh import OK (1 resident home_floor=0, 1 emb id_photo dim=512); rerun skip đúng; `--overwrite` thay thế không tăng count; isolation test (seed resident thứ 2, `--overwrite` chỉ đụng resident khớp tên).
     - _Requirements: R3.1-R3.4_
 
-- [x] 5. `InteractionManager` (state machine) + unit test  ✅ (working tree, chưa commit)
+- [x] 5. `InteractionManager` (state machine) + unit test  ✅ (commit `98c2e11`)
   - [x] 5.1 `src/interaction.h/.cpp`: `SessionState` (DETECTING/MATCHED/CONFIRMED), `Session`, `InteractionConfig` (confirm_streak=5, cooldown_ms=3000, unknown_after_ms=2000), `update()` trả `Outcome{confirmed|unknown}`; streak-based confirm; cooldown per-resident; unknown timeout single-shot. Thêm `SessionView` cho debug overlay + `state_name()`.
     - _Requirements: R4.1, R4.2, R4.3, R4.4_
   - [x] 5.2 Unit test: `tests/test_interaction.cpp` — 48 checks, 9 scenarios (empty, confirm sau đúng streak, im lặng sau confirm, cooldown chặn lần 2, cooldown hết → confirm lại, unknown 1 lần sau timeout, session drop+recreate reset timer, resident switch reset streak, 2 subject song song). `run_tests.sh` đã thêm suite này.
     - _Requirements: R4.2, R4.3, R4.4_
 
-- [ ] 6. Khâu nối vào `main.cpp` (R5)
-  - [ ] 6.1 Thêm cờ CLI `--resident-db`, `--cabin-id`, `--confirm-streak`, `--cooldown-ms`; cập nhật usage.
+- [x] 6. Khâu nối vào `main.cpp` (R5)  ✅
+  - [x] 6.1 Cờ CLI `--resident-db`, `--cabin-id` (def 1), `--confirm-streak` (def 5), `--cooldown-ms` (def 3000), `--unknown-after-ms` (def 2000); usage cập nhật, ghi rõ `.fdb`=TEST/DEV vs `--resident-db`=vận hành.
     - _Requirements: R5.1, R5.3_
-  - [ ] 6.2 Nhánh khởi tạo khi có `--resident-db`: open DB → load_active → build MatchEngine. Giữ `--face-db` như chế độ test/dev đơn giản; usage ghi rõ "không dùng cho cabin thật".
+  - [x] 6.2 Nhánh init khi có `--resident-db`: `ResidentDB.open` → `load_active` → `MatchEngine.build` + map `resident_by_id`/`resident_id_by_name` + config InteractionManager. `use_resident_db` ưu tiên hơn `--face-db`; `.fdb` giữ làm test/dev, in NOTE.
     - _Requirements: R5.1, R5.2, R5.4, R2.1_
-  - [ ] 6.3 Trong vòng lặp: thay match bằng MatchEngine, feed InteractionManager, ghi Outcome qua log_event/touch_resident; overlay hiển thị greeting_name + floor; map subject_key theo track_id nếu có tracker, ngược lại largest face.
+  - [x] 6.3 Vòng lặp: match qua `MatchEngine` (resident mode) / `FaceDB` (legacy); build `subjects` (subject_key = track_id nếu tracker, else 0 cho largest face; cached track resolve id qua name→id map); `interaction.update()` → mỗi Outcome `log_event` (matched/unknown) + `touch_resident` khi confirmed; overlay `greeting_name` + `F<floor>`/`F?`.
     - _Requirements: R4.5, R5.2, R1.4, R1.5_
-  - [ ] 6.4 Cleanup: `resident_db.close()` trước khi thoát.
+  - [x] 6.4 Cleanup: `resident_db.close()` (flush writer) trước khi `delete recognizer`.
     - _Requirements: R1.4_
 
-- [ ] 7. Kiểm thử tích hợp Giai đoạn 1
-  - [ ] 7.1 Trên Orange Pi: chạy `main --resident-db`, đi qua camera, kiểm tra `match_events` ghi đúng action/floor.
+- [x] 7. Kiểm thử tích hợp Giai đoạn 1  ✅ (Orange Pi + USB cam, sqlite3 CLI v3.40.1)
+  - [x] 7.1 Chạy `main --resident-db` (migrate `faces_all.fdb`, seed `home_floor=7` greeting='anh Sy'): đứng yên 200 frame @14.65fps → **đúng 1** event `matched` (cooldown 3s chống flip-flop). Rời+quay lại 4 lần → **4** event `matched` riêng biệt (cooldown expiry). `match_events`: action='matched', cabin_id=1, resident_id=1, floor_selected=0, latency_ms=4, timestamps (`ts`) giãn đúng. `match_count=5` khớp số event (touch_resident OK). Async writer flush đủ khi close. FPS 14-15 không sụt.
     - _Requirements: R1.4, R4.3, R4.4_
-  - [ ] 7.2 Xác nhận chế độ `--face-db` (`.fdb`) vẫn chạy được cho test/dev.
+  - [x] 7.2 Chế độ `--face-db` (`.fdb`): match sim=0.53, in NOTE TEST/DEV, KHÔNG ghi SQLite. Vẫn chạy tốt.
     - _Requirements: R5.4_
+  - _Ghi chú: action='unknown' chưa test live (không có người lạ đứng đủ lâu) nhưng đã cover bởi 48 unit test InteractionManager._
 
 ---
 

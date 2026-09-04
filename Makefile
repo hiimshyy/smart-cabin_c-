@@ -26,6 +26,12 @@ ENROLL_SRCS_CPP  := $(SRC_DIR)/enroll_faces.cpp   $(COMMON_SRCS) $(RECOG_SRCS)
 CAPTURE_SRCS_CPP := $(SRC_DIR)/capture_person.cpp $(COMMON_SRCS)
 ADD_SRCS_CPP     := $(SRC_DIR)/add_person.cpp     $(COMMON_SRCS) $(RECOG_SRCS)
 
+# migrate_fdb: one-way .fdb -> SQLite importer. Needs only face_db (pure I/O)
+# + resident_db (sqlite3). NO NPU/AI SDK, NO OpenCV — builds on a dev machine.
+MIGRATE_SRCS_CPP := $(SRC_DIR)/migrate_fdb.cpp \
+                    $(SRC_DIR)/face_db.cpp \
+                    $(SRC_DIR)/resident_db.cpp
+
 SDK_SRCS_C := $(AI_SDK)/examples/libawnn_viplite/awnn_lib.c \
               $(AI_SDK)/examples/libawnn_viplite/awnn_quantize.c
 
@@ -54,12 +60,13 @@ APP_OBJS     := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(APP_SRCS_CPP))
 ENROLL_OBJS  := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(ENROLL_SRCS_CPP))
 CAPTURE_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CAPTURE_SRCS_CPP))
 ADD_OBJS     := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(ADD_SRCS_CPP))
+MIGRATE_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(MIGRATE_SRCS_CPP))
 SDK_OBJS     := $(patsubst $(AI_SDK)/%.c,$(BUILD_DIR)/sdk_%.o,$(SDK_SRCS_C))
 
 # ---- Rules ----
 .PHONY: all clean run
 
-all: $(TARGET) enroll_faces capture_person add_person probe_models
+all: $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb
 
 $(TARGET): $(APP_OBJS) $(SDK_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
@@ -81,6 +88,11 @@ probe_models: $(BUILD_DIR)/probe_models.o $(SDK_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
 	@echo "==> Built $@"
 
+# No SDK_OBJS, no OpenCV/VIPhal — just sqlite3 + pthread.
+migrate_fdb: $(MIGRATE_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ -lsqlite3 -lpthread
+	@echo "==> Built $@"
+
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
@@ -93,7 +105,7 @@ $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person probe_models
+	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb
 
 run: $(TARGET)
 	./$(TARGET) model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb
