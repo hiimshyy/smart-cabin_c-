@@ -6,36 +6,40 @@
 
 ## 📌 TRẠNG THÁI (cập nhật để tiếp tục trên Orange Pi)
 
-**Đã xong (commit `2b9e6cb` trên `main`):**
+**Đã xong (commit `2b9e6cb`):**
 - ✅ **Task 2** — `MatchEngine` (`src/match_engine.h/.cpp`) + unit test `tests/test_match_engine.cpp` (14 checks pass).
 - ✅ **Task 3** — `ResidentDB` (`src/resident_db.h/.cpp`) + unit test `tests/test_resident_db.cpp` (22 checks pass).
 - ✅ **Task 8** (Phase 2 API, làm sớm) — `upsert_resident` / `add_embedding` / `delete_embeddings` đã có trong `ResidentDB` và đã test round-trip.
 
+**Đã xong (commit `62a915e` trên Orange Pi):**
+- ✅ **Task 1** — `Makefile`: thêm nhóm `DB_SRCS` (`resident_db.cpp` + `match_engine.cpp` + `interaction.cpp`) vào `APP_SRCS_CPP`; `-lsqlite3` vào `LIBS`. Sửa `src/match_engine.h` thiếu `#include <cstddef>` (g++ 12.2 trên Orange Pi chặt hơn). Build sạch cả 5 binary; `ldd` xác nhận `libsqlite3.so.0` link vào `face_recog_app`.
+
+**Đã xong (chưa commit — đang trong working tree):**
+- ✅ **Task 5** — `InteractionManager` (`src/interaction.h/.cpp`) state machine DETECTING→MATCHED→CONFIRMED + cooldown per-resident + unknown timeout. Unit test `tests/test_interaction.cpp` (48 checks pass, 9 scenarios). `interaction.cpp` đã thêm vào `DB_SRCS`; `nm` xác nhận symbols link vào `face_recog_app`. Tổng test hiện tại: **84 checks pass** (14 + 48 + 22).
+
 **Chưa xong — cần làm tiếp trên Orange Pi (theo thứ tự đề xuất):**
-1. **Task 1** — thêm `-lsqlite3` + 3 file nguồn mới vào `Makefile`.
-2. **Task 5** — `InteractionManager` (state machine) + test (làm được trên máy dev).
-3. **Task 4** — tool `migrate_fdb` + target Makefile.
-4. **Task 6** — khâu nối vào `main.cpp` (cờ CLI + vòng lặp + cleanup).
-5. **Task 7** — test tích hợp trên Orange Pi (cần camera + NPU).
-6. **Task 9, 10, 11** — Giai đoạn 2 (chuyển `enroll_faces`/`add_person`).
+1. **Task 4** — tool `migrate_fdb` + target Makefile.
+2. **Task 6** — khâu nối vào `main.cpp` (cờ CLI + vòng lặp + cleanup).
+3. **Task 7** — test tích hợp trên Orange Pi (cần camera + NPU).
+4. **Task 9, 10, 11** — Giai đoạn 2 (chuyển `enroll_faces`/`add_person`).
 
 **Ghi chú build/test trên Orange Pi:**
-- Cài sqlite thật: `sudo apt-get install -y libsqlite3-dev` (Orange Pi có sudo).
-- Chạy unit test đã có: `bash tests/run_tests.sh` (tự dùng system sqlite nếu đã cài).
-- `MatchEngine`/`ResidentDB` KHÔNG cần NPU → test được ở bất kỳ máy nào có g++ + sqlite.
-- Máy dev Windows hiện tại: build/test qua WSL, sqlite lấy no-sudo qua `tests/_setup_sqlite_local.sh` → `/tmp/sqlite_local`.
-- `ResidentDB` dùng `<thread>` → khi thêm vào Makefile nhớ có `-lpthread` (Makefile hiện đã có sẵn `-lpthread`).
+- `libsqlite3-dev` đã cài (v3.40.1). Chạy unit test: `bash tests/run_tests.sh` (dùng system sqlite).
+- `MatchEngine`/`ResidentDB`/`InteractionManager` KHÔNG cần NPU → test được ở bất kỳ máy nào có g++ + sqlite.
+- `run_tests.sh` fallback no-sudo sqlite qua `tests/_setup_sqlite_local.sh` → `/tmp/sqlite_local` (cho máy dev không có sudo).
+- `ResidentDB` dùng `<thread>` → Makefile đã có sẵn `-lpthread`.
 
 **Quyết định thiết kế đã chốt (để không phải hỏi lại):**
 - `home_floor = 0` (hằng `HOME_FLOOR_UNSET`) = "chưa đăng ký tầng"; cabin chào tên nhưng không auto-gọi tầng.
 - SQLite là nguồn dữ liệu DUY NHẤT cho vận hành; `.fdb` chỉ còn là input cho `migrate_fdb` + chế độ test qua `--face-db`.
 - `MatchEngine` KHÔNG gộp trung bình embedding — giữ tất cả, lấy max cosine.
+- `InteractionManager`: `subject_key` = `track_id` khi có tracker, ngược lại = slot ổn định (largest face). Cooldown per-resident (không per-subject) → người rời rồi quay lại trong cooldown không retrigger.
 
 ---
 
-- [ ] 1. Cập nhật build cho SQLite
-  - Thêm `-lsqlite3` vào `LIBS` trong Makefile; ghi chú cài `libsqlite3-dev`.
-  - Xác nhận build hiện tại vẫn pass sau khi thêm lib.
+- [x] 1. Cập nhật build cho SQLite  ✅ (commit `62a915e`)
+  - [x] Thêm `-lsqlite3` vào `LIBS` trong Makefile; nhóm `DB_SRCS` (`resident_db.cpp` + `match_engine.cpp` + `interaction.cpp`) vào `APP_SRCS_CPP`. `libsqlite3-dev` v3.40.1 đã cài trên Orange Pi.
+  - [x] Sửa `src/match_engine.h` thiếu `#include <cstddef>` (g++ 12.2 Orange Pi chặt hơn máy dev). Build sạch cả 5 binary; `ldd face_recog_app` có `libsqlite3.so.0`.
   - _Requirements: R5, NFR build_
 
 - [x] 2. `MatchEngine` (multi-embedding) + unit test  ✅
@@ -64,10 +68,10 @@
   - [ ] 4.3 Test: fdb mẫu → SQLite đúng số residents/embeddings; chạy lại skip/overwrite đúng.
     - _Requirements: R3.1-R3.4_
 
-- [ ] 5. `InteractionManager` (state machine) + unit test
-  - [ ] 5.1 `src/interaction.h/.cpp`: `SessionState`, `Session`, `InteractionConfig`, `update()` trả Outcome; DETECTING→MATCHED→CONFIRMED theo streak; cooldown per resident; unknown timeout.
+- [x] 5. `InteractionManager` (state machine) + unit test  ✅ (working tree, chưa commit)
+  - [x] 5.1 `src/interaction.h/.cpp`: `SessionState` (DETECTING/MATCHED/CONFIRMED), `Session`, `InteractionConfig` (confirm_streak=5, cooldown_ms=3000, unknown_after_ms=2000), `update()` trả `Outcome{confirmed|unknown}`; streak-based confirm; cooldown per-resident; unknown timeout single-shot. Thêm `SessionView` cho debug overlay + `state_name()`.
     - _Requirements: R4.1, R4.2, R4.3, R4.4_
-  - [ ] 5.2 Unit test: chuỗi frame giả → CONFIRMED sau đúng streak; cooldown chặn lần 2; unknown sau timeout.
+  - [x] 5.2 Unit test: `tests/test_interaction.cpp` — 48 checks, 9 scenarios (empty, confirm sau đúng streak, im lặng sau confirm, cooldown chặn lần 2, cooldown hết → confirm lại, unknown 1 lần sau timeout, session drop+recreate reset timer, resident switch reset streak, 2 subject song song). `run_tests.sh` đã thêm suite này.
     - _Requirements: R4.2, R4.3, R4.4_
 
 - [ ] 6. Khâu nối vào `main.cpp` (R5)

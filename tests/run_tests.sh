@@ -14,6 +14,12 @@ g++ -std=c++17 -Isrc \
     tests/test_match_engine.cpp src/match_engine.cpp \
     -o "$OUT/test_match_engine" && "$OUT/test_match_engine" || fail=1
 
+echo ""
+echo "== InteractionManager =="
+g++ -std=c++17 -Isrc \
+    tests/test_interaction.cpp src/interaction.cpp src/match_engine.cpp \
+    -o "$OUT/test_interaction" && "$OUT/test_interaction" || fail=1
+
 # ResidentDB test needs sqlite3.h + libsqlite3.
 # Prefer a system install; else fall back to a no-sudo local extract at
 # /tmp/sqlite_local (see tests/_setup_sqlite_local.sh).

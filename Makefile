@@ -18,7 +18,8 @@ RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
 # multi-embedding matcher. Linked into the realtime app; migrate_fdb
 # reuses these too. Requires libsqlite3-dev (apt: libsqlite3-dev).
 DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
-               $(SRC_DIR)/match_engine.cpp
+               $(SRC_DIR)/match_engine.cpp \
+               $(SRC_DIR)/interaction.cpp
 
 APP_SRCS_CPP     := $(SRC_DIR)/main.cpp           $(COMMON_SRCS) $(RECOG_SRCS) $(DB_SRCS)
 ENROLL_SRCS_CPP  := $(SRC_DIR)/enroll_faces.cpp   $(COMMON_SRCS) $(RECOG_SRCS)
