@@ -5,7 +5,6 @@ build/
 
 # Downloaded packages / local dep extracts (dev machine, no-sudo sqlite)
 *.deb
-migrate_fdb
 
 # Test binaries built by tests/run_tests.sh (output goes to /tmp)
 tests/*.out
@@ -16,10 +15,15 @@ tests/*.out
 /capture_person
 /add_person
 /probe_models
+/migrate_fdb
 
 # Runtime data (mỗi user có dataset riêng)
 faces/
 db/*.fdb
+# SQLite resident DB + WAL/SHM sidecars (runtime data, per-deployment)
+db/*.db
+db/*.db-wal
+db/*.db-shm
 
 # Editor / OS junk
 .vscode/
