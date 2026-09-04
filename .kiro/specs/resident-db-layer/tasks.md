@@ -2,27 +2,58 @@
 
 **Spec ID**: `resident-db-layer`
 
+---
+
+## 📌 TRẠNG THÁI (cập nhật để tiếp tục trên Orange Pi)
+
+**Đã xong (commit `2b9e6cb` trên `main`):**
+- ✅ **Task 2** — `MatchEngine` (`src/match_engine.h/.cpp`) + unit test `tests/test_match_engine.cpp` (14 checks pass).
+- ✅ **Task 3** — `ResidentDB` (`src/resident_db.h/.cpp`) + unit test `tests/test_resident_db.cpp` (22 checks pass).
+- ✅ **Task 8** (Phase 2 API, làm sớm) — `upsert_resident` / `add_embedding` / `delete_embeddings` đã có trong `ResidentDB` và đã test round-trip.
+
+**Chưa xong — cần làm tiếp trên Orange Pi (theo thứ tự đề xuất):**
+1. **Task 1** — thêm `-lsqlite3` + 3 file nguồn mới vào `Makefile`.
+2. **Task 5** — `InteractionManager` (state machine) + test (làm được trên máy dev).
+3. **Task 4** — tool `migrate_fdb` + target Makefile.
+4. **Task 6** — khâu nối vào `main.cpp` (cờ CLI + vòng lặp + cleanup).
+5. **Task 7** — test tích hợp trên Orange Pi (cần camera + NPU).
+6. **Task 9, 10, 11** — Giai đoạn 2 (chuyển `enroll_faces`/`add_person`).
+
+**Ghi chú build/test trên Orange Pi:**
+- Cài sqlite thật: `sudo apt-get install -y libsqlite3-dev` (Orange Pi có sudo).
+- Chạy unit test đã có: `bash tests/run_tests.sh` (tự dùng system sqlite nếu đã cài).
+- `MatchEngine`/`ResidentDB` KHÔNG cần NPU → test được ở bất kỳ máy nào có g++ + sqlite.
+- Máy dev Windows hiện tại: build/test qua WSL, sqlite lấy no-sudo qua `tests/_setup_sqlite_local.sh` → `/tmp/sqlite_local`.
+- `ResidentDB` dùng `<thread>` → khi thêm vào Makefile nhớ có `-lpthread` (Makefile hiện đã có sẵn `-lpthread`).
+
+**Quyết định thiết kế đã chốt (để không phải hỏi lại):**
+- `home_floor = 0` (hằng `HOME_FLOOR_UNSET`) = "chưa đăng ký tầng"; cabin chào tên nhưng không auto-gọi tầng.
+- SQLite là nguồn dữ liệu DUY NHẤT cho vận hành; `.fdb` chỉ còn là input cho `migrate_fdb` + chế độ test qua `--face-db`.
+- `MatchEngine` KHÔNG gộp trung bình embedding — giữ tất cả, lấy max cosine.
+
+---
+
 - [ ] 1. Cập nhật build cho SQLite
   - Thêm `-lsqlite3` vào `LIBS` trong Makefile; ghi chú cài `libsqlite3-dev`.
   - Xác nhận build hiện tại vẫn pass sau khi thêm lib.
   - _Requirements: R5, NFR build_
 
-- [ ] 2. `MatchEngine` (multi-embedding) + unit test
-  - [ ] 2.1 Tạo `src/match_engine.h/.cpp`: `MatchResult`, class `MatchEngine` (flat array, owner map), `build()`/`match()` cosine max/`vector_count()`. Tái dùng cosine của `face_db.cpp`.
+- [x] 2. `MatchEngine` (multi-embedding) + unit test  ✅
+  - [x] 2.1 Tạo `src/match_engine.h/.cpp`: `MatchResult`, class `MatchEngine` (flat array, owner map), `build()`/`build_raw()`/`match()` cosine max/`vector_count()`.
     - _Requirements: R2.1, R2.2, R2.3, R2.5_
-  - [ ] 2.2 Unit test (máy dev): vector giả → match đúng resident max cosine; dưới ngưỡng → unknown.
+  - [x] 2.2 Unit test (máy dev): `tests/test_match_engine.cpp` — 14 checks pass (max cosine, dưới ngưỡng → unknown, empty, dim mismatch).
     - _Requirements: R2.2, R2.3_
 
-- [ ] 3. `ResidentDB` (wrapper SQLite) + unit test
-  - [ ] 3.1 `src/resident_db.h/.cpp`: `open()` (WAL, foreign_keys, apply `db/schema.sql` nếu trống).
+- [x] 3. `ResidentDB` (wrapper SQLite) + unit test  ✅
+  - [x] 3.1 `src/resident_db.h/.cpp`: `open()` (WAL, foreign_keys, busy_timeout, apply `db/schema.sql` nếu trống).
     - _Requirements: R1.1, R1.2, R1.6_
-  - [ ] 3.2 `load_active()` đọc residents active=1 + embeddings; struct `Resident`/`EmbeddingRow`.
+  - [x] 3.2 `load_active()` đọc residents active=1 + embeddings (blob→vector); struct `Resident`/`EmbeddingRow`/`MatchEvent`.
     - _Requirements: R1.3, R2.1_
-  - [ ] 3.3 Async event writer: `log_event()` push queue + thread nền batch; `touch_resident()`.
+  - [x] 3.3 Async event writer: `log_event()`/`touch_resident()` push queue; thread nền batch mỗi 500ms trong 1 transaction (BEGIN IMMEDIATE/COMMIT).
     - _Requirements: R1.4, R1.5, NFR non-blocking_
-  - [ ] 3.4 `close()` flush + join writer thread.
+  - [x] 3.4 `close()` flush + join writer thread (gọi cả trong destructor).
     - _Requirements: R1.4_
-  - [ ] 3.5 Unit test: open tạo schema; insert+load round-trip; log_event ghi được; touch tăng count.
+  - [x] 3.5 Unit test: `tests/test_resident_db.cpp` — 22 checks pass (open tạo schema; round-trip; sentinel 0; delete; log_event kể cả NULL resident_id; touch tăng count sau flush).
     - _Requirements: R1.2, R1.3, R1.4, R1.5_
 
 - [ ] 4. Tool `migrate_fdb` (R3)
@@ -59,9 +90,9 @@
 
 ### Giai đoạn 2 — Chuyển enroll tools sang SQLite (làm sau khi Giai đoạn 1 ổn)
 
-- [ ] 8. Bổ sung API ghi vào `ResidentDB`
-  - `upsert_resident(name, home_floor=0, ...) -> id`, `add_embedding(resident_id, source, vector)`, `delete_embeddings(resident_id)`.
-  - Unit test round-trip cho 3 hàm.
+- [x] 8. Bổ sung API ghi vào `ResidentDB`  ✅ (làm sớm cùng Task 3)
+  - [x] `upsert_resident(name, home_floor=0) -> id` (trùng name trả id cũ), `add_embedding(resident_id, source, vector)`, `delete_embeddings(resident_id)`.
+  - [x] Unit test round-trip cho 3 hàm (trong `tests/test_resident_db.cpp`).
   - _Requirements: R6.1, R6.2_
 
 - [ ] 9. Chuyển `enroll_faces` sang SQLite
