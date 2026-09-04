@@ -3,6 +3,13 @@ build/
 *.o
 *.d
 
+# Downloaded packages / local dep extracts (dev machine, no-sudo sqlite)
+*.deb
+migrate_fdb
+
+# Test binaries built by tests/run_tests.sh (output goes to /tmp)
+tests/*.out
+
 # Compiled binaries (root-level)
 /face_recog_app
 /enroll_faces
