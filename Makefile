@@ -14,7 +14,13 @@ RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
                $(SRC_DIR)/face_recog.cpp \
                $(SRC_DIR)/face_db.cpp
 
-APP_SRCS_CPP     := $(SRC_DIR)/main.cpp           $(COMMON_SRCS) $(RECOG_SRCS)
+# Resident data layer (spec resident-db-layer): SQLite wrapper +
+# multi-embedding matcher. Linked into the realtime app; migrate_fdb
+# reuses these too. Requires libsqlite3-dev (apt: libsqlite3-dev).
+DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
+               $(SRC_DIR)/match_engine.cpp
+
+APP_SRCS_CPP     := $(SRC_DIR)/main.cpp           $(COMMON_SRCS) $(RECOG_SRCS) $(DB_SRCS)
 ENROLL_SRCS_CPP  := $(SRC_DIR)/enroll_faces.cpp   $(COMMON_SRCS) $(RECOG_SRCS)
 CAPTURE_SRCS_CPP := $(SRC_DIR)/capture_person.cpp $(COMMON_SRCS)
 ADD_SRCS_CPP     := $(SRC_DIR)/add_person.cpp     $(COMMON_SRCS) $(RECOG_SRCS)
@@ -34,6 +40,7 @@ INCLUDES := -I$(SRC_DIR) \
 # System-installed VIPLite (v2.0.3.2) at /lib/libVIPhal.so, /lib/libNBGlinker.so
 LIBS := $(shell pkg-config --libs opencv4) \
         -lVIPhal -lNBGlinker \
+        -lsqlite3 \
         -lpthread -lrt -lm -ldl
 
 # ---- Flags ----

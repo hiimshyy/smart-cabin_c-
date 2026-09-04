@@ -10,6 +10,7 @@
 // linear scan, plus a parallel owner[] array mapping each vector to its
 // resident_id. Vectors are assumed L2-normalized, so cosine == dot product.
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
