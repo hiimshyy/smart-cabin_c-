@@ -24,6 +24,7 @@
 
 #include "face_db.h"
 #include "resident_db.h"
+#include "log/logger.h"
 
 static void usage(const char* argv0) {
     std::printf(
@@ -54,6 +55,9 @@ int main(int argc, char** argv) {
             schema_path = argv[++i];
         } else if (!std::strcmp(argv[i], "--overwrite")) {
             overwrite = true;
+        } else if ((!std::strcmp(argv[i], "--log-level") ||
+                    !std::strcmp(argv[i], "--log-dir")) && i + 1 < argc) {
+            ++i;  // consumed by resolve_log_config; skip flag + its value here
         } else if (!std::strcmp(argv[i], "-h") ||
                    !std::strcmp(argv[i], "--help")) {
             usage(argv[0]);
@@ -70,21 +74,22 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // Logger: offline tool -> stderr only by default; --log-dir enables file.
+    Logger::instance().init(resolve_log_config(argc, argv, LogConfig{}));
+
     // ---- 1. Load the source .fdb ------------------------------------
     FaceDB fdb;
     if (!fdb.load(fdb_path)) {
-        std::fprintf(stderr, "[migrate] failed to load .fdb: %s\n",
-                     fdb_path.c_str());
+        LOG_ERROR("migrate", "failed to load .fdb: %s", fdb_path.c_str());
         return 1;
     }
-    std::printf("[migrate] loaded %zu identities (dim=%d) from %s\n",
-                fdb.size(), fdb.dim(), fdb_path.c_str());
+    LOG_INFO("migrate", "loaded %zu identities (dim=%d) from %s",
+             fdb.size(), fdb.dim(), fdb_path.c_str());
 
     // ---- 2. Open the destination SQLite DB --------------------------
     ResidentDB db;
     if (!db.open(db_path, schema_path)) {
-        std::fprintf(stderr, "[migrate] failed to open SQLite DB: %s\n",
-                     db_path.c_str());
+        LOG_ERROR("migrate", "failed to open SQLite DB: %s", db_path.c_str());
         return 1;
     }
 
@@ -92,20 +97,21 @@ int main(int argc, char** argv) {
     int imported = 0;   // identities whose embedding got written
     int skipped  = 0;   // existing residents skipped (no --overwrite)
     int failed   = 0;   // rows that errored out
+    int index    = -1;  // 0-based identity index (used in logs; no PII names)
 
     for (const Identity& id : fdb.all()) {
+        ++index;
         if (id.name.empty() || id.embedding.empty()) {
-            std::fprintf(stderr, "[migrate] skip malformed identity "
-                         "(name='%s', dim=%zu)\n",
-                         id.name.c_str(), id.embedding.size());
+            LOG_WARN("migrate", "skip malformed identity #%d (dim=%zu)",
+                     index, id.embedding.size());
             ++failed;
             continue;
         }
 
         const int64_t existing = db.find_resident(id.name);
         if (existing >= 0 && !overwrite) {
-            std::printf("[migrate] skip existing resident: %s\n",
-                        id.name.c_str());
+            LOG_INFO("migrate", "skip existing resident #%d (id=%lld)",
+                     index, (long long)existing);
             ++skipped;
             continue;
         }
@@ -114,8 +120,7 @@ int main(int argc, char** argv) {
         // new resident with home_floor = HOME_FLOOR_UNSET (0).
         int64_t rid = db.upsert_resident(id.name, HOME_FLOOR_UNSET);
         if (rid < 0) {
-            std::fprintf(stderr, "[migrate] upsert_resident failed: %s\n",
-                         id.name.c_str());
+            LOG_ERROR("migrate", "upsert_resident failed for identity #%d", index);
             ++failed;
             continue;
         }
@@ -124,16 +129,16 @@ int main(int argc, char** argv) {
         // resident ends up with exactly the .fdb vector.
         if (existing >= 0 && overwrite) {
             if (!db.delete_embeddings(rid)) {
-                std::fprintf(stderr, "[migrate] delete_embeddings failed for "
-                             "%s\n", id.name.c_str());
+                LOG_ERROR("migrate", "delete_embeddings failed for id=%lld",
+                          (long long)rid);
                 ++failed;
                 continue;
             }
         }
 
         if (!db.add_embedding(rid, "id_photo", id.embedding)) {
-            std::fprintf(stderr, "[migrate] add_embedding failed for %s\n",
-                         id.name.c_str());
+            LOG_ERROR("migrate", "add_embedding failed for id=%lld",
+                      (long long)rid);
             ++failed;
             continue;
         }
@@ -143,17 +148,17 @@ int main(int argc, char** argv) {
     db.close();
 
     // ---- 4. Summary --------------------------------------------------
-    std::printf("\n[migrate] done: imported=%d  skipped=%d  failed=%d\n",
-                imported, skipped, failed);
+    LOG_INFO("migrate", "done: imported=%d skipped=%d failed=%d",
+             imported, skipped, failed);
     // Every migrated resident has home_floor=0 (no floor from .fdb). Warn so
     // HR can fill floors in later; the cabin greets by name but will not
     // auto-call a floor for these until updated (spec req §6).
     if (imported > 0) {
-        std::printf("[migrate] WARNING: %d resident(s) imported with "
-                    "home_floor=0 (\"no floor registered\"). Update floors in "
-                    "the residents table before enabling auto floor call.\n",
-                    imported);
+        LOG_WARN("migrate", "%d resident(s) imported with home_floor=0 "
+                 "(\"no floor registered\") — set real floors before enabling "
+                 "auto floor call", imported);
     }
 
+    Logger::instance().shutdown();
     return failed > 0 ? 1 : 0;
 }

@@ -29,6 +29,7 @@
 #include "detect_pre.h"
 #include "detection.h"
 #include "scrfd_post.h"
+#include "log/logger.h"
 
 namespace fs = std::filesystem;
 
@@ -89,8 +90,11 @@ int main(int argc, char** argv) {
 
     fs::path save_dir = fs::path(out_root) / name;
     fs::create_directories(save_dir);
-    printf("[capture] name=%s out=%s count=%d min_face=%d\n",
-           name.c_str(), save_dir.string().c_str(), count, min_face_px);
+    // Logger: offline tool -> stderr only unless --log-dir given. No PII (R7):
+    // the resident name lives in the folder path, so logs report counts /
+    // filenames only, never the name itself.
+    Logger::instance().init(resolve_log_config(argc, argv, LogConfig{}));
+    LOG_INFO("capture", "count=%d min_face=%d out_dir_set", count, min_face_px);
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
@@ -99,7 +103,7 @@ int main(int argc, char** argv) {
     cv::VideoCapture cap;
     cap.open(cam_id, cv::CAP_V4L2);
     if (!cap.isOpened()) {
-        fprintf(stderr, "Cannot open /dev/video%d\n", cam_id);
+        LOG_ERROR("cam", "cannot open /dev/video%d", cam_id);
         return 3;
     }
     cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
@@ -112,16 +116,16 @@ int main(int argc, char** argv) {
     awnn_init();
     Awnn_Context_t* det_ctx = awnn_create(det_model.c_str());
     if (!det_ctx) {
-        fprintf(stderr, "awnn_create failed for %s\n", det_model.c_str());
+        LOG_ERROR("npu", "awnn_create failed for %s", det_model.c_str());
         awnn_uninit();
         return 4;
     }
-    printf("[capture] detection model loaded (input=%dx%d, scrfd)\n",
-           NPU_INPUT_W, NPU_INPUT_H);
+    LOG_INFO("capture", "detection model loaded (input=%dx%d, scrfd)",
+             NPU_INPUT_W, NPU_INPUT_H);
 
     ScrfdDecoder scrfd;
     if (!scrfd.init(det_ctx, NPU_INPUT_W)) {
-        fprintf(stderr, "[capture] scrfd init failed\n");
+        LOG_ERROR("capture", "scrfd init failed");
         awnn_destroy(det_ctx);
         awnn_uninit();
         return 4;
@@ -139,7 +143,7 @@ int main(int argc, char** argv) {
 
     while (saved < count && !g_stop.load()) {
         if (!cap.read(frame) || frame.empty()) {
-            fprintf(stderr, "grab failed\n");
+            LOG_WARN("cam", "grab failed");
             break;
         }
         // Pristine copy for saving (overlay drawing is destructive).
@@ -222,18 +226,19 @@ int main(int argc, char** argv) {
             if (cv::imwrite(save_path.string(), clean_frame)) {
                 ++saved;
                 last_save_ms = t;
-                printf("[capture] saved %s (%d/%d)\n",
-                       save_path.string().c_str(), saved, count);
+                // No PII: report the frame filename + counter, not the path
+                // (which contains the resident name).
+                LOG_INFO("capture", "saved %s (%d/%d)", fn, saved, count);
             }
         }
     }
 
-    printf("[capture] done: %d/%d frames saved to %s\n",
-           saved, count, save_dir.string().c_str());
+    LOG_INFO("capture", "done: %d/%d frames saved", saved, count);
 
     awnn_destroy(det_ctx);
     awnn_uninit();
     if (preview) cv::destroyAllWindows();
     cap.release();
+    Logger::instance().shutdown();
     return (saved > 0) ? 0 : 5;
 }

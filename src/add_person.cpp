@@ -37,6 +37,7 @@
 #include "face_align.h"
 #include "face_recog.h"
 #include "resident_db.h"
+#include "log/logger.h"
 
 namespace fs = std::filesystem;
 
@@ -115,6 +116,7 @@ int main(int argc, char** argv) {
         else if (a == "--replace")      do_replace  = true;
         else if (a == "--merge")        do_merge    = true;
         else if (a == "--min-face-px")  min_face_px = std::atoi(next("--min-face-px"));
+        else if (a == "--log-level" || a == "--log-dir") { next(a.c_str()); } // consumed by resolve_log_config
         else if (a == "-h" || a == "--help") { print_usage(argv[0]); return 0; }
         else {
             fprintf(stderr, "unknown arg: %s\n", a.c_str());
@@ -131,39 +133,40 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    printf("[add] name=%s  db=%s  #images=%zu  input=%dx%d\n",
-           name.c_str(), db_path.c_str(), images.size(),
-           NPU_INPUT_W, NPU_INPUT_H);
+    // Logger: offline tool -> stderr only unless --log-dir given. No PII (R7):
+    // never log the resident name; reference by resident_id.
+    Logger::instance().init(resolve_log_config(argc, argv, LogConfig{}));
+    LOG_INFO("add", "db=%s #images=%zu input=%dx%d",
+             db_path.c_str(), images.size(), NPU_INPUT_W, NPU_INPUT_H);
 
     // ---- Open the SQLite resident DB (create+schema if empty) ----------
     ResidentDB db;
     if (!db.open(db_path, schema_path)) {
-        fprintf(stderr, "[add] cannot open resident DB %s\n", db_path.c_str());
+        LOG_ERROR("add", "cannot open resident DB %s", db_path.c_str());
         return 3;
     }
 
     // Does this resident already exist? Decide merge/replace semantics.
     int64_t existing_id = db.find_resident(name);
     if (existing_id >= 0 && !do_replace && !do_merge) {
-        fprintf(stderr,
-            "[add] resident '%s' already exists (id %lld).\n"
-            "      Use --replace to overwrite its embeddings or --merge to add.\n",
-            name.c_str(), (long long)existing_id);
+        LOG_ERROR("add", "resident id=%lld already exists; use --replace to "
+                  "overwrite its embeddings or --merge to add",
+                  (long long)existing_id);
         db.close();
         return 4;
     }
     if (existing_id >= 0 && do_merge)
-        printf("[add] MERGE mode: appending embeddings to resident id %lld\n",
-               (long long)existing_id);
+        LOG_INFO("add", "MERGE mode: appending embeddings to resident id=%lld",
+                 (long long)existing_id);
     if (existing_id >= 0 && do_replace)
-        printf("[add] REPLACE mode: clearing old embeddings of resident id %lld\n",
-               (long long)existing_id);
+        LOG_INFO("add", "REPLACE mode: clearing old embeddings of resident id=%lld",
+                 (long long)existing_id);
 
     awnn_init();
     // Load recog BEFORE detect.
     FaceRecognizer* recognizer = new FaceRecognizer(recog_model, recog_dim, recog_rgb);
     if (!recognizer->model_loaded()) {
-        fprintf(stderr, "[add] failed to load recog model\n");
+        LOG_ERROR("add", "failed to load recog model");
         delete recognizer;
         awnn_uninit();
         db.close();
@@ -172,7 +175,7 @@ int main(int argc, char** argv) {
 
     Awnn_Context_t* det_ctx = awnn_create(det_model.c_str());
     if (!det_ctx) {
-        fprintf(stderr, "[add] failed to load detection model\n");
+        LOG_ERROR("add", "failed to load detection model");
         delete recognizer;
         awnn_uninit();
         db.close();
@@ -181,7 +184,7 @@ int main(int argc, char** argv) {
 
     ScrfdDecoder scrfd;
     if (!scrfd.init(det_ctx, NPU_INPUT_W)) {
-        fprintf(stderr, "[add] scrfd init failed\n");
+        LOG_ERROR("add", "scrfd init failed");
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
@@ -193,20 +196,23 @@ int main(int argc, char** argv) {
 
     std::vector<std::vector<float>> new_embs;
     for (const auto& img_path : images) {
+        // No PII (R7): the image path may embed the resident's name (e.g.
+        // faces/<name>/frame_01.jpg), so log only the basename.
+        std::string img_name = fs::path(img_path).filename().string();
         cv::Mat img = cv::imread(img_path, cv::IMREAD_COLOR);
         if (img.empty()) {
-            fprintf(stderr, "  [%s] cannot read image (skip)\n", img_path.c_str());
+            LOG_WARN("add", "cannot read image %s (skip)", img_name.c_str());
             continue;
         }
         Detection best;
         if (!detect_largest_face(det_ctx, scrfd, img, input_buf, best)) {
-            fprintf(stderr, "  [%s] no face detected (skip)\n", img_path.c_str());
+            LOG_WARN("add", "no face detected in %s (skip)", img_name.c_str());
             continue;
         }
         float fw = best.x2 - best.x1, fh = best.y2 - best.y1;
         if (fw < min_face_px || fh < min_face_px) {
-            fprintf(stderr, "  [%s] face too small %.0fx%.0f (skip)\n",
-                    img_path.c_str(), fw, fh);
+            LOG_WARN("add", "face too small %.0fx%.0f in %s (skip)",
+                     fw, fh, img_name.c_str());
             continue;
         }
 
@@ -215,15 +221,15 @@ int main(int argc, char** argv) {
 
         std::vector<float> e;
         if (!recognizer->extract(aligned, e)) {
-            fprintf(stderr, "  [%s] embedding extract failed\n", img_path.c_str());
+            LOG_WARN("add", "embedding extract failed for %s", img_name.c_str());
             continue;
         }
         new_embs.push_back(std::move(e));
-        printf("  + %s → embedding OK\n", img_path.c_str());
+        LOG_INFO("add", "%s -> embedding OK", img_name.c_str());
     }
 
     if (new_embs.empty()) {
-        fprintf(stderr, "[add] no usable embedding extracted. Aborting.\n");
+        LOG_ERROR("add", "no usable embedding extracted; aborting");
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
@@ -235,7 +241,7 @@ int main(int argc, char** argv) {
     // Ensure the resident exists (creates with home_floor=0 if new).
     int64_t resident_id = db.upsert_resident(name, HOME_FLOOR_UNSET);
     if (resident_id < 0) {
-        fprintf(stderr, "[add] upsert_resident failed for '%s'\n", name.c_str());
+        LOG_ERROR("add", "upsert_resident failed");
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
@@ -246,8 +252,8 @@ int main(int argc, char** argv) {
     // --replace: drop the resident's old embeddings before adding new ones.
     if (do_replace) {
         if (!db.delete_embeddings(resident_id)) {
-            fprintf(stderr, "[add] delete_embeddings failed for id %lld\n",
-                    (long long)resident_id);
+            LOG_ERROR("add", "delete_embeddings failed for id=%lld",
+                      (long long)resident_id);
             delete recognizer;
             awnn_destroy(det_ctx);
             awnn_uninit();
@@ -260,11 +266,10 @@ int main(int argc, char** argv) {
     int written = 0;
     for (const auto& e : new_embs) {
         if (db.add_embedding(resident_id, "id_photo", e)) ++written;
-        else fprintf(stderr, "[add] add_embedding failed (1 of %zu)\n",
-                     new_embs.size());
+        else LOG_WARN("add", "add_embedding failed (1 of %zu)", new_embs.size());
     }
     if (written == 0) {
-        fprintf(stderr, "[add] failed to write any embedding. Aborting.\n");
+        LOG_ERROR("add", "failed to write any embedding; aborting");
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
@@ -272,14 +277,15 @@ int main(int argc, char** argv) {
         return 7;
     }
 
-    printf("[add] resident '%s' (id=%lld): wrote %d embedding(s)%s\n",
-           name.c_str(), (long long)resident_id, written,
-           do_replace ? " (replaced old)" : (do_merge ? " (merged)" : ""));
-    printf("[add] done -> %s\n", db_path.c_str());
+    LOG_INFO("add", "resident id=%lld: wrote %d embedding(s)%s -> %s",
+             (long long)resident_id, written,
+             do_replace ? " (replaced old)" : (do_merge ? " (merged)" : ""),
+             db_path.c_str());
 
     delete recognizer;
     awnn_destroy(det_ctx);
     awnn_uninit();
     db.close();
+    Logger::instance().shutdown();
     return 0;
 }

@@ -33,6 +33,7 @@
 #include "face_align.h"
 #include "face_recog.h"
 #include "resident_db.h"
+#include "log/logger.h"
 
 namespace fs = std::filesystem;
 
@@ -116,16 +117,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    printf("[enroll] dir=%s  db=%s\n", dir_path.c_str(), db_path.c_str());
-    printf("[enroll] det=%s (input=%dx%d, scrfd)\n",
-           det_model.c_str(), NPU_INPUT_W, NPU_INPUT_H);
-    printf("[enroll] recog=%s (dim=%d rgb=%d)\n",
-           recog_model.c_str(), recog_dim, recog_rgb ? 1 : 0);
+    // Logger: offline tool -> stderr only unless --log-dir given.
+    Logger::instance().init(resolve_log_config(argc, argv, LogConfig{}));
+    LOG_INFO("enroll", "dir=%s db=%s", dir_path.c_str(), db_path.c_str());
+    LOG_INFO("enroll", "det=%s (input=%dx%d, scrfd)",
+             det_model.c_str(), NPU_INPUT_W, NPU_INPUT_H);
+    LOG_INFO("enroll", "recog=%s (dim=%d rgb=%d)",
+             recog_model.c_str(), recog_dim, recog_rgb ? 1 : 0);
 
     // ---- Open the SQLite resident DB (create+schema if empty) ----------
     ResidentDB db;
     if (!db.open(db_path, schema_path)) {
-        fprintf(stderr, "[enroll] failed to open resident DB %s\n", db_path.c_str());
+        LOG_ERROR("enroll", "failed to open resident DB %s", db_path.c_str());
         return 2;
     }
 
@@ -133,7 +136,7 @@ int main(int argc, char** argv) {
     // Load recog BEFORE detect (see main.cpp comment).
     FaceRecognizer* recognizer = new FaceRecognizer(recog_model, recog_dim, recog_rgb);
     if (!recognizer->model_loaded()) {
-        fprintf(stderr, "[enroll] failed to load recog model\n");
+        LOG_ERROR("enroll", "failed to load recog model");
         delete recognizer;
         awnn_uninit();
         return 2;
@@ -141,7 +144,7 @@ int main(int argc, char** argv) {
 
     Awnn_Context_t* det_ctx = awnn_create(det_model.c_str());
     if (!det_ctx) {
-        fprintf(stderr, "[enroll] failed to load detection model\n");
+        LOG_ERROR("enroll", "failed to load detection model");
         delete recognizer;
         awnn_uninit();
         return 2;
@@ -149,7 +152,7 @@ int main(int argc, char** argv) {
 
     ScrfdDecoder scrfd;
     if (!scrfd.init(det_ctx, NPU_INPUT_W)) {
-        fprintf(stderr, "[enroll] scrfd init failed\n");
+        LOG_ERROR("enroll", "scrfd init failed");
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
@@ -166,9 +169,10 @@ int main(int argc, char** argv) {
 
         // Create (or reuse) the resident row up front so we can attach each
         // image's embedding to it. home_floor=0 = "no floor registered yet".
+        // No PII in logs (R7): reference the resident by id, not folder name.
         int64_t resident_id = db.upsert_resident(person, HOME_FLOOR_UNSET);
         if (resident_id < 0) {
-            fprintf(stderr, "  [%s] upsert_resident failed (skip)\n", person.c_str());
+            LOG_WARN("enroll", "upsert_resident failed (skip a person)");
             continue;
         }
 
@@ -181,24 +185,24 @@ int main(int argc, char** argv) {
                 continue;
             ++total_imgs;
 
+            std::string fn = img_entry.path().filename().string();
             cv::Mat img = cv::imread(img_entry.path().string(), cv::IMREAD_COLOR);
             if (img.empty()) {
-                fprintf(stderr, "  [%s] cannot read %s\n", person.c_str(),
-                        img_entry.path().c_str());
+                LOG_WARN("enroll", "id=%lld cannot read %s",
+                         (long long)resident_id, fn.c_str());
                 continue;
             }
 
             Detection best;
             if (!detect_largest_face(det_ctx, scrfd, img, input_buf, best)) {
-                fprintf(stderr, "  [%s] no face in %s\n", person.c_str(),
-                        img_entry.path().filename().string().c_str());
+                LOG_WARN("enroll", "id=%lld no face in %s",
+                         (long long)resident_id, fn.c_str());
                 continue;
             }
             float fw = best.x2 - best.x1, fh = best.y2 - best.y1;
             if (fw < min_face_px || fh < min_face_px) {
-                fprintf(stderr, "  [%s] face too small (%.0fx%.0f) in %s\n",
-                        person.c_str(), fw, fh,
-                        img_entry.path().filename().string().c_str());
+                LOG_WARN("enroll", "id=%lld face too small (%.0fx%.0f) in %s",
+                         (long long)resident_id, fw, fh, fn.c_str());
                 continue;
             }
 
@@ -210,9 +214,8 @@ int main(int argc, char** argv) {
 
             // One embedding row per image — NO averaging (spec R6.1).
             if (!db.add_embedding(resident_id, "id_photo", e)) {
-                fprintf(stderr, "  [%s] add_embedding failed for %s\n",
-                        person.c_str(),
-                        img_entry.path().filename().string().c_str());
+                LOG_WARN("enroll", "id=%lld add_embedding failed for %s",
+                         (long long)resident_id, fn.c_str());
                 continue;
             }
             ++person_embs;
@@ -221,32 +224,33 @@ int main(int argc, char** argv) {
 
         if (person_embs > 0) {
             ++total_persons;
-            printf("  + %s (id=%lld, %d embeddings, home_floor=0)\n",
-                   person.c_str(), (long long)resident_id, person_embs);
+            LOG_INFO("enroll", "resident id=%lld: %d embeddings, home_floor=0",
+                     (long long)resident_id, person_embs);
         } else {
-            printf("  - %s: NO usable embedding (resident row kept, empty)\n",
-                   person.c_str());
+            LOG_WARN("enroll", "resident id=%lld: NO usable embedding "
+                     "(row kept, empty)", (long long)resident_id);
         }
     }
 
-    printf("[enroll] persons=%d, imgs_scanned=%d, imgs_used=%d\n",
-           total_persons, total_imgs, total_used);
+    LOG_INFO("enroll", "persons=%d imgs_scanned=%d imgs_used=%d",
+             total_persons, total_imgs, total_used);
     if (total_used == 0) {
-        fprintf(stderr, "[enroll] no embeddings written\n");
+        LOG_ERROR("enroll", "no embeddings written");
         db.close();
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
         return 3;
     }
-    printf("[enroll] wrote %d embeddings across %d residents -> %s\n",
-           total_used, total_persons, db_path.c_str());
-    printf("[enroll] NOTE: all new residents have home_floor=0 "
-           "(\"no floor registered\"). Set real floors before cabin operation.\n");
+    LOG_INFO("enroll", "wrote %d embeddings across %d residents -> %s",
+             total_used, total_persons, db_path.c_str());
+    LOG_WARN("enroll", "all new residents have home_floor=0 "
+             "(\"no floor registered\") — set real floors before cabin operation");
 
     db.close();
     delete recognizer;
     awnn_destroy(det_ctx);
     awnn_uninit();
+    Logger::instance().shutdown();
     return 0;
 }
