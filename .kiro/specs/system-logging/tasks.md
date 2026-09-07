@@ -9,13 +9,15 @@
 **Đã xong (test pass trên máy dev / WSL):**
 - ✅ **Task 1** — Logger core `src/log/logger.h` + `src/log/logger.cpp`.
 - ✅ **Task 2** — `resolve_log_config()` + `level_from_string()`/`level_name()` (làm luôn trong `logger.cpp`).
-- ✅ **Task 3** — Unit test `tests/test_logger.cpp` (**14 checks pass**: level filter, format regex, rotation theo ngày + retention, fallback dir, thread-safe) + đã thêm vào `tests/run_tests.sh`.
+- ✅ **Task 3** — Unit test `tests/test_logger.cpp` (**14 checks pass**) + đã thêm vào `tests/run_tests.sh`.
 
-**Chưa xong — cần làm trên Orange Pi (build đầy đủ + NPU/camera):**
-1. **Task 4** — thêm `src/log/logger.cpp` vào `COMMON_SRCS` trong `Makefile` (mọi binary tự có logger). Thêm `-lstdc++fs` cho `main` nếu link `<filesystem>` báo thiếu.
-2. **Task 5** — di trú `main.cpp` sang logger (init đầu main + thay `printf`/`fprintf` → `LOG_*`, per-frame → `LOG_DEBUG`).
-3. **Task 6** — di trú các tool (`enroll_faces`/`add_person`/`capture_person`/`migrate_fdb`) sang logger.
-4. **Task 7** — kiểm thử tích hợp: có file log đúng định dạng, `--log-level` lọc đúng, rà PII.
+**Đã xong trên Orange Pi (build đầy đủ + camera/NPU):**
+- ✅ **Task 4** (commit `d46384c`) — `logger.cpp` vào `COMMON_SRCS` + `MIGRATE_SRCS_CPP`; cả 6 binary build; g++ 12.2 không cần `-lstdc++fs`.
+- ✅ **Task 5** (commit `5672530`) — di trú `main.cpp`: init logger đầu main (to_file, `/var/log/face-cabin`→fallback `./logs`), tags cam/recog/db/detect/yolo/track/ui/event/main, per-frame → DEBUG, event → INFO không PII, giữ print_usage + bench summary.
+- ✅ **Task 6** (commit `633064e`) — di trú 4 tool (enroll/add/capture/migrate): stderr-only mặc định, bật file qua `--log-dir`; parser strict (add/migrate) nuốt `--log-level`/`--log-dir`; PII sạch (resident_id + basename ảnh).
+- ✅ **Task 7** — kiểm thử tích hợp trên Orange Pi: file `face-cabin-<ngày>.log` đúng tên, 0 dòng sai format regex, `--log-level debug` hiện per-frame, `warn` im, PII audit sạch.
+
+**TOÀN BỘ SPEC HOÀN TẤT (Task 1-7).**
 
 **Cách chạy unit test:**
 - Orange Pi (checkout LF): `bash tests/run_tests.sh`.
@@ -58,27 +60,27 @@
     - _Requirements: R6.1_
   - [X] 3.5 Thêm vào `tests/run_tests.sh`.
     - _Requirements: NFR build_
-- [ ] 4. Build (Makefile)
+- [X] 4. Build (Makefile)  ✅ (commit `d46384c`)
 
-  - [ ] 4.1 Thêm `src/log/logger.cpp` vào `COMMON_SRCS` (mọi binary tự có logger).
+  - [X] 4.1 Thêm `src/log/logger.cpp` vào `COMMON_SRCS` + `MIGRATE_SRCS_CPP` (mọi binary tự có logger).
     - _Requirements: NFR header-only/build_
-  - [ ] 4.2 Xác nhận build cả 4 (5) binary pass; thêm `-lstdc++fs` cho `main` nếu link `<filesystem>` báo thiếu.
+  - [X] 4.2 Build cả 6 binary pass; g++ 12.2 Orange Pi không cần `-lstdc++fs`.
     - _Requirements: NFR build_
-- [ ] 5. Di trú `main.cpp` sang logger
+- [X] 5. Di trú `main.cpp` sang logger  ✅ (commit `5672530`)
 
-  - [ ] 5.1 Init logger đầu `main` với defaults app chính (to_file, `/var/log/face-cabin`); parse `--log-level`/`--log-dir`; cập nhật usage.
+  - [X] 5.1 Init logger đầu `main` với defaults app chính (to_file, `/var/log/face-cabin`); `resolve_log_config` đọc `--log-level`/`--log-dir` + env; usage cập nhật.
     - _Requirements: R8.1, R5.3, R5.4_
-  - [ ] 5.2 Thay `printf`/`fprintf` log → `LOG_*` với tag (`cam`,`npu`,`detect`,`recog`,`track`,`db`,`ui`). Per-frame bench/recog log → `LOG_DEBUG`. Giữ `print_usage` dạng `fprintf`. HUD overlay giữ nguyên.
+  - [X] 5.2 Thay `printf`/`fprintf` log → `LOG_*` (tag cam/npu/detect/recog/track/db/ui/event/main). Per-frame bench/recog → `LOG_DEBUG`. Giữ `print_usage` + bench summary. HUD overlay giữ nguyên. Không PII (resident_id/track_id).
     - _Requirements: R8.1, R8.3, R7, NFR không sụt FPS_
-- [ ] 6. Di trú các tool sang logger
+- [X] 6. Di trú các tool sang logger  ✅ (commit `633064e`)
 
-  - [ ] 6.1 `enroll_faces.cpp`, `add_person.cpp`, `capture_person.cpp` (+ `migrate_fdb.cpp` khi có): init logger defaults tool (stderr-only, bật file nếu `--log-dir`); thay log `printf`/`fprintf` → `LOG_*`; giữ `print_usage`.
+  - [X] 6.1 `enroll_faces`, `add_person`, `capture_person`, `migrate_fdb`: init logger defaults tool (stderr-only, bật file nếu `--log-dir`); thay log → `LOG_*`; giữ `print_usage` + lỗi CLI trước khi init logger. Parser strict (add/migrate) nuốt `--log-level`/`--log-dir`. Không PII: resident_id + basename ảnh, không log full path chứa tên folder.
     - _Requirements: R8.2, R8.3, R7_
-- [ ] 7. Kiểm thử tích hợp
+- [X] 7. Kiểm thử tích hợp  ✅ (Orange Pi + USB cam)
 
-  - [ ] 7.1 Chạy `face_recog_app` vài giây → có file `face-cabin-<hôm nay>.log` ở `/var/log/face-cabin` (hoặc `./logs` khi thiếu quyền); nội dung đúng định dạng.
+  - [X] 7.1 Chạy `face_recog_app` → file `face-cabin-2026-09-07.log` ở `./logs` (fallback vì `/var/log` không ghi được ở user thường); tên khớp `face-cabin-YYYY-MM-DD.log`; 0 dòng sai format regex.
     - _Requirements: R2, R3, R4, R5_
-  - [ ] 7.2 `--log-level debug` thấy log per-frame; `--log-level warn` im per-frame.
+  - [X] 7.2 `--log-level debug` → 6 dòng per-frame; `--log-level warn` → 0 dòng INFO/DEBUG.
     - _Requirements: R1_
-  - [ ] 7.3 Rà PII: đọc file log xác nhận không có tên/greeting_name/apartment.
+  - [X] 7.3 Rà PII: grep tên/greeting trên toàn bộ log → không có.
     - _Requirements: R7_
