@@ -6,10 +6,14 @@ SRC_DIR    := src
 AI_SDK     := /home/orangepi/ai-sdk
 
 # ---- Sources (all under src/) ----
+# Shared across every binary: preprocessing, detectors, tracker, and the
+# application logger (spec system-logging). logger.cpp is header-light
+# (pimpl) so every target links it via COMMON_SRCS.
 COMMON_SRCS := $(SRC_DIR)/detect_pre.cpp \
                $(SRC_DIR)/scrfd_post.cpp \
                $(SRC_DIR)/yolo_post.cpp \
-               $(SRC_DIR)/tracker.cpp
+               $(SRC_DIR)/tracker.cpp \
+               $(SRC_DIR)/log/logger.cpp
 RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
                $(SRC_DIR)/face_recog.cpp \
                $(SRC_DIR)/face_db.cpp
@@ -34,7 +38,8 @@ ADD_SRCS_CPP     := $(SRC_DIR)/add_person.cpp     $(COMMON_SRCS) \
 # + resident_db (sqlite3). NO NPU/AI SDK, NO OpenCV — builds on a dev machine.
 MIGRATE_SRCS_CPP := $(SRC_DIR)/migrate_fdb.cpp \
                     $(SRC_DIR)/face_db.cpp \
-                    $(SRC_DIR)/resident_db.cpp
+                    $(SRC_DIR)/resident_db.cpp \
+                    $(SRC_DIR)/log/logger.cpp
 
 SDK_SRCS_C := $(AI_SDK)/examples/libawnn_viplite/awnn_lib.c \
               $(AI_SDK)/examples/libawnn_viplite/awnn_quantize.c
