@@ -44,6 +44,7 @@
 #include "resident_db.h"
 #include "match_engine.h"
 #include "interaction.h"
+#include "log/logger.h"
 
 static constexpr int NPU_INPUT_W = 640;
 static constexpr int NPU_INPUT_H = 640;
@@ -164,7 +165,9 @@ static void print_usage(const char* prog) {
         "    --source URL          RTSP/HTTP/file source (GStreamer)\n"
         "    --gst-pipeline STR    Custom GStreamer pipeline\n"
         "    --gst-latency MS      RTSP jitter buffer latency (default 100ms)\n"
-        "    --windowed / --fullscreen\n",
+        "    --windowed / --fullscreen\n"
+        "    --log-level L         trace|debug|info|warn|error (default info)\n"
+        "    --log-dir DIR         log file directory (default /var/log/face-cabin)\n",
         prog);
 }
 
@@ -290,6 +293,16 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- Init application logger (system-logging spec) --------------------
+    // Main app defaults: write a daily-rotated file under /var/log/face-cabin
+    // (falls back to ./logs if that isn't writable). --log-level / --log-dir
+    // and FACE_CABIN_LOG_* env override; CLI > env > default.
+    {
+        LogConfig def;
+        def.to_file = true;
+        def.dir     = "/var/log/face-cabin";
+        Logger::instance().init(resolve_log_config(argc, argv, def));
+    }
     std::signal(SIGINT,  on_signal);
     std::signal(SIGTERM, on_signal);
 
@@ -304,16 +317,16 @@ int main(int argc, char** argv) {
         std::string pipeline = custom_pipeline
             ? std::string(custom_pipeline)
             : build_gst_pipeline(source_url, gst_latency_ms);
-        printf("[cam] GStreamer pipeline:\n  %s\n", pipeline.c_str());
+        LOG_INFO("cam", "GStreamer pipeline: %s", pipeline.c_str());
         cap.open(pipeline, cv::CAP_GSTREAMER);
         if (!cap.isOpened()) {
-            fprintf(stderr, "Cannot open GStreamer stream.\n");
+            LOG_ERROR("cam", "cannot open GStreamer stream");
             return 1;
         }
     } else {
         cap.open(cam_id, cv::CAP_V4L2);
         if (!cap.isOpened()) {
-            fprintf(stderr, "Cannot open /dev/video%d\n", cam_id);
+            LOG_ERROR("cam", "cannot open /dev/video%d", cam_id);
             return 1;
         }
         cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
@@ -322,15 +335,15 @@ int main(int argc, char** argv) {
         cap.set(cv::CAP_PROP_FPS, 30);
         cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
     }
-    printf("[cam] %dx%d @ %.1f FPS (%s)\n",
-           (int)cap.get(cv::CAP_PROP_FRAME_WIDTH),
-           (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT),
-           cap.get(cv::CAP_PROP_FPS),
-           is_stream ? "GStreamer" : "V4L2 MJPG");
+    LOG_INFO("cam", "%dx%d @ %.1f FPS (%s)",
+             (int)cap.get(cv::CAP_PROP_FRAME_WIDTH),
+             (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT),
+             cap.get(cv::CAP_PROP_FPS),
+             is_stream ? "GStreamer" : "V4L2 MJPG");
 
     FrameSlot   slot;
     std::thread cap_th(capture_worker, &cap, &slot);
-    printf("[cam] capture thread started\n");
+    LOG_INFO("cam", "capture thread started");
 
     // ---- 2) Init NPU. Load recog -> scrfd -> yolo (person detect last)
     //         This order minimizes NBG resource conflict on some models.
@@ -363,19 +376,19 @@ int main(int argc, char** argv) {
     if (recog_model_path) {
         recognizer = new FaceRecognizer(recog_model_path, recog_dim, recog_rgb);
         if (!recognizer->model_loaded()) {
-            fprintf(stderr, "[recog] failed to load %s\n", recog_model_path);
+            LOG_ERROR("recog", "failed to load model %s", recog_model_path);
             delete recognizer;
             awnn_uninit();
             shutdown_capture();
             return 2;
         }
-        printf("[recog] loaded %s (dim=%d, rgb=%d)\n",
-               recog_model_path, recog_dim, recog_rgb ? 1 : 0);
+        LOG_INFO("recog", "loaded %s (dim=%d, rgb=%d)",
+                 recog_model_path, recog_dim, recog_rgb ? 1 : 0);
 
         // Prefer the operational SQLite path when --resident-db is given.
         if (resident_db_path) {
             if (!resident_db.open(resident_db_path)) {
-                fprintf(stderr, "[resident-db] failed to open %s\n", resident_db_path);
+                LOG_ERROR("db", "failed to open resident DB %s", resident_db_path);
                 delete recognizer;
                 awnn_uninit();
                 shutdown_capture();
@@ -384,7 +397,7 @@ int main(int argc, char** argv) {
             std::vector<Resident>     residents;
             std::vector<EmbeddingRow> embeddings;
             if (!resident_db.load_active(residents, embeddings)) {
-                fprintf(stderr, "[resident-db] load_active failed on %s\n", resident_db_path);
+                LOG_ERROR("db", "load_active failed on %s", resident_db_path);
                 resident_db.close();
                 delete recognizer;
                 awnn_uninit();
@@ -405,39 +418,39 @@ int main(int argc, char** argv) {
             interaction.set_config(icfg);
 
             use_resident_db = true;
-            printf("[resident-db] loaded %zu residents, %zu embeddings (dim=%d) from %s\n",
-                   residents.size(), embeddings.size(), recog_dim, resident_db_path);
-            printf("[resident-db] cabin_id=%d confirm_streak=%d cooldown_ms=%.0f "
-                   "unknown_after_ms=%.0f\n",
-                   cabin_id, confirm_streak, cooldown_ms, unknown_after_ms);
+            LOG_INFO("db", "loaded %zu residents, %zu embeddings (dim=%d)",
+                     residents.size(), embeddings.size(), recog_dim);
+            LOG_INFO("db", "cabin_id=%d confirm_streak=%d cooldown_ms=%.0f "
+                     "unknown_after_ms=%.0f",
+                     cabin_id, confirm_streak, cooldown_ms, unknown_after_ms);
             if (match_engine.vector_count() == 0) {
-                printf("[resident-db] WARN: no embeddings loaded — everyone will be unknown\n");
+                LOG_WARN("db", "no embeddings loaded — everyone will be unknown");
             }
         } else if (face_db_path && face_db.load(face_db_path)) {
-            printf("[recog] loaded DB %s: %zu identities, dim=%d\n",
-                   face_db_path, face_db.size(), face_db.dim());
-            printf("[recog] NOTE: .fdb is TEST/DEV mode (no floor/language/audit). "
-                   "Use --resident-db for real cabin operation.\n");
+            LOG_INFO("recog", "loaded .fdb %s: %zu identities, dim=%d",
+                     face_db_path, face_db.size(), face_db.dim());
+            LOG_WARN("recog", ".fdb is TEST/DEV mode (no floor/language/audit); "
+                     "use --resident-db for real cabin operation");
         } else if (face_db_path) {
-            printf("[recog] WARN: cannot load DB %s — matching disabled\n", face_db_path);
+            LOG_WARN("recog", "cannot load .fdb %s — matching disabled", face_db_path);
         } else {
-            printf("[recog] no --face-db / --resident-db given — matching disabled\n");
+            LOG_INFO("recog", "no --face-db / --resident-db given — matching disabled");
         }
         recog_enabled = true;
     }
 
     Awnn_Context_t* det_ctx = awnn_create(det_model_path);
     if (!det_ctx) {
-        fprintf(stderr, "awnn_create failed for face detection model %s\n", det_model_path);
+        LOG_ERROR("npu", "awnn_create failed for face detection model %s", det_model_path);
         delete recognizer;
         awnn_uninit();
         shutdown_capture();
         return 2;
     }
-    printf("[detect] loaded %s (input=%dx%d)\n", det_model_path, NPU_INPUT_W, NPU_INPUT_H);
+    LOG_INFO("detect", "loaded %s (input=%dx%d)", det_model_path, NPU_INPUT_W, NPU_INPUT_H);
     ScrfdDecoder scrfd;
     if (!scrfd.init(det_ctx, NPU_INPUT_W)) {
-        fprintf(stderr, "[scrfd] init failed\n");
+        LOG_ERROR("detect", "scrfd init failed");
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
@@ -451,16 +464,16 @@ int main(int argc, char** argv) {
     if (use_tracker) {
         yolo_ctx = awnn_create(person_model_path);
         if (!yolo_ctx) {
-            fprintf(stderr, "[yolo] awnn_create failed for %s\n", person_model_path);
+            LOG_ERROR("npu", "awnn_create failed for person model %s", person_model_path);
             delete recognizer;
             awnn_destroy(det_ctx);
             awnn_uninit();
             shutdown_capture();
             return 4;
         }
-        printf("[yolo] loaded %s\n", person_model_path);
+        LOG_INFO("yolo", "loaded %s", person_model_path);
         if (!yolo.init(yolo_ctx, NPU_INPUT_W)) {
-            fprintf(stderr, "[yolo] init failed\n");
+            LOG_ERROR("yolo", "init failed");
             delete recognizer;
             awnn_destroy(yolo_ctx);
             awnn_destroy(det_ctx);
@@ -471,10 +484,10 @@ int main(int argc, char** argv) {
         tracker.iou_thresh         = track_iou;
         tracker.max_missed         = track_max_miss;
         tracker.recog_retry_frames = recog_retry;
-        printf("[track] enabled: iou=%.2f max_miss=%d recog_retry=%d person_every=%d\n",
-               track_iou, track_max_miss, recog_retry, person_every);
+        LOG_INFO("track", "enabled: iou=%.2f max_miss=%d recog_retry=%d person_every=%d",
+                 track_iou, track_max_miss, recog_retry, person_every);
     } else {
-        printf("[track] disabled (no --person-model). Running SCRFD-only pipeline.\n");
+        LOG_INFO("track", "disabled (no --person-model). SCRFD-only pipeline.");
     }
 
     // ---- 3) Buffers + display --------------------------------------------
@@ -482,7 +495,7 @@ int main(int argc, char** argv) {
 
     DisplaySlot   disp_slot;
     std::thread   disp_th(display_worker, "Face Recog A733", &disp_slot, &g_stop, &slot, fullscreen);
-    printf("[cam] display thread started\n");
+    LOG_INFO("cam", "display thread started");
 
     std::vector<Detection> faces;
     std::vector<PersonDet> persons;
@@ -526,12 +539,12 @@ int main(int argc, char** argv) {
         // Initialize UI scale once we know the frame size.
         if (!ui_ready) {
             ui = UiScale::compute(frame.rows, ui_scale_override);
-            printf("[ui] frame=%dx%d ui_scale=%.2f%s (font=%.2f/%.2f, "
-                   "line=%d/%d, hud_h=%d)\n",
-                   frame.cols, frame.rows, ui.scale,
-                   ui_scale_override > 0 ? " (manual)" : " (auto)",
-                   ui.font_label, ui.font_hud,
-                   ui.line_thick, ui.line_thin, ui.hud_h);
+            LOG_INFO("ui", "frame=%dx%d ui_scale=%.2f%s (font=%.2f/%.2f, "
+                     "line=%d/%d, hud_h=%d)",
+                     frame.cols, frame.rows, ui.scale,
+                     ui_scale_override > 0 ? " (manual)" : " (auto)",
+                     ui.font_label, ui.font_hud,
+                     ui.line_thick, ui.line_thin, ui.hud_h);
             ui_ready = true;
         }
 
@@ -673,15 +686,19 @@ int main(int argc, char** argv) {
             t_recog_total = now_ms() - r0;
 
             static int log_counter = 0;
-            if (++log_counter % 15 == 0 && !faces.empty()) {
-                fprintf(stdout, "[recog] frame %d:", frame_id);
+            if (++log_counter % 15 == 0 && !faces.empty() &&
+                Logger::instance().enabled(LogLevel::DEBUG)) {
+                // Per-frame detail is DEBUG-only (hot path). No PII (R7):
+                // reference subjects by resident_id / track_id, never by name.
+                std::string line;
+                char seg[64];
                 for (size_t f = 0; f < faces.size(); ++f) {
                     const auto& L = face_labels[f];
-                    fprintf(stdout, " f%zu={%s,%.2f,%c,id=%d}",
-                            f, L.name.empty() ? "-" : L.name.c_str(),
-                            L.sim, L.stat, L.track_id);
+                    std::snprintf(seg, sizeof(seg), " f%zu={rid=%lld,%.2f,%c,tid=%d}",
+                                  f, (long long)L.resident_id, L.sim, L.stat, L.track_id);
+                    line += seg;
                 }
-                fprintf(stdout, "\n"); fflush(stdout);
+                LOG_DEBUG("recog", "frame %d:%s", frame_id, line.c_str());
             }
         }
 
@@ -731,22 +748,17 @@ int main(int argc, char** argv) {
                     resident_db.log_event(ev);
                     resident_db.touch_resident(oc.resident_id);
                     auto it = resident_by_id.find(oc.resident_id);
-                    const char* who = (it != resident_by_id.end())
-                        ? (it->second.greeting_name.empty()
-                               ? it->second.name.c_str()
-                               : it->second.greeting_name.c_str())
-                        : "?";
                     int hf = (it != resident_by_id.end()) ? it->second.home_floor : 0;
-                    printf("[event] CONFIRMED resident_id=%lld (%s) sim=%.2f "
-                           "home_floor=%d%s\n",
-                           (long long)oc.resident_id, who, oc.similarity, hf,
-                           hf <= HOME_FLOOR_UNSET ? " [no floor -> greet only]" : "");
+                    // No PII (R7): log resident_id + floor only, never the name.
+                    LOG_INFO("event", "CONFIRMED resident_id=%lld sim=%.2f home_floor=%d%s",
+                             (long long)oc.resident_id, oc.similarity, hf,
+                             hf <= HOME_FLOOR_UNSET ? " [no floor -> greet only]" : "");
                 } else if (oc.unknown) {
                     ev.resident_id = -1;   // NULL
                     ev.action      = "unknown";
                     resident_db.log_event(ev);
-                    printf("[event] UNKNOWN subject_key=%d sim=%.2f\n",
-                           oc.subject_key, oc.similarity);
+                    LOG_INFO("event", "UNKNOWN subject_key=%d sim=%.2f",
+                             oc.subject_key, oc.similarity);
                 }
             }
         }
@@ -868,17 +880,16 @@ int main(int argc, char** argv) {
             last_report = now;
             frames_since_report = 0;
             if (use_tracker) {
-                printf("[frame %d] fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
-                       "recog=%.1f faces=%zu tracks=%d\n",
-                       frame_id, fps, t1-t0, t2-t1, t_yolo, t4-t3,
-                       t_recog_total, faces.size(), tracker.active_count());
+                LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
+                          "recog=%.1f faces=%zu tracks=%d",
+                          frame_id, fps, t1-t0, t2-t1, t_yolo, t4-t3,
+                          t_recog_total, faces.size(), tracker.active_count());
             } else {
-                printf("[frame %d] fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
-                       "recog=%.1f faces=%zu\n",
-                       frame_id, fps, t1-t0, t2-t1, t4-t3, 0.0,
-                       t_recog_total, faces.size());
+                LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
+                          "recog=%.1f faces=%zu",
+                          frame_id, fps, t1-t0, t2-t1, t4-t3, 0.0,
+                          t_recog_total, faces.size());
             }
-            fflush(stdout);
         }
         char hud[192];
         if (use_tracker) {
@@ -924,7 +935,7 @@ int main(int argc, char** argv) {
         if (max_frames > 0 && frame_id >= max_frames) break;
     }
 
-    // ---- Summary ---------------------------------------------------------
+    // ---- Summary (benchmark report — user-facing table, kept as printf) --
     double run_secs = (now_ms() - run_start) / 1000.0;
     printf("\n===== BENCHMARK SUMMARY =====\n");
     printf("Duration    : %.2f s\n", run_secs);
@@ -943,10 +954,10 @@ int main(int argc, char** argv) {
     printf("end-to-end %8.2f  %8.2f  %8.2f\n", s_e2e.avg(),   s_e2e.mn,   s_e2e.mx);
     printf("=============================\n");
 
-    printf("[shutdown] stopping capture thread...\n");
+    LOG_INFO("main", "stopping capture thread");
     shutdown_capture();
 
-    printf("[shutdown] stopping display thread...\n");
+    LOG_INFO("main", "stopping display thread");
     {
         std::lock_guard<std::mutex> lk(disp_slot.mtx);
         disp_slot.stop = true;
@@ -954,14 +965,15 @@ int main(int argc, char** argv) {
     disp_slot.cv_new.notify_all();
     if (disp_th.joinable()) disp_th.join();
 
-    printf("[shutdown] destroying NPU...\n");
     if (use_resident_db) {
-        printf("[shutdown] flushing resident-db event writer...\n");
+        LOG_INFO("db", "flushing resident-db event writer");
         resident_db.close();
     }
+    LOG_INFO("main", "destroying NPU contexts");
     delete recognizer;
     if (yolo_ctx) awnn_destroy(yolo_ctx);
     awnn_destroy(det_ctx);
     awnn_uninit();
+    Logger::instance().shutdown();
     return 0;
 }
