@@ -28,16 +28,32 @@ static std::vector<std::string> read_lines(const std::string& path) {
     return out;
 }
 
-static std::string find_today_log(const std::string& dir,
-                                  const std::string& basename) {
-    // Build "<dir>/<basename>-<today>.log" the same way the logger does.
-    std::time_t t = std::time(nullptr);
+// "YYYY-MM-DD" for `now + day_offset` (offset negative = past), local time.
+static std::string date_string(int day_offset) {
+    std::time_t t = std::time(nullptr) + (std::time_t)day_offset * 86400;
     std::tm tm{};
     localtime_r(&t, &tm);
-    char date[16];
+    char date[40];
     std::snprintf(date, sizeof(date), "%04d-%02d-%02d",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
-    return dir + "/" + basename + "-" + date + ".log";
+    return date;
+}
+
+static std::string find_today_log(const std::string& dir,
+                                  const std::string& basename) {
+    return dir + "/" + basename + "-" + date_string(0) + ".log";
+}
+
+// Create an empty log file named like a real rotated file for a given date.
+static void touch_log(const std::string& dir, const std::string& basename,
+                      const std::string& date) {
+    std::ofstream f(dir + "/" + basename + "-" + date + ".log");
+    f << "dummy\n";
+}
+
+static bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
 }
 
 int main() {
@@ -98,6 +114,53 @@ int main() {
         Logger::instance().flush();
         CHECK(true, "fallback dir did not crash");
         Logger::instance().shutdown();
+    }
+
+    // ---- Daily rotation naming + retention cleanup ----
+    {
+        const std::string rdir = "/tmp/scabin_log_test_rot";
+        std::system(("rm -rf " + rdir).c_str());
+        std::system(("mkdir -p " + rdir).c_str());
+
+        // Pre-create old files (well past retention) + a recent one (in range).
+        const std::string basename = "face-cabin";
+        touch_log(rdir, basename, "2000-01-01");          // ancient -> delete
+        touch_log(rdir, basename, "2000-06-15");          // ancient -> delete
+        std::string recent = date_string(-3);             // 3 days ago -> keep
+        touch_log(rdir, basename, recent);
+        // A non-matching file must be left untouched.
+        { std::ofstream f(rdir + "/keepme.txt"); f << "x\n"; }
+
+        LogConfig cfg;
+        cfg.level          = LogLevel::INFO;
+        cfg.to_stderr      = false;
+        cfg.to_file        = true;
+        cfg.dir            = rdir;
+        cfg.basename       = basename;
+        cfg.retention_days = 14;   // recent(-3d) kept, ancient(2000) removed
+        cfg.color          = false;
+        Logger::instance().init(cfg);
+
+        // First write of "today" opens today's file and triggers cleanup_old().
+        LOG_INFO("rot", "first record of the day");
+        Logger::instance().flush();
+
+        // Rotation naming: today's file must exist and be named by date.
+        std::string today = find_today_log(rdir, basename);
+        CHECK(file_exists(today), "today's dated log file created");
+
+        // Retention: ancient files removed, recent + today kept.
+        CHECK(!file_exists(rdir + "/" + basename + "-2000-01-01.log"),
+              "ancient log 2000-01-01 removed by retention");
+        CHECK(!file_exists(rdir + "/" + basename + "-2000-06-15.log"),
+              "ancient log 2000-06-15 removed by retention");
+        CHECK(file_exists(rdir + "/" + basename + "-" + recent + ".log"),
+              "recent log (within retention) kept");
+        CHECK(file_exists(rdir + "/keepme.txt"),
+              "non-log file left untouched");
+
+        Logger::instance().shutdown();
+        std::system(("rm -rf " + rdir).c_str());
     }
 
     // ---- Thread-safety: many threads, no interleaved/torn lines ----
