@@ -177,8 +177,7 @@ Hiện tại app + tool cấu hình qua **CLI args + env** (`--resident-db`, `--
 - [X] Cài dev libs `libsqlite3-dev` (Orange Pi) / no-sudo extract (máy dev)
 **Còn lại của Giai đoạn 1 (chưa làm — GIỮ trong plan):**
 
-- [X] RTSP reconnect logic trong `capture_worker`: exponential backoff — `open_capture()` dùng lại cho init+reconnect; sau N read fail liên tiếp → release + reopen với backoff 500ms→10s (cap); CLI `--reconnect-min-ms/--reconnect-max-ms`. **Cần `make` trên Orange Pi để xác nhận build (NPU/OpenCV).**
-- [ ] RTSP reconnect logic trong `capture_worker`: exponential backoff (chưa có code)
+- [~] RTSP reconnect logic trong `capture_worker`: exponential backoff — CODE XONG, build OK trên Orange Pi. `open_capture()` dùng chung init+reconnect; sau N read fail liên tiếp (`fail_reopen_threshold=30`) → release + reopen với backoff 500ms→10s (cap, ×2 mỗi lần); backoff ngắt được khi shutdown. Initial-open fail với RTSP KHÔNG thoát app mà vào reconnect loop (quan trọng cho khởi động 24/7 khi camera/mạng chưa sẵn sàng); USB thiếu thiết bị vẫn thoát. CLI `--reconnect-min-ms/--reconnect-max-ms`. **⏳ Test tích hợp PENDING: chờ camera RTSP kết nối lại để xác nhận reconnect <10s + tiếp tục nhận diện sau khi reconnect.**
 - [ ] Config YAML file `config.yaml`: camera URLs, models, DB path, thresholds (ưu tiên thấp, xem §3.2)
 - [ ] systemd service `face-cabin.service` với `Restart=always` (chưa có)
 - [ ] Tool `bulk_enroll`: CSV + `--photos-dir` → SQLite (spec format có ở `docs/BULK_ENROLL_FORMAT.md`, chưa code)
@@ -191,7 +190,7 @@ Hiện tại app + tool cấu hình qua **CLI args + env** (`--resident-db`, `--
 - ✅ Logging file rotation/ngày chạy, không PII
 - ⏳ SDL2 idle screen trên Waveshare (chưa)
 - ⏳ face_recog_app chạy 24h qua systemd (chưa có service)
-- ⏳ RTSP mất kết nối tự reconnect <10s (chưa)
+- ⏳ RTSP mất kết nối tự reconnect <10s (code xong, build OK; test tích hợp pending camera)
 
 ---
 

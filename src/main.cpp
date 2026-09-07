@@ -416,16 +416,26 @@ int main(int argc, char** argv) {
         LOG_INFO("cam", "GStreamer pipeline: %s", cam_cfg.pipeline.c_str());
     }
 
-    if (!open_capture(cap, cam_cfg)) {
-        if (is_stream) LOG_ERROR("cam", "cannot open GStreamer stream");
-        else           LOG_ERROR("cam", "cannot open /dev/video%d", cam_id);
-        return 1;
+    bool cam_ready = open_capture(cap, cam_cfg);
+    if (!cam_ready) {
+        if (is_stream) {
+            // Stream not up yet (network/camera still booting). Don't die —
+            // let the capture thread keep retrying with backoff so a cabin
+            // started before its RTSP source recovers on its own.
+            LOG_WARN("cam", "stream not available yet — capture thread will "
+                     "keep reconnecting (backoff %d-%d ms)",
+                     reconnect_min_ms, reconnect_max_ms);
+        } else {
+            LOG_ERROR("cam", "cannot open /dev/video%d", cam_id);
+            return 1;
+        }
+    } else {
+        LOG_INFO("cam", "%dx%d @ %.1f FPS (%s)",
+                 (int)cap.get(cv::CAP_PROP_FRAME_WIDTH),
+                 (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT),
+                 cap.get(cv::CAP_PROP_FPS),
+                 is_stream ? "GStreamer" : "V4L2 MJPG");
     }
-    LOG_INFO("cam", "%dx%d @ %.1f FPS (%s)",
-             (int)cap.get(cv::CAP_PROP_FRAME_WIDTH),
-             (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT),
-             cap.get(cv::CAP_PROP_FPS),
-             is_stream ? "GStreamer" : "V4L2 MJPG");
 
     FrameSlot   slot;
     std::thread cap_th(capture_worker, &cap, &slot, cam_cfg);
