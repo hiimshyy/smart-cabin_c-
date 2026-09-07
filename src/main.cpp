@@ -68,24 +68,104 @@ struct FrameSlot {
     bool                     stop = false;
 };
 
-static void capture_worker(cv::VideoCapture* cap, FrameSlot* slot) {
+// All the parameters needed to (re)open the video source, so the capture
+// thread can rebuild a dead VideoCapture on its own (RTSP reconnect).
+struct CamConfig {
+    bool        is_stream   = false;   // GStreamer/RTSP vs V4L2 USB
+    std::string pipeline;              // full GStreamer pipeline (stream mode)
+    int         cam_id      = 0;       // /dev/videoN (USB mode)
+    int         cam_w       = 640;
+    int         cam_h       = 480;
+    int         cam_fps     = 30;
+    // Exponential backoff bounds for reconnect (milliseconds).
+    int         backoff_min_ms = 500;
+    int         backoff_max_ms = 10000;
+    // How many consecutive failed reads before we tear down + reopen.
+    int         fail_reopen_threshold = 30;   // ~0.15-1s depending on source
+};
+
+// Open (or reopen) a VideoCapture from cfg. Returns true if opened. Applies
+// the same USB tuning (MJPG/size/fps/buffer) the main path used.
+static bool open_capture(cv::VideoCapture& cap, const CamConfig& cfg) {
+    if (cap.isOpened()) cap.release();
+    if (cfg.is_stream) {
+        cap.open(cfg.pipeline, cv::CAP_GSTREAMER);
+        if (!cap.isOpened()) return false;
+    } else {
+        cap.open(cfg.cam_id, cv::CAP_V4L2);
+        if (!cap.isOpened()) return false;
+        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
+        cap.set(cv::CAP_PROP_FRAME_WIDTH,  cfg.cam_w);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, cfg.cam_h);
+        cap.set(cv::CAP_PROP_FPS,          cfg.cam_fps);
+        cap.set(cv::CAP_PROP_BUFFERSIZE,   1);
+    }
+    return true;
+}
+
+// Capture thread. Reads frames into the latest-frame slot. On a run of failed
+// reads (source dropped — RTSP disconnect, USB unplug), it tears the capture
+// down and reopens it with exponential backoff instead of spinning forever on
+// a dead handle (DEVELOPMENT_PLAN: RTSP reconnect).
+static void capture_worker(cv::VideoCapture* cap, FrameSlot* slot,
+                           CamConfig cfg) {
     cv::Mat local;
+    int  consecutive_fails = 0;
+    int  backoff_ms        = cfg.backoff_min_ms;
+
+    auto should_stop = [&]() {
+        std::lock_guard<std::mutex> lk(slot->mtx);
+        return slot->stop;
+    };
+
     while (true) {
-        if (!cap->read(local) || local.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (should_stop()) return;
+
+        if (cap->read(local) && !local.empty()) {
+            // Healthy frame: reset failure tracking and publish it.
+            consecutive_fails = 0;
+            backoff_ms        = cfg.backoff_min_ms;
             {
                 std::lock_guard<std::mutex> lk(slot->mtx);
                 if (slot->stop) return;
+                local.copyTo(slot->latest);
+                slot->seq++;
             }
+            slot->cv_new.notify_one();
             continue;
         }
-        {
-            std::lock_guard<std::mutex> lk(slot->mtx);
-            if (slot->stop) return;
-            local.copyTo(slot->latest);
-            slot->seq++;
+
+        // Read failed. Tolerate brief hiccups; after a run of failures assume
+        // the source is gone and reconnect.
+        if (++consecutive_fails < cfg.fail_reopen_threshold) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
         }
-        slot->cv_new.notify_one();
+
+        LOG_WARN("cam", "source read failing (%d consecutive) — reconnecting",
+                 consecutive_fails);
+
+        // Reconnect loop with exponential backoff, until success or stop.
+        while (!should_stop()) {
+            // Sleep the backoff in small slices so a shutdown request during a
+            // long backoff still tears down promptly (join won't block ~10s).
+            for (int slept = 0; slept < backoff_ms; slept += 100) {
+                if (should_stop()) return;
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(std::min(100, backoff_ms - slept)));
+            }
+            if (should_stop()) return;
+
+            if (open_capture(*cap, cfg)) {
+                LOG_INFO("cam", "reconnected to source after %d ms backoff",
+                         backoff_ms);
+                consecutive_fails = 0;
+                backoff_ms        = cfg.backoff_min_ms;
+                break;
+            }
+            LOG_WARN("cam", "reconnect attempt failed (backoff %d ms)", backoff_ms);
+            backoff_ms = std::min(backoff_ms * 2, cfg.backoff_max_ms);
+        }
     }
 }
 
@@ -165,6 +245,8 @@ static void print_usage(const char* prog) {
         "    --source URL          RTSP/HTTP/file source (GStreamer)\n"
         "    --gst-pipeline STR    Custom GStreamer pipeline\n"
         "    --gst-latency MS      RTSP jitter buffer latency (default 100ms)\n"
+        "    --reconnect-min-ms N  Reconnect backoff floor (default 500)\n"
+        "    --reconnect-max-ms N  Reconnect backoff ceiling (default 10000)\n"
         "    --windowed / --fullscreen\n"
         "    --log-level L         trace|debug|info|warn|error (default info)\n"
         "    --log-dir DIR         log file directory (default /var/log/face-cabin)\n",
@@ -240,6 +322,8 @@ int main(int argc, char** argv) {
     int   max_frames       = 0;
     int   recog_dim        = 512;
     int   gst_latency_ms   = 100;
+    int   reconnect_min_ms = 500;      // RTSP reconnect backoff floor
+    int   reconnect_max_ms = 10000;    // RTSP reconnect backoff ceiling
     int   person_every     = 1;
     int   track_max_miss   = 30;
     int   recog_retry      = 90;
@@ -285,6 +369,8 @@ int main(int argc, char** argv) {
         else if (sv("--source"))         source_url = argv[++i];
         else if (sv("--gst-pipeline"))   custom_pipeline = argv[++i];
         else if (sv("--gst-latency"))    gst_latency_ms = std::atoi(argv[++i]);
+        else if (sv("--reconnect-min-ms")) reconnect_min_ms = std::atoi(argv[++i]);
+        else if (sv("--reconnect-max-ms")) reconnect_max_ms = std::atoi(argv[++i]);
         else if (std::strcmp(a, "--windowed") == 0)   fullscreen = false;
         else if (std::strcmp(a, "--fullscreen") == 0) fullscreen = true;
         else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) {
@@ -313,27 +399,27 @@ int main(int argc, char** argv) {
     bool is_stream = (custom_pipeline != nullptr) ||
                      (source_url != nullptr && is_stream_source(source_url));
 
+    // Build a reusable camera config so the capture thread can reopen the
+    // source on its own if it drops (RTSP reconnect).
+    CamConfig cam_cfg;
+    cam_cfg.is_stream      = is_stream;
+    cam_cfg.cam_id         = cam_id;
+    cam_cfg.cam_w          = CAM_W;
+    cam_cfg.cam_h          = CAM_H;
+    cam_cfg.cam_fps        = 30;
+    cam_cfg.backoff_min_ms = reconnect_min_ms;
+    cam_cfg.backoff_max_ms = reconnect_max_ms;
     if (is_stream) {
-        std::string pipeline = custom_pipeline
+        cam_cfg.pipeline = custom_pipeline
             ? std::string(custom_pipeline)
             : build_gst_pipeline(source_url, gst_latency_ms);
-        LOG_INFO("cam", "GStreamer pipeline: %s", pipeline.c_str());
-        cap.open(pipeline, cv::CAP_GSTREAMER);
-        if (!cap.isOpened()) {
-            LOG_ERROR("cam", "cannot open GStreamer stream");
-            return 1;
-        }
-    } else {
-        cap.open(cam_id, cv::CAP_V4L2);
-        if (!cap.isOpened()) {
-            LOG_ERROR("cam", "cannot open /dev/video%d", cam_id);
-            return 1;
-        }
-        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
-        cap.set(cv::CAP_PROP_FRAME_WIDTH,  CAM_W);
-        cap.set(cv::CAP_PROP_FRAME_HEIGHT, CAM_H);
-        cap.set(cv::CAP_PROP_FPS, 30);
-        cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+        LOG_INFO("cam", "GStreamer pipeline: %s", cam_cfg.pipeline.c_str());
+    }
+
+    if (!open_capture(cap, cam_cfg)) {
+        if (is_stream) LOG_ERROR("cam", "cannot open GStreamer stream");
+        else           LOG_ERROR("cam", "cannot open /dev/video%d", cam_id);
+        return 1;
     }
     LOG_INFO("cam", "%dx%d @ %.1f FPS (%s)",
              (int)cap.get(cv::CAP_PROP_FRAME_WIDTH),
@@ -342,8 +428,9 @@ int main(int argc, char** argv) {
              is_stream ? "GStreamer" : "V4L2 MJPG");
 
     FrameSlot   slot;
-    std::thread cap_th(capture_worker, &cap, &slot);
-    LOG_INFO("cam", "capture thread started");
+    std::thread cap_th(capture_worker, &cap, &slot, cam_cfg);
+    LOG_INFO("cam", "capture thread started (reconnect backoff %d-%d ms)",
+             reconnect_min_ms, reconnect_max_ms);
 
     // ---- 2) Init NPU. Load recog -> scrfd -> yolo (person detect last)
     //         This order minimizes NBG resource conflict on some models.
