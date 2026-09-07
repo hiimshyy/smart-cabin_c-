@@ -1,14 +1,17 @@
-// enroll_faces: build a face identity DB (.fdb) from a folder of images.
+// enroll_faces: build the resident SQLite DB from a folder of images.
 // Layout:
 //   <root>/
 //     alice/1.jpg 2.jpg ...
 //     bob/1.jpg   ...
-// One embedding per image is extracted, averaged per subfolder → 1 identity.
+// Each image contributes ONE embedding row (source='id_photo') — embeddings
+// are NOT averaged, so pose/lighting variation is preserved (spec R6.1).
+// One resident row per subfolder (home_floor=0 sentinel = "no floor yet").
 //
 // Usage:
-//   enroll_faces --dir <root> --out <out.fdb>
+//   enroll_faces --dir <root> --db <residents.db>
 //                --det-model <scrfd.nb> --recog-model <recog.nb>
 //                [--recog-dim N] [--recog-bgr] [--min-face-px N]
+//                [--schema db/schema.sql]
 
 #include <cstdio>
 #include <cstdlib>
@@ -29,7 +32,7 @@
 #include "scrfd_post.h"
 #include "face_align.h"
 #include "face_recog.h"
-#include "face_db.h"
+#include "resident_db.h"
 
 namespace fs = std::filesystem;
 
@@ -66,17 +69,22 @@ static bool detect_largest_face(Awnn_Context_t* ctx,
 
 static void print_usage(const char* prog) {
     fprintf(stderr,
-        "Usage: %s --dir <root> --out <out.fdb>\n"
+        "Usage: %s --dir <root> --db <residents.db>\n"
         "           --det-model <scrfd.nb>\n"
         "           --recog-model <recog.nb>\n"
         "           [--recog-dim N (default 512)]\n"
         "           [--recog-bgr    (feed BGR, default RGB)]\n"
-        "           [--min-face-px N (skip small faces, default 40)]\n",
+        "           [--min-face-px N (skip small faces, default 40)]\n"
+        "           [--schema PATH  (schema.sql for empty DB, default db/schema.sql)]\n"
+        "\n"
+        "  Each image -> one embedding row (source='id_photo'), NOT averaged.\n"
+        "  New residents get home_floor=0 (\"no floor registered\"); set the real\n"
+        "  floor later (e.g. via sqlite3 or the face_set_floor helper).\n",
         prog);
 }
 
 int main(int argc, char** argv) {
-    std::string dir_path, out_path;
+    std::string dir_path, db_path, schema_path = "db/schema.sql";
     std::string det_model, recog_model;
     int   recog_dim   = 512;
     bool  recog_rgb   = true;
@@ -89,7 +97,8 @@ int main(int argc, char** argv) {
             return argv[++i];
         };
         if      (a == "--dir")         dir_path    = next("--dir");
-        else if (a == "--out")         out_path    = next("--out");
+        else if (a == "--db")          db_path     = next("--db");
+        else if (a == "--schema")      schema_path = next("--schema");
         else if (a == "--det-model")   det_model   = next("--det-model");
         else if (a == "--recog-model") recog_model = next("--recog-model");
         else if (a == "--recog-dim")   recog_dim   = std::atoi(next("--recog-dim"));
@@ -97,7 +106,7 @@ int main(int argc, char** argv) {
         else if (a == "--min-face-px") min_face_px = std::atoi(next("--min-face-px"));
         else if (a == "-h" || a == "--help") { print_usage(argv[0]); return 0; }
     }
-    if (dir_path.empty() || out_path.empty() ||
+    if (dir_path.empty() || db_path.empty() ||
         det_model.empty() || recog_model.empty()) {
         print_usage(argv[0]);
         return 1;
@@ -107,11 +116,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    printf("[enroll] dir=%s  out=%s\n", dir_path.c_str(), out_path.c_str());
+    printf("[enroll] dir=%s  db=%s\n", dir_path.c_str(), db_path.c_str());
     printf("[enroll] det=%s (input=%dx%d, scrfd)\n",
            det_model.c_str(), NPU_INPUT_W, NPU_INPUT_H);
     printf("[enroll] recog=%s (dim=%d rgb=%d)\n",
            recog_model.c_str(), recog_dim, recog_rgb ? 1 : 0);
+
+    // ---- Open the SQLite resident DB (create+schema if empty) ----------
+    ResidentDB db;
+    if (!db.open(db_path, schema_path)) {
+        fprintf(stderr, "[enroll] failed to open resident DB %s\n", db_path.c_str());
+        return 2;
+    }
 
     awnn_init();
     // Load recog BEFORE detect (see main.cpp comment).
@@ -142,16 +158,21 @@ int main(int argc, char** argv) {
 
     std::vector<uint8_t> input_buf(NPU_INPUT_W * NPU_INPUT_H * 3);
 
-    FaceDB db;
-    db.set_dim(recog_dim);
-
     int total_persons = 0, total_imgs = 0, total_used = 0;
 
     for (const auto& person_entry : fs::directory_iterator(dir_path)) {
         if (!person_entry.is_directory()) continue;
         std::string person = person_entry.path().filename().string();
-        std::vector<std::vector<float>> embs;
 
+        // Create (or reuse) the resident row up front so we can attach each
+        // image's embedding to it. home_floor=0 = "no floor registered yet".
+        int64_t resident_id = db.upsert_resident(person, HOME_FLOOR_UNSET);
+        if (resident_id < 0) {
+            fprintf(stderr, "  [%s] upsert_resident failed (skip)\n", person.c_str());
+            continue;
+        }
+
+        int person_embs = 0;
         for (const auto& img_entry : fs::directory_iterator(person_entry.path())) {
             if (!img_entry.is_regular_file()) continue;
             std::string ext = img_entry.path().extension().string();
@@ -186,37 +207,44 @@ int main(int argc, char** argv) {
 
             std::vector<float> e;
             if (!recognizer->extract(aligned, e)) continue;
-            embs.push_back(std::move(e));
+
+            // One embedding row per image — NO averaging (spec R6.1).
+            if (!db.add_embedding(resident_id, "id_photo", e)) {
+                fprintf(stderr, "  [%s] add_embedding failed for %s\n",
+                        person.c_str(),
+                        img_entry.path().filename().string().c_str());
+                continue;
+            }
+            ++person_embs;
             ++total_used;
         }
 
-        if (!embs.empty()) {
-            db.add(person, embs);
+        if (person_embs > 0) {
             ++total_persons;
-            printf("  + %s (%zu embeddings averaged)\n", person.c_str(), embs.size());
+            printf("  + %s (id=%lld, %d embeddings, home_floor=0)\n",
+                   person.c_str(), (long long)resident_id, person_embs);
         } else {
-            printf("  - %s: NO usable embedding (skipped)\n", person.c_str());
+            printf("  - %s: NO usable embedding (resident row kept, empty)\n",
+                   person.c_str());
         }
     }
 
     printf("[enroll] persons=%d, imgs_scanned=%d, imgs_used=%d\n",
            total_persons, total_imgs, total_used);
-    if (db.size() == 0) {
-        fprintf(stderr, "[enroll] DB empty, not saving\n");
+    if (total_used == 0) {
+        fprintf(stderr, "[enroll] no embeddings written\n");
+        db.close();
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
         return 3;
     }
-    if (!db.save(out_path)) {
-        fprintf(stderr, "[enroll] save failed: %s\n", out_path.c_str());
-        delete recognizer;
-        awnn_destroy(det_ctx);
-        awnn_uninit();
-        return 4;
-    }
-    printf("[enroll] saved %zu identities → %s\n", db.size(), out_path.c_str());
+    printf("[enroll] wrote %d embeddings across %d residents -> %s\n",
+           total_used, total_persons, db_path.c_str());
+    printf("[enroll] NOTE: all new residents have home_floor=0 "
+           "(\"no floor registered\"). Set real floors before cabin operation.\n");
 
+    db.close();
     delete recognizer;
     awnn_destroy(det_ctx);
     awnn_uninit();

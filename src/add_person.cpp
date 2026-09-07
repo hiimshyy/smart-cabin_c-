@@ -1,14 +1,21 @@
-// add_person: append/update a single identity in an existing .fdb DB
-// without rebuilding the full database. Faster than rerunning enroll_faces.
+// add_person: add/update a single resident in the SQLite resident DB
+// without re-enrolling the whole folder. Faster than rerunning enroll_faces.
+//
+// Each image contributes ONE embedding row (source='id_photo'); embeddings
+// are never averaged (spec R6.2).
+//   --merge   : append the new image embeddings to the resident.
+//   --replace : delete the resident's existing embeddings, then add the new.
+// A resident is created (home_floor=0) if the name does not exist yet.
 //
 // Usage:
 //   ./add_person --name X --image img1.jpg [--image img2.jpg ...]
-//                --db faces.fdb
+//                --db residents.db
 //                --det-model <scrfd.nb>
 //                --recog-model <recog.nb>
 //                [--recog-dim N] [--recog-bgr]
 //                [--replace | --merge]
 //                [--min-face-px N (default 40)]
+//                [--schema db/schema.sql]
 
 #include <cstdio>
 #include <cstdlib>
@@ -29,7 +36,7 @@
 #include "scrfd_post.h"
 #include "face_align.h"
 #include "face_recog.h"
-#include "face_db.h"
+#include "resident_db.h"
 
 namespace fs = std::filesystem;
 
@@ -65,21 +72,25 @@ static bool detect_largest_face(Awnn_Context_t* ctx,
 static void print_usage(const char* prog) {
     fprintf(stderr,
         "Usage: %s --name X --image img1.jpg [--image img2.jpg ...]\n"
-        "           --db faces.fdb\n"
+        "           --db residents.db\n"
         "           --det-model <scrfd.nb>\n"
         "           --recog-model <recog.nb>\n"
         "           [--recog-dim N (default 512)]\n"
         "           [--recog-bgr    (feed BGR, default RGB)]\n"
-        "           [--replace]     (overwrite if name exists)\n"
-        "           [--merge]       (average with existing if name exists)\n"
-        "           [--min-face-px N (default 40)]\n",
+        "           [--replace]     (delete resident's old embeddings first)\n"
+        "           [--merge]       (append to resident's embeddings)\n"
+        "           [--min-face-px N (default 40)]\n"
+        "           [--schema PATH  (schema.sql for empty DB, default db/schema.sql)]\n"
+        "\n"
+        "  Each image -> one embedding row (source='id_photo'), NOT averaged.\n"
+        "  New residents are created with home_floor=0 (\"no floor registered\").\n",
         prog);
 }
 
 int main(int argc, char** argv) {
     std::string name;
     std::vector<std::string> images;
-    std::string db_path;
+    std::string db_path, schema_path = "db/schema.sql";
     std::string det_model, recog_model;
     int   recog_dim   = 512;
     bool  recog_rgb   = true;
@@ -96,6 +107,7 @@ int main(int argc, char** argv) {
         if      (a == "--name")         name        = next("--name");
         else if (a == "--image")        images.push_back(next("--image"));
         else if (a == "--db")           db_path     = next("--db");
+        else if (a == "--schema")       schema_path = next("--schema");
         else if (a == "--det-model")    det_model   = next("--det-model");
         else if (a == "--recog-model")  recog_model = next("--recog-model");
         else if (a == "--recog-dim")    recog_dim   = std::atoi(next("--recog-dim"));
@@ -123,44 +135,29 @@ int main(int argc, char** argv) {
            name.c_str(), db_path.c_str(), images.size(),
            NPU_INPUT_W, NPU_INPUT_H);
 
-    // ---- Load / init DB ------------------------------------------------
-    FaceDB db;
-    bool db_existed = fs::exists(db_path);
-    if (db_existed) {
-        if (!db.load(db_path)) {
-            fprintf(stderr, "[add] cannot load existing db %s\n", db_path.c_str());
-            return 3;
-        }
-        printf("[add] loaded existing db: %zu identities, dim=%d\n",
-               db.size(), db.dim());
-        if (db.dim() != recog_dim) {
-            fprintf(stderr, "[add] dim mismatch: db=%d vs --recog-dim=%d\n",
-                    db.dim(), recog_dim);
-            return 3;
-        }
-    } else {
-        db.set_dim(recog_dim);
-        printf("[add] db does not exist, will create new one\n");
+    // ---- Open the SQLite resident DB (create+schema if empty) ----------
+    ResidentDB db;
+    if (!db.open(db_path, schema_path)) {
+        fprintf(stderr, "[add] cannot open resident DB %s\n", db_path.c_str());
+        return 3;
     }
 
-    int existing_idx = db.find(name);
-    std::vector<float> existing_embedding;
-    if (existing_idx >= 0) {
-        if (!do_replace && !do_merge) {
-            fprintf(stderr,
-                "[add] identity '%s' already exists (index %d).\n"
-                "      Use --replace to overwrite or --merge to combine.\n",
-                name.c_str(), existing_idx);
-            return 4;
-        }
-        if (do_merge) {
-            existing_embedding = db.all()[existing_idx].embedding;
-            printf("[add] MERGE mode: will combine with existing embedding\n");
-        } else {
-            printf("[add] REPLACE mode: existing entry will be overwritten\n");
-        }
-        db.remove_at(static_cast<size_t>(existing_idx));
+    // Does this resident already exist? Decide merge/replace semantics.
+    int64_t existing_id = db.find_resident(name);
+    if (existing_id >= 0 && !do_replace && !do_merge) {
+        fprintf(stderr,
+            "[add] resident '%s' already exists (id %lld).\n"
+            "      Use --replace to overwrite its embeddings or --merge to add.\n",
+            name.c_str(), (long long)existing_id);
+        db.close();
+        return 4;
     }
+    if (existing_id >= 0 && do_merge)
+        printf("[add] MERGE mode: appending embeddings to resident id %lld\n",
+               (long long)existing_id);
+    if (existing_id >= 0 && do_replace)
+        printf("[add] REPLACE mode: clearing old embeddings of resident id %lld\n",
+               (long long)existing_id);
 
     awnn_init();
     // Load recog BEFORE detect.
@@ -169,6 +166,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[add] failed to load recog model\n");
         delete recognizer;
         awnn_uninit();
+        db.close();
         return 5;
     }
 
@@ -177,6 +175,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[add] failed to load detection model\n");
         delete recognizer;
         awnn_uninit();
+        db.close();
         return 5;
     }
 
@@ -186,6 +185,7 @@ int main(int argc, char** argv) {
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
+        db.close();
         return 5;
     }
 
@@ -227,29 +227,59 @@ int main(int argc, char** argv) {
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
+        db.close();
         return 6;
     }
 
-    if (!existing_embedding.empty()) {
-        new_embs.push_back(existing_embedding);
-    }
-
-    db.add(name, new_embs);
-    printf("[add] identity '%s' now has embedding averaged from %zu sources\n",
-           name.c_str(), new_embs.size());
-
-    if (!db.save(db_path)) {
-        fprintf(stderr, "[add] failed to save db %s\n", db_path.c_str());
+    // ---- Write to SQLite (spec R6.2) -----------------------------------
+    // Ensure the resident exists (creates with home_floor=0 if new).
+    int64_t resident_id = db.upsert_resident(name, HOME_FLOOR_UNSET);
+    if (resident_id < 0) {
+        fprintf(stderr, "[add] upsert_resident failed for '%s'\n", name.c_str());
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
+        db.close();
         return 7;
     }
-    printf("[add] saved db: %zu total identities → %s\n",
-           db.size(), db_path.c_str());
+
+    // --replace: drop the resident's old embeddings before adding new ones.
+    if (do_replace) {
+        if (!db.delete_embeddings(resident_id)) {
+            fprintf(stderr, "[add] delete_embeddings failed for id %lld\n",
+                    (long long)resident_id);
+            delete recognizer;
+            awnn_destroy(det_ctx);
+            awnn_uninit();
+            db.close();
+            return 7;
+        }
+    }
+
+    // Add one row per extracted embedding — NO averaging (spec R6.2).
+    int written = 0;
+    for (const auto& e : new_embs) {
+        if (db.add_embedding(resident_id, "id_photo", e)) ++written;
+        else fprintf(stderr, "[add] add_embedding failed (1 of %zu)\n",
+                     new_embs.size());
+    }
+    if (written == 0) {
+        fprintf(stderr, "[add] failed to write any embedding. Aborting.\n");
+        delete recognizer;
+        awnn_destroy(det_ctx);
+        awnn_uninit();
+        db.close();
+        return 7;
+    }
+
+    printf("[add] resident '%s' (id=%lld): wrote %d embedding(s)%s\n",
+           name.c_str(), (long long)resident_id, written,
+           do_replace ? " (replaced old)" : (do_merge ? " (merged)" : ""));
+    printf("[add] done -> %s\n", db_path.c_str());
 
     delete recognizer;
     awnn_destroy(det_ctx);
     awnn_uninit();
+    db.close();
     return 0;
 }

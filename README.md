@@ -1,7 +1,36 @@
 # SCRFD + MobileFaceNet — Orange Pi A733 NPU
 
 Realtime face detection + recognition chạy trên Orange Pi A733 (NPU v3).
-Pipeline: USB / RTSP camera → **SCRFD 2.5g_bnkps 640** → align 5-landmarks → **MobileFaceNet 112** → cosine match vs database `.fdb`.
+Pipeline: USB / RTSP camera → **SCRFD 2.5g_bnkps 640** → align 5-landmarks → **MobileFaceNet 112** → cosine match.
+
+## Nguồn dữ liệu: SQLite (vận hành) vs `.fdb` (test/dev)
+
+Hệ thống có **lớp dữ liệu cư dân trên SQLite** (`db/schema.sql`) là nguồn chân
+lý cho vận hành cabin: nhiều embedding/người (multi-embedding, lấy max cosine,
+KHÔNG trung bình), `home_floor`, `greeting_name`, và audit log `match_events`.
+
+- **Vận hành thật** → dùng `--resident-db <sqlite>`. State machine tương tác
+  (streak + cooldown) chống nhấp nháy; mỗi lần confirm ghi 1 `match_events`.
+- **Test/dev nhanh** → `.fdb` cũ qua `--face-db` (1 embedding trung bình/người,
+  KHÔNG tầng/ngôn ngữ/audit). Không dùng cho cabin thật.
+
+Quy trình khởi tạo (sau `source env.sh`):
+
+```bash
+# Cách A — enroll từ folder ảnh thẳng vào SQLite (mỗi ảnh 1 embedding):
+face_enroll faces db/residents.db
+# Cách B — migrate từ .fdb cũ:
+face_migrate db/faces_all.fdb db/residents.db
+
+face_set_floor "Cao Tien Sy" 7 "anh Sy"   # điền tầng + tên chào
+face_cabin                                 # chạy realtime vận hành
+face_events                                # xem audit log
+```
+
+Enroll/add luôn tạo resident với `home_floor=0` ("chưa đăng ký tầng": cabin
+vẫn chào tên nhưng không auto-gọi tầng) — nhớ `face_set_floor` sau đó.
+
+Chi tiết spec: `.kiro/specs/resident-db-layer/`.
 
 ## Kết quả benchmark (USB webcam)
 

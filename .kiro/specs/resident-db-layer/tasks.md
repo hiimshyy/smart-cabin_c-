@@ -21,8 +21,7 @@
 - ✅ **Task 7** — test tích hợp trên Orange Pi + camera USB (chi tiết ở checkbox Task 7).
 - Tổng unit test hiện tại: **84 checks pass** (14 MatchEngine + 48 InteractionManager + 22 ResidentDB).
 
-**Giai đoạn 1 HOÀN TẤT.** Chưa xong:
-1. **Task 9, 10, 11** — Giai đoạn 2 (chuyển `enroll_faces`/`add_person` sang ghi SQLite).
+**Giai đoạn 1 HOÀN TẤT** (commit `680e338`) **và Giai đoạn 2 HOÀN TẤT.** Toàn bộ Task 1-11 đã xong.
 
 **Ghi chú build/test trên Orange Pi:**
 - `libsqlite3-dev` đã cài (v3.40.1). Chạy unit test: `bash tests/run_tests.sh` (dùng system sqlite).
@@ -101,14 +100,14 @@
   - [x] Unit test round-trip cho 3 hàm (trong `tests/test_resident_db.cpp`).
   - _Requirements: R6.1, R6.2_
 
-- [ ] 9. Chuyển `enroll_faces` sang SQLite
-  - Thay `db.add()/db.save(fdb)` bằng: mỗi ảnh → `add_embedding(source='id_photo')` (không trung bình); `upsert_resident(name, home_floor=0)`. Đổi CLI `--out <fdb>` → `--db <sqlite>`. Makefile: thêm `resident_db.cpp` + `-lsqlite3`.
+- [x] 9. Chuyển `enroll_faces` sang SQLite  ✅
+  - [x] Thay `FaceDB db.add()/db.save(fdb)` bằng `ResidentDB`: mỗi ảnh → `add_embedding(source='id_photo')` KHÔNG trung bình; `upsert_resident(name, home_floor=0)` 1 lần/người. CLI `--out <fdb>` → `--db <sqlite>` (+ `--schema`, default `db/schema.sql`). Makefile `ENROLL_SRCS_CPP` dùng `resident_db.cpp` (bỏ `face_db.cpp`), `-lsqlite3` sẵn trong LIBS. In số embedding/người + cảnh báo home_floor=0. Test: `faces/Cao Tien Sy` (11 jpg) → 11 embeddings, 1 resident.
   - _Requirements: R6.1, R6.3_
 
-- [ ] 10. Chuyển `add_person` sang SQLite
-  - `--merge` = `add_embedding`; `--replace` = `delete_embeddings` rồi `add_embedding`; tạo resident nếu chưa có. Đổi CLI `--db <fdb>` → `--db <sqlite>`. Makefile: thêm `resident_db.cpp` + `-lsqlite3`.
+- [x] 10. Chuyển `add_person` sang SQLite  ✅
+  - [x] `--merge` = `add_embedding` (append); `--replace` = `delete_embeddings(resident_id)` rồi `add_embedding`; tạo resident (`upsert_resident`, home_floor=0) nếu chưa có; trùng tên không cờ → từ chối. CLI `--db <fdb>` → `--db <sqlite>` (+ `--schema`). KHÔNG trung bình (trước đây có). Test: no-flag từ chối (giữ 11); --merge 11→12; --replace 12→2; resident mới 'Test Person' id=2.
   - _Requirements: R6.2, R6.3_
 
-- [ ] 11. Kiểm thử Giai đoạn 2
-  - `enroll_faces` từ folder mẫu → SQLite có đúng residents + nhiều embeddings/người; `add_person --merge/--replace` đúng. `capture_person` không đổi.
+- [x] 11. Kiểm thử Giai đoạn 2  ✅
+  - [x] enroll_faces → SQLite đúng residents + nhiều embeddings/người (11, không trung bình); add_person `--merge`/`--replace` đúng; `capture_person` KHÔNG đổi. Unit tests 84/84 pass (không hồi quy). End-to-end: enroll → set floor 5 + greeting → cabin load 11 embeddings → CONFIRMED sim=0.61 greeting 'anh Sy' home_floor=5, FPS 11.7.
   - _Requirements: R6.1, R6.2, R6.4_

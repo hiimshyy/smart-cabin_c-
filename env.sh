@@ -11,8 +11,8 @@
 #   face_run_rtsp URL [DB]     — realtime match với RTSP camera
 #   face_detect                — detect-only (không recognition)
 #   face_capture NAME [COUNT]  — chụp N frames (default 5)
-#   face_add NAME IMG [IMG..]  — thêm 1 người vào DB .fdb
-#   face_enroll [DIR] [OUT]    — rebuild DB .fdb từ folder
+#   face_add NAME IMG [IMG..]  — thêm 1 người vào SQLite (--merge/--replace)
+#   face_enroll [DIR] [DB]     — enroll folder → SQLite (mỗi ảnh 1 embedding)
 #   face_bench [N]             — bench N frames (default 100)
 #
 #   --- Chế độ resident-db (SQLite, VẬN HÀNH cabin: tầng + audit log) ---
@@ -105,7 +105,7 @@ face_capture() {
 face_add() {
     if [ -z "$1" ] || [ -z "$2" ]; then
         echo "Usage: face_add NAME IMG [IMG ...] [--replace|--merge]"
-        echo "  DB target: $FACE_DB_DEFAULT"
+        echo "  DB target (SQLite): $FACE_RESIDENT_DB"
         return 1
     fi
     local name="$1"; shift
@@ -120,7 +120,7 @@ face_add() {
     (cd "$FACE_ROOT" && ./add_person \
         --name "$name" \
         "${images[@]}" \
-        --db "$FACE_DB_DEFAULT" \
+        --db "$FACE_RESIDENT_DB" --schema "$FACE_SCHEMA" \
         --det-model "$FACE_DET_MODEL" \
         --recog-model "$FACE_RECOG_MODEL" \
         --recog-dim 512 --recog-bgr \
@@ -129,9 +129,9 @@ face_add() {
 
 face_enroll() {
     local dir="${1:-$FACE_FACES_DIR}"
-    local out="${2:-$FACE_DB_DEFAULT}"
+    local db="${2:-$FACE_RESIDENT_DB}"
     (cd "$FACE_ROOT" && ./enroll_faces \
-        --dir "$dir" --out "$out" \
+        --dir "$dir" --db "$db" --schema "$FACE_SCHEMA" \
         --det-model "$FACE_DET_MODEL" \
         --recog-model "$FACE_RECOG_MODEL" \
         --recog-dim 512 --recog-bgr)
@@ -321,12 +321,13 @@ face_help() {
    face_bench_lite [N]            Bench SCRFD-only
    face_bench_rtsp URL [N]        Bench RTSP
 
- ── Quản lý dữ liệu (.fdb) ──
+ ── Quản lý dữ liệu (enroll → SQLite) ──
    face_detect                    Detect-only (bỏ recognition)
-   face_capture NAME [N] [MIN]    Chụp N frames của 1 người
-   face_add NAME IMG [IMG...]     Thêm người vào .fdb (--replace/--merge)
-   face_enroll [DIR] [OUT]        Rebuild toàn bộ .fdb
+   face_capture NAME [N] [MIN]    Chụp N frames của 1 người (ra folder)
+   face_add NAME IMG [IMG...]     Thêm người vào SQLite (--merge/--replace)
+   face_enroll [DIR] [DB]         Enroll folder → SQLite (mỗi ảnh 1 embedding)
    face_ls                        Liệt kê DB (.fdb+.db) và enroll folders
+     Enroll tạo resident home_floor=0 → nhớ face_set_floor sau đó.
 
  ── Model default ──
    detect: model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb (SCRFD)
