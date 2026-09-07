@@ -1,9 +1,11 @@
 # Smart Elevator Cabin — Kế hoạch phát triển
+# Smart Elevator Cabin — Kế hoạch phát triển
 
 **Dự án**: Face Recognition Smart Cabin for Elevator
-**Timeline**: 25/8/2026 → 10/10/2026 (6 tuần + go-live)
+**Timeline**: 25/8/2026 → 24/10/2026 (8 tuần + go-live)
 **Hardware**: Orange Pi A733 (NPU) + Waveshare 7" 1024×600 HDMI touchscreen
 **Target**: 2 cabins, ~1000 residents, FAR 1/1000
+**Team**: 1 developer (gộp vai trò Dev A + Dev B so với plan ban đầu)
 
 ---
 
@@ -34,6 +36,8 @@
 
 ## 2. Kiến trúc
 
+### 2.1 Sơ đồ tổng thể
+
 ```
      ┌──────────────┐     ┌──────────────┐
      │  Camera 1    │     │  Camera 2    │  RTSP LAN
@@ -41,8 +45,8 @@
             └──────┬──────────────┘
                    ▼
             ┌─────────────────┐
-            │  Vision daemon  │  NPU: detect + recog + liveness
-            │  (face_recog_app)│
+            │  Vision daemon  │  NPU: SCRFD detect + MobileFaceNet recog
+            │ (face_recog_app)│  + YOLO person detect (opt) + Tracker
             └────────┬────────┘
                      │
       ┌──────────────┼──────────────┬──────────────┐
@@ -52,199 +56,202 @@
   │ TTS   │  │  Manager     │  │ Mock    │  │  residents│
   │ VI+EN │  │  SDL2 7"     │  │ GPIO/log│  │  + events │
   └───────┘  └──────────────┘  └─────────┘  └───────────┘
+                                              ▲
+                                    ┌─────────┘
+                                    ▼
+                             ┌─────────────┐
+                             │ System Log  │  file rotation/day
+                             │ /var/log/   │  + stderr/journald
+                             └─────────────┘
+```
+
+### 2.2 Pipeline thực tế đã implement (tính đến 3/9/2026)
+
+```
+USB/RTSP Camera
+  │ capture thread (latest-frame slot)
+  ▼
+Letterbox 640×640 (detect_pre)
+  │
+  ├── [opt] YOLO person detect → Tracker (IoU, ghost list)
+  │
+  ▼
+SCRFD 2.5g face detect (~10-17ms NPU)
+  │
+  ▼
+Align 5-landmark → 112×112 (face_align)
+  │
+  ▼
+MobileFaceNet embedding 512-D (~3ms NPU)
+  │
+  ├── MatchEngine: cosine-max vs ALL embeddings/resident (multi-embedding, KHÔNG avg)
+  │                 → resident_id + similarity
+  │
+  ├── InteractionManager: state machine DETECTING→MATCHED→CONFIRMED
+  │                       + cooldown per resident (chống flip-flop)
+  │                       + unknown timeout (audit)
+  │
+  ├── ResidentDB (SQLite/WAL): ghi match_events async (writer thread batch)
+  │                            + touch_resident (last_seen_at, match_count)
+  │
+  ├── Logger (self-written): file /var/log/face-cabin/face-cabin-YYYY-MM-DD.log
+  │                          + stderr (color TTY), level TRACE..ERROR, retention 14d
+  │
+  └── Display thread (OpenCV imshow) — sẽ thay bằng SDL2 ở bước sau
 ```
 
 **Data flow per interaction** (target < 2s):
 
 ```
-frame → detect (19ms) → align (1ms) → recog (3ms) →
-  liveness (10ms) → DB match (0.5ms) → TTS+Display+Relay
+frame → detect (10-17ms) → align (1ms) → recog (3ms) →
+  match (≤2ms, 10k vectors) → interaction (0.01ms) → log_event (async) → TTS+Display+Relay
 ```
 
 ---
 
 ## 3. Tech Stack
 
-| Layer         | Library                               | Version    | Trạng thái                          |
-| ------------- | ------------------------------------- | ---------- | ------------------------------------- |
-| Detect/Recog  | awnn_lib + Retinaface + MobileFaceNet | current    | ✅ Đã có                           |
-| Video capture | GStreamer + OpenCV                    | 1.22 / 4.6 | ✅ Đã có                           |
-| Database      | SQLite3 + WAL                         | 3.x        | ⏳ Cần`libsqlite3-dev`             |
-| Display UI    | SDL2 + SDL2_ttf + SDL2_image          | 2.26+      | ⏳ Cần`libsdl2-*-dev`              |
-| TTS           | Piper (offline)                       | latest     | ⏳ Tuần 2                            |
-| Config        | YAML                                  | —         | ⏳ Tuần 1                            |
-| Logging       | spdlog                                | —         | ⏳ Tuần 1                            |
-| REST API      | cpp-httplib                           | —         | ⏳ Tuần 4                            |
-| Metrics       | prometheus-cpp                        | —         | ⏳ Tuần 4                            |
-| Service       | systemd                               | —         | ⏳ Tuần 1                            |
-| Build         | Makefile                              | —         | ✅ Đã có (upgrade CMake nếu cần) |
+| Layer         | Library                                    | Version    | Trạng thái |
+| ------------- | ------------------------------------------ | ---------- | ---------- |
+| Detect        | awnn_lib + **SCRFD 2.5g** (thay RetinaFace) | current    | ✅ Đã có |
+| Recog         | awnn_lib + MobileFaceNet (w600k_mbf 512-D) | current    | ✅ Đã có |
+| Person/Track  | YOLO person (opt) + Tracker IoU tự viết    | current    | ✅ Đã có |
+| Matching      | **MatchEngine** multi-embedding (tự viết)  | —         | ✅ Đã có |
+| Interaction   | **InteractionManager** state machine (tự viết) | —      | ✅ Đã có |
+| Video capture | GStreamer + OpenCV                          | 1.22 / 4.6 | ✅ Đã có |
+| Database      | SQLite3 + WAL (`resident_db`, async writer) | 3.x        | ✅ Đã có |
+| Migration     | `migrate_fdb` (.fdb → SQLite, 1 chiều)      | —         | ✅ Đã có |
+| Logging       | **Self-written logger** (không dùng spdlog) | —         | ✅ Đã có |
+| Display UI    | SDL2 + SDL2_ttf + SDL2_image                | 2.26+      | ⏳ Chưa làm |
+| TTS           | Piper (offline)                             | latest     | ⏳ Chưa làm |
+| Config        | YAML (hoặc giữ CLI args — xem ghi chú)      | —         | ⏳ Chưa làm |
+| REST API      | cpp-httplib                                 | —         | ⏳ Chưa làm |
+| Metrics       | prometheus-cpp                              | —         | ⏳ Chưa làm |
+| Service       | systemd                                     | —         | ⏳ Chưa làm |
+| Build         | Makefile                                    | —         | ✅ Đã có |
+
+### 3.1 Quyết định: Logger tự viết thay vì spdlog
+
+| Tiêu chí | spdlog | Logger tự viết (đã chọn) |
+|---|---|---|
+| Dependency | Thêm lib/submodule, cần setup trên arm64 | Không dependency ngoài C++17 std + POSIX |
+| Build trên Orange Pi | Phức tạp hơn (cross-compile / apt) | Compile thẳng cùng Makefile, đã verify |
+| Tính năng | Rất phong phú (async, backtrace, fmt) | Đủ: level, thread-safe, stderr+file, rotation/ngày, retention, màu TTY |
+| Hiệu năng | Async queue tối ưu cao | fflush/record (INFO+ thưa nên OK); bản ghi bị lọc gần miễn phí |
+| Bảo trì | Community | Tự duy trì (~350 dòng, đơn giản) |
+
+**Kết luận**: dự án nhúng 1 app / 1 dev → logger tự viết ít ma sát build, không dependency, đủ tính năng
+vận hành 24/7. spdlog chỉ đáng dùng khi cần multi-sink phức tạp (syslog remote, Loki) hoặc throughput
+log cực cao — chưa cần ở v1. Chi tiết design: `.kiro/specs/system-logging/`.
+
+### 3.2 Ghi chú Config YAML
+
+Hiện tại app + tool cấu hình qua **CLI args + env** (`--resident-db`, `--cabin-id`, `--match-thr`,
+`--confirm-streak`, `--cooldown-ms`, `--log-level`, `--log-dir`, `FACE_CABIN_LOG_*`...). YAML config
+(`config.yaml`) vẫn trong plan nhưng ưu tiên thấp — chỉ cần khi số tham số/camera tăng khó quản qua CLI.
 
 ---
 
-## 4. Lịch triển khai chi tiết
+## 4. Lịch triển khai chi tiết (điều chỉnh cho 1 dev)
 
-### 🗓 Tuần 1 (25/8 – 31/8) — Foundation
+> Timeline gốc 6 tuần chia 2 dev. Thực tế 1 dev nên giãn thành ~8 tuần. Foundation + data layer +
+> logging đã xong sớm; phần UI/TTS/ops dồn về sau.
 
-**Mục tiêu**: hệ thống nền tảng vững, chuyển sang SQLite, chạy 24/7.
+### 🗓 Giai đoạn 1 (25/8 – ~7/9) — Foundation + Data layer + Logging ✅ PHẦN LỚN ĐÃ XONG
 
-#### Dev A (backend)
+**Mục tiêu**: nền tảng dữ liệu SQLite + nhận diện multi-embedding + logging vận hành.
 
-- [ ] Cài dev libs: `libsqlite3-dev`, `libsdl2-*-dev`
-- [ ] Wrap SQLite: `src/resident_db.{h,cpp}` với API cơ bản
-- [ ] Apply schema `db/schema.sql`, unit test CRUD
-- [ ] Migration script `.fdb` → SQLite (đọc DB cũ, insert vào bảng embeddings)
-- [ ] RTSP reconnect logic trong `capture_worker`: exponential backoff
-- [ ] Config YAML file (`config.yaml`): camera URLs, models, DB path, thresholds
-- [ ] systemd service `face-cabin.service` với `Restart=always`
+**Đã hoàn thành:**
 
-#### Dev B (import + display base)
+- [X] Wrap SQLite: `src/resident_db.{h,cpp}` (open WAL + FK, apply schema, load_active, async writer)
+- [X] Apply schema `db/schema.sql`, unit test CRUD (ResidentDB 22 checks)
+- [X] Migration `.fdb` → SQLite: tool `migrate_fdb` (home_floor sentinel 0, skip/overwrite)
+- [X] **MatchEngine** multi-embedding: match max-cosine với TẤT CẢ embedding/người (không avg) — 14 checks
+- [X] **InteractionManager** state machine: DETECTING→MATCHED→CONFIRMED, cooldown/resident, unknown timeout — 50 checks
+- [X] Khâu nối `main.cpp` chế độ `--resident-db` (match → interaction → match_events)
+- [X] Phase 2: `enroll_faces` + `add_person` ghi thẳng SQLite (bỏ `.fdb` khỏi enroll)
+- [X] **Logger tự viết** `src/log/logger.{h,cpp}`: level, thread-safe, stderr+file, rotation/ngày, retention — 14 checks
+- [X] Di trú toàn bộ binary (main + tool) sang logger
+- [X] Code review + fix P1 (logger tầng lib, name-collision→track_id, dim cross-check) + P2-1 (cooldown retry)
+- [X] Cài dev libs `libsqlite3-dev` (Orange Pi) / no-sudo extract (máy dev)
 
-- [ ] Tool `bulk_enroll`: đọc CSV + `--photos-dir` → SQLite
-  - Xử lý failure list → `enroll_failures.csv`
-  - Support `--overwrite` / `--skip-existing`
-- [ ] SDL2 skeleton app `src/cabin_ui.{h,cpp}`:
-  - Fullscreen 1024×600
-  - Font Vietnamese UTF-8 (Noto Sans / Roboto)
-  - 3 màn hình cơ bản: `IDLE`, `DETECTING`, `MATCHED_STUB`
-- [ ] Touchscreen tap event handler (WaveShare WS170120)
+**Còn lại của Giai đoạn 1 (chưa làm — GIỮ trong plan):**
 
-**Deliverables tuần 1**:
+- [ ] RTSP reconnect logic trong `capture_worker`: exponential backoff (chưa có code)
+- [ ] Config YAML file `config.yaml`: camera URLs, models, DB path, thresholds (ưu tiên thấp, xem §3.2)
+- [ ] systemd service `face-cabin.service` với `Restart=always` (chưa có)
+- [ ] Tool `bulk_enroll`: CSV + `--photos-dir` → SQLite (spec format có ở `docs/BULK_ENROLL_FORMAT.md`, chưa code)
+- [ ] SDL2 skeleton `src/cabin_ui.{h,cpp}`: fullscreen 1024×600, font VN UTF-8, 3 màn IDLE/DETECTING/MATCHED (chưa có)
+- [ ] Touchscreen tap handler (Waveshare WS170120) (chưa có)
 
-- ✅ SQLite DB có thể enroll từ 5 ảnh thẻ mẫu
-- ✅ SDL2 window render idle screen trên Waveshare
-- ✅ face_recog_app chạy 24h liên tục qua systemd, không crash
-- ✅ RTSP mất kết nối → tự reconnect trong <10s
+**Deliverables Giai đoạn 1:**
 
----
-
-### 🗓 Tuần 2 (1/9 – 7/9) — Recognition + Greeting Core
-
-**Mục tiêu**: E2E flow: bước vào cabin → TTS chào tên → gọi tầng (mock).
-
-#### Dev A
-
-- [ ] Multi-embedding matching: match với **max similarity** trong list, không phải avg
-- [ ] Liveness passive: kiểm tra motion giữa 2 frame consecutive
-  - Diff bbox center movement > 3px (chống ảnh in tĩnh)
-  - Optional: NPU liveness model (Silent-Face-Anti-Spoofing) — nếu có thời gian
-- [ ] Mock elevator: GPIO relay OR log-only `[ELEVATOR] goto floor 12`
-- [ ] Cooldown 3s per resident (tránh flip-flop)
-- [ ] Event logging vào bảng `match_events`
-
-#### Dev B
-
-- [ ] Piper TTS setup:
-  - Download voice `vi_VN-25hours-single-medium` (~30MB)
-  - Download voice `en_US-libritts-r-medium` (~50MB)
-  - Build hoặc apt install `piper-tts`
-- [ ] Template engine:
-  - VI: `"Chào {greeting_name}, cabin lên tầng {home_floor} nhé!"`
-  - EN: `"Hello {greeting_name}, going to floor {home_floor}."`
-- [ ] Cache TTS audio theo `resident_id` (không phải regenerate mỗi lần)
-- [ ] Display state machine hoàn chỉnh:
-  - `IDLE` → `DETECTING` (khi có face)
-  - `DETECTING` → `MATCHED` (recog OK)
-  - `MATCHED`: show name + floor + 3s countdown progress
-  - `CONFIRMED` → gọi relay + play TTS
-  - Timeout/tap-cancel → `MANUAL_INPUT` (grid tầng 1-30)
-
-**Deliverables tuần 2**:
-
-- ✅ Person walks in → 2s later: TTS "Chào bác Nga, lên tầng 12" + relay trigger
-- ✅ Tap "Cancel" → hủy floor, chuyển manual input
-- ✅ Ảnh in không match được (liveness passive filter)
+- ✅ SQLite DB enroll được từ ảnh thẻ; multi-embedding matching + audit log hoạt động
+- ✅ Logging file rotation/ngày chạy, không PII
+- ⏳ SDL2 idle screen trên Waveshare (chưa)
+- ⏳ face_recog_app chạy 24h qua systemd (chưa có service)
+- ⏳ RTSP mất kết nối tự reconnect <10s (chưa)
 
 ---
 
-### 🗓 Tuần 3 (8/9 – 14/9) — Multi-person + i18n
+### 🗓 Giai đoạn 2 (~8/9 – 21/9) — Recognition core hoàn chỉnh + Greeting + UI base
 
-**Mục tiêu**: xử lý nhiều người + song ngữ VI/EN.
+**Mục tiêu**: E2E: bước vào cabin → chào tên (TTS + màn hình) → gọi tầng (mock).
 
-#### Dev A
+- [X] Multi-embedding matching (đã xong ở GĐ1)
+- [X] Cooldown per resident (đã xong ở GĐ1 — InteractionManager)
+- [X] Event logging `match_events` (đã xong ở GĐ1)
+- [ ] Liveness passive: motion diff giữa 2 frame (bbox center > 3px) chống ảnh in tĩnh
+  - Optional: NPU liveness model (Silent-Face-Anti-Spoofing) nếu có thời gian
+- [ ] Mock elevator: `src/elevator.{h,cpp}` interface `goto_floor(int)` — backend GPIO relay OR log `[ELEVATOR] goto floor 12`
+- [ ] Auto floor-call: khi CONFIRMED và `home_floor > 0` → gọi tầng; `home_floor <= 0` → chào tên, không auto-gọi
+- [ ] SDL2 UI base + state machine: IDLE → DETECTING → MATCHED (tên + tầng + countdown 3s) → CONFIRMED → MANUAL_INPUT
+- [ ] Piper TTS: voice `vi_VN-...` + `en_US-...`, cache audio theo `resident_id`, template VI/EN
+- [ ] Tap-to-cancel/change trên touchscreen
 
-- [ ] Multi-person handler:
-  - Detect nhiều faces cùng frame
-  - Priority: closest-to-camera (bbox area lớn nhất) là primary
-  - Nếu 2+ khác tầng: gọi TTS "Đưa {name1} tầng X, {name2} tầng Y"
-  - Relay signal cho ALL selected floors
-- [ ] Self-supervised embedding capture:
-  - Sau khi confirm (no cancel trong 3s) → save embedding mới vào `embeddings` với `source='cabin'`
-  - Auto-limit 10 embeddings per person (drop oldest ID photo trước)
-- [ ] Threshold auto-adjustment:
-  - Nới lỏng (0.30) khi resident chỉ có ID photo embedding
-  - Siết (0.40) khi resident có ≥3 cabin embeddings
+**Deliverables:**
 
-#### Dev B
-
-- [ ] i18n system:
-  - Load string templates từ file `lang/vi.yaml`, `lang/en.yaml`
-  - Language switch based on `resident.language`
-- [ ] Confirm UX polish:
-  - Circular countdown progress (3s)
-  - Cancel/Change floor buttons rõ ràng
-  - Font size ≥ 32px cho người già
-- [ ] Empty state: cabin trống → clock + welcome message
-
-**Deliverables tuần 3**:
-
-- ✅ 3 người vào cabin → chào 3 người → gọi 3 tầng (nếu khác nhau)
-- ✅ VI resident thấy tiếng Việt, EN resident thấy tiếng Anh
-- ✅ Sau 10 lần match → in-cabin embeddings được lưu
+- ✅ Person walks in → ~2s: TTS "Chào bác Nga, lên tầng 12" + relay trigger (mock)
+- ✅ Tap Cancel → hủy floor, chuyển manual input
+- ✅ Ảnh in không match (liveness passive filter)
 
 ---
 
-### 🗓 Tuần 4 (15/9 – 21/9) — REST API + Ops
+### 🗓 Giai đoạn 3 (~22/9 – 5/10) — Multi-person + i18n + Self-supervised + Ops
 
-**Mục tiêu**: HR tự quản lý được cư dân, ops có metrics + logs.
+**Mục tiêu**: nhiều người, song ngữ, tự cải thiện embedding, vận hành được.
 
-#### Dev A
+- [ ] Multi-person handler: primary = bbox lớn nhất; 2+ khác tầng → TTS + relay cho tất cả
+- [ ] Self-supervised capture: sau confirm (no cancel 3s) → lưu embedding `source='cabin'`, giới hạn 10/người (drop id_photo cũ trước)
+- [ ] Threshold auto-adjust: nới (0.30) khi chỉ có id_photo; siết (0.40) khi ≥3 cabin embeddings
+- [ ] i18n: template `lang/vi.yaml` / `lang/en.yaml`, switch theo `resident.language`
+- [ ] Confirm UX: circular countdown 3s, nút Cancel/Change rõ, font ≥32px
+- [ ] RTSP reconnect + heartbeat (kéo từ GĐ1)
+- [ ] systemd service + `bulk_enroll` (kéo từ GĐ1)
+- [ ] Backup nightly SQLite dump; retention cron `match_events` >30 ngày (VIP 90)
 
-- [ ] REST API server (`face-cabin-api` binary hoặc built-in):
-  - `POST /api/residents/bulk` — upload CSV + ZIP ảnh
-  - `POST /api/residents` — thêm 1 (multipart: JSON + photo)
-  - `PUT /api/residents/{id}` — update fields
-  - `DELETE /api/residents/{id}` — soft delete (set `active=0`)
-  - `GET /api/residents` — list, filter
-  - `GET /api/events?since=...&resident_id=...` — audit
-  - `GET /api/metrics` — Prometheus format
-- [ ] Auth: simple bearer token (config file)
-- [ ] Backup: nightly SQLite dump → `/var/backups/face-cabin/YYYY-MM-DD.sql.gz`
-- [ ] Retention: cron xóa `match_events` > 30 ngày (VIP: 90)
+**Deliverables:**
 
-#### Dev B
-
-- [ ] Display polish:
-  - Night mode (giảm brightness sau 22h)
-  - Splash screen với logo building
-  - Animation nhẹ khi match (fade in name)
-- [ ] Error UI states:
-  - Camera offline → biểu tượng warning
-  - DB error → "System offline, use manual"
-  - Elevator error → "Please use buttons manually"
-- [ ] Emergency mode: 3 miss liên tiếp → auto-fallback to manual + log incident
-
-**Deliverables tuần 4**:
-
-- ✅ HR upload CSV + ZIP → 1000 residents enroll trong <10 phút
-- ✅ Grafana dashboard: FPS, match rate, camera uptime, latency P95
-- ✅ Log rotation setup, backup định kỳ
+- ✅ 3 người vào cabin → chào + gọi tầng khác nhau
+- ✅ VI/EN theo resident
+- ✅ Sau ~10 match → in-cabin embeddings được lưu
+- ✅ HR bulk enroll từ CSV + ảnh
 
 ---
 
-### 🗓 Tuần 5 (22/9 – 28/9) — Field Test 1 Cabin
+### 🗓 Giai đoạn 4 (~6/10 – 19/10) — REST API + Field Test 1 Cabin
 
-**Mục tiêu**: chạy thật 1 tuần, thu thập metrics, fix bugs.
+**Mục tiêu**: HR tự quản lý; chạy thật 1 cabin, thu metrics, fix bug.
 
-#### Cả 2 dev
+- [ ] REST API (`face-cabin-api` hoặc built-in): CRUD residents, bulk upload, `GET /events`, `GET /metrics` (Prometheus)
+- [ ] Auth bearer token; backup; retention
+- [ ] Display polish: night mode, splash logo, fade-in khi match
+- [ ] Error UI: camera offline / DB error / elevator error → fallback manual
+- [ ] Emergency mode: 3 miss liên tiếp → auto-fallback manual + log incident
+- [ ] Cài trên 1 thang máy (consent BQL), enroll 20-50 volunteers
+- [ ] Live monitoring dashboard, consent poster, emergency contact 24/7
 
-- [ ] Cài đặt trên 1 thang máy building (đã có consent BQL)
-- [ ] Enroll 20-50 volunteers từ ID photos
-- [ ] Daily standup 15 min triage
-- [ ] Live monitoring dashboard
-- [ ] Consent poster + fallback poster in cabin
-- [ ] Emergency contact 24/7 setup
-
-**Metrics theo dõi (mục tiêu)**:
+**Metrics theo dõi (mục tiêu):**
 
 | Metric                            | Target            |
 | --------------------------------- | ----------------- |
@@ -253,127 +260,108 @@ frame → detect (19ms) → align (1ms) → recog (3ms) →
 | E2E latency P95                   | <2s               |
 | Voice greeting completion         | >95%              |
 | System uptime                     | >99%              |
-| Cancel/override rate              | <10% (< là tốt) |
-
-**Deliverables tuần 5**:
-
-- ✅ 100+ recognition events log
-- ✅ FAR đo empirical <0.1%
-- ✅ Bug list được fix rolling
-- ✅ Feedback từ volunteers → adjust threshold, greeting text
+| Cancel/override rate              | <10% (< là tốt)  |
 
 ---
 
-### 🗓 Tuần 6 (29/9 – 5/10) — Deploy 2 Cabins + Go-Live
+### 🗓 Giai đoạn 5 (~20/10 – 24/10) — Deploy 2 Cabins + Go-Live
 
-**Mục tiêu**: 2 cabins production, training staff.
+- [ ] Roll out cabin thứ 2, migrate embeddings self-supervised → shared DB
+- [ ] Training staff BQL dùng REST API
+- [ ] Docs: `docs/RUNBOOK.md`, resident FAQ card, `docs/API.md`
+- [ ] Load test 10 concurrent; final security review (no plaintext creds, no PII in logs)
 
-- [ ] Roll out cabin thứ 2
-- [ ] Migrate embeddings (self-supervised) từ cabin 1 → shared DB
-- [ ] Training staff BQL: dùng REST API để add/remove residents
-- [ ] Documentation:
-  - Ops runbook (`docs/RUNBOOK.md`): restart, troubleshoot, backup/restore
-  - Resident FAQ card (in cabin): "Hệ thống này là gì? Tôi có quyền gì?"
-  - API doc (`docs/API.md`): endpoint reference
-- [ ] Load test: bench với 10 fake concurrent recognitions
-- [ ] Final security review: no plaintext credentials, no PII in logs
+**Deliverables:**
 
-**Deliverables tuần 6**:
+- ✅ 2 cabins live; enroll ~1000 residents; SLA 99.5% uptime, <2s latency, FAR <0.1%
 
-- ✅ 2 cabins live
-- ✅ Enroll 1000 residents (nếu ID photos đủ)
-- ✅ Runbook + FAQ hoàn chỉnh
-- ✅ SLA đạt: 99.5% uptime, <2s latency, FAR <0.1%
+### 🚀 Go-Live ~24/10/2026
 
----
-
-### 🚀 Go-Live 10/10/2026
-
-- Formal announcement to residents (with 1 tuần trước)
-- Support hotline 24/7 first week
-- Monitor daily → fix bug rolling
-- Retrospective sau 1 tháng
+- Announcement trước 1 tuần; hotline 24/7 tuần đầu; monitor daily; retrospective sau 1 tháng
 
 ---
 
 ## 5. Data schema tham chiếu
 
-Xem chi tiết trong `db/schema.sql`.
+Xem chi tiết trong `db/schema.sql`. Đặc tả code: `.kiro/specs/resident-db-layer/`.
 
-**Bảng chính**:
+**Bảng chính:**
 
-- `residents` — 1000 rows target
-- `embeddings` — 3000-10000 rows (multi-embedding per person)
+- `residents` — 1000 rows target. `home_floor = 0` (sentinel `HOME_FLOOR_UNSET`) = "chưa đăng ký tầng" → chào tên, không auto-gọi tầng
+- `embeddings` — 3000-10000 rows (nhiều embedding/người, `source` = id_photo/cabin/admin). MatchEngine lấy max cosine, KHÔNG average
 - `cabins` — 2 rows
-- `match_events` — grow ~100-500 rows/day, retention 30 ngày
+- `match_events` — ~100-500 rows/ngày, retention 30 ngày. Ghi async qua writer thread (không chặn frame loop)
 - `schema_version` — migration tracking
 
 ---
 
 ## 6. Risk Register
 
-| #   | Risk                                           | Probability | Impact  | Mitigation                                              | Owner      |
-| --- | ---------------------------------------------- | ----------- | ------- | ------------------------------------------------------- | ---------- |
-| R1  | Ảnh thẻ 3×4 không match được ảnh cabin | High        | High    | Self-supervised update + threshold nới lỏng           | Dev A      |
-| R2  | Cư dân già không quen tap-to-cancel        | Med         | Med     | Tap area lớn, countdown 5s cho VIP, physical fallback  | Dev B      |
-| R3  | Piper TTS đọc tên VN sai                    | Med         | Low-Med | Custom`greeting_name` field, test 100 tên trước    | Dev B      |
-| R4  | Multi-person 5+ gây confusion                 | Low         | Med     | Chỉ chào top-2 primary, còn lại "và các bạn"     | Dev A      |
-| R5  | Liveness bypass bằng video HD                 | Med         | High    | Motion diff frame + optional NPU liveness model         | Dev A      |
-| R6  | Camera hỏng / mạng chậm                     | Med         | Med     | Reconnect + heartbeat + alert                           | Dev A      |
-| R7  | GDPR/PDPA compliance                           | Low         | High    | Consent tracking + retention + right-to-delete          | Dev A      |
-| R8  | Building manager rút consent test             | Low         | High    | Backup building 2 nếu building 1 rút                  | PM         |
-| R9  | NPU crash không recover                       | Low         | High    | Watchdog restart service; kernel driver crash → reboot | Dev A      |
-| R10 | ID photo scan chất lượng thấp              | High        | Med     | Log failures, HR chụp lại subset                      | HR + Dev B |
+| #   | Risk                                    | Prob | Impact  | Mitigation                                              | Trạng thái |
+| --- | --------------------------------------- | ---- | ------- | ------------------------------------------------------- | ---------- |
+| R1  | Ảnh thẻ 3×4 không match ảnh cabin       | High | High    | Self-supervised update + threshold nới lỏng             | ⏳ (GĐ3) |
+| R2  | Cư dân già không quen tap-to-cancel     | Med  | Med     | Tap area lớn, countdown 5s cho VIP, physical fallback   | ⏳ (GĐ2-3) |
+| R3  | Piper TTS đọc tên VN sai                | Med  | Low-Med | Custom `greeting_name`, test 100 tên trước              | ⏳ (GĐ2) |
+| R4  | Multi-person 5+ gây confusion           | Low  | Med     | Chỉ chào top-2 primary, còn lại "và các bạn"            | ⏳ (GĐ3) |
+| R5  | Liveness bypass bằng video HD           | Med  | High    | Motion diff frame + optional NPU liveness model         | ⏳ (GĐ2) |
+| R6  | Camera hỏng / mạng chậm                 | Med  | Med     | RTSP reconnect + heartbeat + alert                      | ⏳ (GĐ1/3) |
+| R7  | GDPR/PDPA compliance                    | Low  | High    | Consent tracking + retention + right-to-delete. **Log không PII đã enforce** | 🟡 phần logging done |
+| R8  | Building manager rút consent test       | Low  | High    | Backup building 2 nếu building 1 rút                    | ⏳ |
+| R9  | NPU crash không recover                 | Low  | High    | Watchdog restart service; kernel crash → reboot         | ⏳ (cần systemd) |
+| R10 | ID photo scan chất lượng thấp           | High | Med     | Log failures, HR chụp lại subset                        | ⏳ (cần bulk_enroll) |
+| R11 | Enroll sai `--recog-dim` → cả DB unknown | Med | Med     | **Đã fix**: cross-check dim DB vs model, LOG_ERROR + thoát (P1-3) | ✅ done |
+| R12 | Trùng tên/greeting_name → nhầm người    | Med  | Med     | **Đã fix**: dùng `track_id→resident_id`, không suy theo tên (P1-2) | ✅ done |
 
 ---
 
 ## 7. Câu hỏi mở
 
-Đã trả lời:
+**Đã trả lời:**
 
-- ✅ Thang máy vendor: skip (mock)
-- ✅ Số cư dân: 1000
-- ✅ Use case: smart cabin
-- ✅ FAR target: 1/1000
-- ✅ Team: 2 devs
-- ✅ Hardware: Orange Pi (upgrade Jetson nếu cần)
-- ✅ Timeline: 10/10
-- ✅ Building manager consent: HR handle
-- ✅ Enroll source: ảnh thẻ 3×4
-- ✅ Language: VI + EN
-- ✅ Display: Waveshare 7" HDMI touch
-- ✅ Voice: chỉ TTS + confirm
-- ✅ Network: LAN
+- ✅ Thang máy vendor: skip (mock) · Số cư dân: 1000 · Use case: smart cabin · FAR: 1/1000
+- ✅ Team: 1 dev (điều chỉnh) · Hardware: Orange Pi A733 · Timeline: giãn ~24/10
+- ✅ Consent: HR handle · Enroll source: ảnh thẻ 3×4 · Language: VI + EN
+- ✅ Display: Waveshare 7" HDMI touch · Voice: chỉ TTS + confirm · Network: LAN
+- ✅ Logging: logger tự viết (không spdlog) · Data source: SQLite là nguồn duy nhất (.fdb chỉ để migrate)
 
-Còn chưa xác định:
+**Còn chưa xác định:**
 
 - ⏳ Loại brand thang máy để integrate v2 (không blocker cho v1 mock)
 - ⏳ Test cabin nào của building — đã có consent chưa?
 - ⏳ Backup building nếu building 1 rút consent
 - ⏳ Format ảnh thẻ 3×4 (JPEG scan? PNG? kích thước px thực tế?)
+- ⏳ Có cần YAML config hay giữ CLI args (xem §3.2)?
 
 ---
 
 ## 8. Progress log
 
-### Tuần 1 tracking
+### Đã hoàn thành (commit trên `main`)
 
-| Ngày | Dev | Task                            | Status         | Notes                          |
-| ----- | --- | ------------------------------- | -------------- | ------------------------------ |
-| 24/8  | —  | Kickoff, requirements gather    | ✅ Done        | Full scope confirmed           |
-| 24/8  | A   | Schema SQLite draft             | ✅ Done        | `db/schema.sql`              |
-| 24/8  | B   | CSV format spec                 | ✅ Done        | `docs/BULK_ENROLL_FORMAT.md` |
-| 25/8  | A   | Install dev libs                | ⏳ In progress | Waiting for sudo               |
-| 25/8  | A   | resident_db.{h,cpp} wrap SQLite | 📋 Pending     |                                |
-| 25/8  | B   | bulk_enroll tool                | 📋 Pending     |                                |
-| 25/8  | B   | SDL2 skeleton                   | 📋 Pending     |                                |
-| ...   |     |                                 |                |                                |
+| Ngày  | Hạng mục                                    | Commit / Ghi chú |
+| ----- | ------------------------------------------- | ---------------- |
+| 24/8  | Kickoff, schema SQLite draft, CSV spec      | `db/schema.sql`, `docs/BULK_ENROLL_FORMAT.md` |
+| ~/9   | MatchEngine + ResidentDB + unit tests       | `2b9e6cb` |
+| ~/9   | Spec resident-db-layer + system-logging     | `7fa2fd7`, `3f03ba2` |
+| ~/9   | Logger core + rotation/retention tests      | `3c24201`, `95e1d01` |
+| ~/9   | Phase 1 resident-db: migrate_fdb + main wire | `680e338`, `62a915e` |
+| ~/9   | InteractionManager state machine            | `98c2e11` |
+| ~/9   | Phase 2: enroll_faces + add_person → SQLite | `c3a7ce0` |
+| ~/9   | Link logger vào mọi binary (Makefile)       | `d46384c` |
+| ~/9   | Di trú main.cpp + tool sang logger          | `5672530`, `633064e` |
+| 3/9   | Code review findings                        | `aa53d21` |
+| 3/9   | Fix review P1-1..P1-3 + P2-1                 | `ab02162` |
 
-### Tuần 2 tracking
+### Đang chờ / kế tiếp
 
-(Sẽ update sau khi hoàn thành Tuần 1)
+- SDL2 UI, Piper TTS, mock elevator, liveness passive (GĐ2)
+- Multi-person, self-supervised, i18n, RTSP reconnect, systemd, bulk_enroll (GĐ3)
+- REST API, field test (GĐ4)
 
-### ...
+### Tham chiếu
+
+- Specs: `.kiro/specs/resident-db-layer/`, `.kiro/specs/system-logging/`
+- Code review đang theo dõi: `docs/CODE_REVIEW_resident-db_logging.md` (P2-2, P2-3, P3-1..P3-6 còn mở)
 
 ---
 
@@ -381,14 +369,13 @@ Còn chưa xác định:
 
 | Role                       | Name | Contact |
 | -------------------------- | ---- | ------- |
-| Dev A (backend + vision)   | —   | —      |
-| Dev B (frontend + voice)   | —   | —      |
-| HR (enroll data + consent) | —   | —      |
-| Building Manager           | —   | —      |
-| Emergency contact 24/7     | —   | —      |
+| Developer (full-stack)     | —    | —       |
+| HR (enroll data + consent) | —    | —       |
+| Building Manager           | —    | —       |
+| Emergency contact 24/7     | —    | —       |
 
 ---
 
-**Cập nhật cuối**: 24/8/2026
+**Cập nhật cuối**: 3/9/2026
 **Owner**: —
-**Version**: 1.0
+**Version**: 2.0
