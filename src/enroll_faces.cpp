@@ -77,8 +77,10 @@ static void print_usage(const char* prog) {
         "           [--recog-bgr    (feed BGR, default RGB)]\n"
         "           [--min-face-px N (skip small faces, default 40)]\n"
         "           [--schema PATH  (schema.sql for empty DB, default db/schema.sql)]\n"
+        "           [--source S     (embedding source id_photo|cabin|admin, default id_photo)]\n"
+        "           [--replace      (delete a person's existing embeddings first)]\n"
         "\n"
-        "  Each image -> one embedding row (source='id_photo'), NOT averaged.\n"
+        "  Each image -> one embedding row, NOT averaged.\n"
         "  New residents get home_floor=0 (\"no floor registered\"); set the real\n"
         "  floor later (e.g. via sqlite3 or the face_set_floor helper).\n",
         prog);
@@ -87,9 +89,11 @@ static void print_usage(const char* prog) {
 int main(int argc, char** argv) {
     std::string dir_path, db_path, schema_path = "db/schema.sql";
     std::string det_model, recog_model;
+    std::string emb_source = "id_photo";   // schema: id_photo|cabin|admin (P3-5)
     int   recog_dim   = 512;
     bool  recog_rgb   = true;
     int   min_face_px = 40;
+    bool  do_replace  = false;             // clear a person's embeddings first (P3-4)
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -100,6 +104,8 @@ int main(int argc, char** argv) {
         if      (a == "--dir")         dir_path    = next("--dir");
         else if (a == "--db")          db_path     = next("--db");
         else if (a == "--schema")      schema_path = next("--schema");
+        else if (a == "--source")      emb_source  = next("--source");
+        else if (a == "--replace")     do_replace  = true;
         else if (a == "--det-model")   det_model   = next("--det-model");
         else if (a == "--recog-model") recog_model = next("--recog-model");
         else if (a == "--recog-dim")   recog_dim   = std::atoi(next("--recog-dim"));
@@ -126,8 +132,9 @@ int main(int argc, char** argv) {
              recog_model.c_str(), recog_dim, recog_rgb ? 1 : 0);
 
     // ---- Open the SQLite resident DB (create+schema if empty) ----------
+    // Offline tool: no async writer thread (code-review P3-6).
     ResidentDB db;
-    if (!db.open(db_path, schema_path)) {
+    if (!db.open(db_path, schema_path, /*spawn_writer=*/false)) {
         LOG_ERROR("enroll", "failed to open resident DB %s", db_path.c_str());
         return 2;
     }
@@ -163,17 +170,28 @@ int main(int argc, char** argv) {
 
     int total_persons = 0, total_imgs = 0, total_used = 0;
 
+    // Batch every insert in one transaction so we don't fsync per row
+    // (code-review P3-1). Rolled back on fatal error below.
+    db.begin();
+
     for (const auto& person_entry : fs::directory_iterator(dir_path)) {
         if (!person_entry.is_directory()) continue;
         std::string person = person_entry.path().filename().string();
 
-        // Create (or reuse) the resident row up front so we can attach each
-        // image's embedding to it. home_floor=0 = "no floor registered yet".
-        // No PII in logs (R7): reference the resident by id, not folder name.
+        // Track whether this resident row is newly created this run, so we can
+        // drop it again if it ends up with no usable embedding (P3-2) without
+        // deleting a pre-existing resident.
+        bool    was_new    = (db.find_resident(person) < 0);
         int64_t resident_id = db.upsert_resident(person, HOME_FLOOR_UNSET);
         if (resident_id < 0) {
             LOG_WARN("enroll", "upsert_resident failed (skip a person)");
             continue;
+        }
+
+        // --replace: drop this person's old embeddings before re-adding (P3-4),
+        // so re-running enroll on the same folder doesn't accumulate dupes.
+        if (do_replace && !was_new) {
+            db.delete_embeddings(resident_id);
         }
 
         int person_embs = 0;
@@ -213,7 +231,7 @@ int main(int argc, char** argv) {
             if (!recognizer->extract(aligned, e)) continue;
 
             // One embedding row per image — NO averaging (spec R6.1).
-            if (!db.add_embedding(resident_id, "id_photo", e)) {
+            if (!db.add_embedding(resident_id, emb_source, e)) {
                 LOG_WARN("enroll", "id=%lld add_embedding failed for %s",
                          (long long)resident_id, fn.c_str());
                 continue;
@@ -226,9 +244,15 @@ int main(int argc, char** argv) {
             ++total_persons;
             LOG_INFO("enroll", "resident id=%lld: %d embeddings, home_floor=0",
                      (long long)resident_id, person_embs);
-        } else {
+        } else if (was_new) {
+            // Newly-created resident with no usable embedding -> drop it so it
+            // doesn't sit active-but-unmatchable in the DB (code-review P3-2).
+            db.remove_resident(resident_id);
             LOG_WARN("enroll", "resident id=%lld: NO usable embedding "
-                     "(row kept, empty)", (long long)resident_id);
+                     "(newly-created row removed)", (long long)resident_id);
+        } else {
+            LOG_WARN("enroll", "resident id=%lld: NO new usable embedding "
+                     "(existing resident left unchanged)", (long long)resident_id);
         }
     }
 
@@ -236,12 +260,14 @@ int main(int argc, char** argv) {
              total_persons, total_imgs, total_used);
     if (total_used == 0) {
         LOG_ERROR("enroll", "no embeddings written");
+        db.rollback();
         db.close();
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
         return 3;
     }
+    db.commit();
     LOG_INFO("enroll", "wrote %d embeddings across %d residents -> %s",
              total_used, total_persons, db_path.c_str());
     LOG_WARN("enroll", "all new residents have home_floor=0 "

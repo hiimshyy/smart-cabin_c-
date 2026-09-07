@@ -81,6 +81,7 @@ static void print_usage(const char* prog) {
         "           [--replace]     (delete resident's old embeddings first)\n"
         "           [--merge]       (append to resident's embeddings)\n"
         "           [--min-face-px N (default 40)]\n"
+        "           [--source S     (embedding source id_photo|cabin|admin, default id_photo)]\n"
         "           [--schema PATH  (schema.sql for empty DB, default db/schema.sql)]\n"
         "\n"
         "  Each image -> one embedding row (source='id_photo'), NOT averaged.\n"
@@ -98,6 +99,7 @@ int main(int argc, char** argv) {
     int   min_face_px = 40;
     bool  do_replace  = false;
     bool  do_merge    = false;
+    std::string emb_source = "id_photo";   // schema: id_photo|cabin|admin (P3-5)
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -116,6 +118,7 @@ int main(int argc, char** argv) {
         else if (a == "--replace")      do_replace  = true;
         else if (a == "--merge")        do_merge    = true;
         else if (a == "--min-face-px")  min_face_px = std::atoi(next("--min-face-px"));
+        else if (a == "--source")       emb_source  = next("--source");
         else if (a == "--log-level" || a == "--log-dir") { next(a.c_str()); } // consumed by resolve_log_config
         else if (a == "-h" || a == "--help") { print_usage(argv[0]); return 0; }
         else {
@@ -141,7 +144,8 @@ int main(int argc, char** argv) {
 
     // ---- Open the SQLite resident DB (create+schema if empty) ----------
     ResidentDB db;
-    if (!db.open(db_path, schema_path)) {
+    // Offline tool: no async writer thread (code-review P3-6).
+    if (!db.open(db_path, schema_path, /*spawn_writer=*/false)) {
         LOG_ERROR("add", "cannot open resident DB %s", db_path.c_str());
         return 3;
     }
@@ -265,7 +269,7 @@ int main(int argc, char** argv) {
     // Add one row per extracted embedding — NO averaging (spec R6.2).
     int written = 0;
     for (const auto& e : new_embs) {
-        if (db.add_embedding(resident_id, "id_photo", e)) ++written;
+        if (db.add_embedding(resident_id, emb_source, e)) ++written;
         else LOG_WARN("add", "add_embedding failed (1 of %zu)", new_embs.size());
     }
     if (written == 0) {

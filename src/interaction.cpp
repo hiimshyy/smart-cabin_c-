@@ -34,11 +34,14 @@ InteractionManager::update(
 
     std::vector<Outcome> outcomes;
 
-    // ---- 1. Reap sessions whose subjects disappeared ------------------
+    // ---- 1. Reap sessions whose subjects have been gone past the grace
+    //         period. A short (1-2 frame) detection dropout keeps the session
+    //         alive so the streak isn't reset by flicker (code-review P2-2).
     std::set<int> present;
     for (const auto& [key, _] : subjects) present.insert(key);
     for (auto it = sessions_.begin(); it != sessions_.end();) {
-        if (present.count(it->first) == 0) {
+        if (present.count(it->first) == 0 &&
+            (now_ms - it->second.last_seen_ms) > cfg_.reap_grace_ms) {
             it = sessions_.erase(it);
         } else {
             ++it;

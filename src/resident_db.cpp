@@ -36,7 +36,8 @@ ResidentDB::~ResidentDB() {
 // Task 3.1 — open()
 // --------------------------------------------------------------------------
 bool ResidentDB::open(const std::string& db_path,
-                      const std::string& schema_sql_path) {
+                      const std::string& schema_sql_path,
+                      bool spawn_writer) {
     if (db_) {
         LOG_ERROR("db", "already open");
         return false;
@@ -70,9 +71,12 @@ bool ResidentDB::open(const std::string& db_path,
         LOG_INFO("db", "applied schema from %s", schema_sql_path.c_str());
     }
 
-    // Start background writer.
+    // Start background writer (skipped for offline tools that only use the
+    // synchronous write API — see spawn_writer / code-review P3-6).
     stop_ = false;
-    writer_ = std::thread(&ResidentDB::writer_loop, this);
+    if (spawn_writer) {
+        writer_ = std::thread(&ResidentDB::writer_loop, this);
+    }
     return true;
 }
 
@@ -282,6 +286,22 @@ int64_t ResidentDB::find_resident(const std::string& name) const {
     sqlite3_finalize(st);
     return id;
 }
+
+bool ResidentDB::remove_resident(int64_t resident_id) {
+    if (!db_ || resident_id < 0) return false;
+    sqlite3_stmt* st = nullptr;
+    const char* del = "DELETE FROM residents WHERE id=?;";
+    if (sqlite3_prepare_v2(db_, del, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_int64(st, 1, resident_id);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+// Transaction helpers for batching synchronous writes (offline tools).
+bool ResidentDB::begin()    { return db_ && exec_sql(db_, "BEGIN;"); }
+bool ResidentDB::commit()   { return db_ && exec_sql(db_, "COMMIT;"); }
+bool ResidentDB::rollback() { return db_ && exec_sql(db_, "ROLLBACK;"); }
 
 int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor) {
     if (!db_) return -1;

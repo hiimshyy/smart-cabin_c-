@@ -43,6 +43,8 @@ int main() {
     cfg.confirm_streak   = 3;
     cfg.cooldown_ms      = 1000.0;
     cfg.unknown_after_ms = 500.0;
+    cfg.reap_grace_ms    = 0.0;   // most tests want immediate reap on absence;
+                                  // the grace-period behavior is covered by test #11.
 
     // -----------------------------------------------------------------
     // 1) Empty update returns no outcomes and creates no sessions.
@@ -248,6 +250,34 @@ int main() {
         }
         CHECK(b_confirms_after == 1,
               "P2-1: suppressed session retries and fires once after cooldown");
+    }
+
+    // -----------------------------------------------------------------
+    // 11) P2-2: reap grace period. A short absence (< reap_grace_ms) keeps
+    //     the session and its streak alive; a long absence reaps it.
+    // -----------------------------------------------------------------
+    {
+        InteractionConfig gcfg = cfg;
+        gcfg.reap_grace_ms = 500.0;   // tolerate up to 500ms of dropout
+        InteractionManager m(gcfg);
+
+        // Build a 2-frame streak for resident 42 on key 0 (largest face).
+        m.update(frame(0, 42, 0.80f), 0.0);
+        m.update(frame(0, 42, 0.80f), 30.0);
+        CHECK(m.session_count() == 1, "P2-2: session live before dropout");
+
+        // One empty frame 100ms later: within grace -> session must survive.
+        m.update(frame_empty(), 130.0);
+        CHECK(m.session_count() == 1, "P2-2: session survives short dropout");
+
+        // Subject reappears and matches once more -> streak reaches 3 -> confirm.
+        auto out = m.update(frame(0, 42, 0.83f), 160.0);
+        CHECK(out.size() == 1 && out[0].confirmed && out[0].resident_id == 42,
+              "P2-2: streak preserved across dropout -> confirms");
+
+        // Now a long absence beyond the grace window reaps the session.
+        m.update(frame_empty(), 1000.0);
+        CHECK(m.session_count() == 0, "P2-2: session reaped after long absence");
     }
 
     std::printf("\n[test_interaction] %d checks, %d failed\n", g_checks, g_fail);

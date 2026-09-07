@@ -41,6 +41,9 @@ struct InteractionConfig {
     int    confirm_streak    = 5;       // frames of consecutive same-resident match to CONFIRM
     double cooldown_ms       = 3000.0;  // suppress duplicate 'matched' events for same resident
     double unknown_after_ms  = 2000.0;  // emit one 'unknown' if subject stays that long unmatched
+    double reap_grace_ms     = 500.0;   // keep a session alive this long after its subject
+                                        // disappears, so a 1-frame detection dropout doesn't
+                                        // reset the streak (code-review P2-2)
 };
 
 class InteractionManager {

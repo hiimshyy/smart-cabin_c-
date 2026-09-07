@@ -58,10 +58,15 @@ public:
     ResidentDB& operator=(const ResidentDB&) = delete;
 
     // Open (or create) the DB. WAL + foreign_keys ON. If the DB has no
-    // tables yet, apply the schema from `schema_sql_path`. Starts the
-    // background writer thread. Returns false on any failure.
+    // tables yet, apply the schema from `schema_sql_path`. When
+    // `spawn_writer` is true (the default, used by the realtime app) a
+    // background thread drains the async log_event/touch_resident queue.
+    // Offline tools (enroll/add/migrate) that only use the synchronous write
+    // API should pass spawn_writer=false to avoid two threads sharing the
+    // sqlite3 handle (see code-review P3-6). Returns false on any failure.
     bool open(const std::string& db_path,
-              const std::string& schema_sql_path = "db/schema.sql");
+              const std::string& schema_sql_path = "db/schema.sql",
+              bool spawn_writer = true);
 
     // Load all active (active=1) residents plus their embeddings.
     bool load_active(std::vector<Resident>& residents,
@@ -85,6 +90,19 @@ public:
     // Look up a resident id by exact name. Returns -1 if not found.
     // Synchronous; used by migrate_fdb to decide skip vs overwrite.
     int64_t find_resident(const std::string& name) const;
+
+    // Delete a resident row (embeddings cascade via FK). Synchronous.
+    // Used by offline tools to drop a resident that ended up with no usable
+    // embedding (code-review P3-2).
+    bool    remove_resident(int64_t resident_id);
+
+    // Wrap a batch of synchronous writes in one transaction so ~N inserts
+    // don't each fsync (code-review P3-1). Offline-tool use only; do not mix
+    // with the async writer thread. commit() also used after a failed batch
+    // via rollback().
+    bool    begin();
+    bool    commit();
+    bool    rollback();
 
     // Flush pending async writes and stop the writer thread.
     void close();

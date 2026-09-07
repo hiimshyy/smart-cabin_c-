@@ -99,7 +99,7 @@ probe_models: $(BUILD_DIR)/probe_models.o $(SDK_OBJS)
 
 # No SDK_OBJS, no OpenCV/VIPhal — just sqlite3 + pthread.
 migrate_fdb: $(MIGRATE_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^ -lsqlite3 -lpthread
+	$(CXX) $(CXXFLAGS) -o $@ $^ -lsqlite3 -lpthread -lstdc++fs
 	@echo "==> Built $@"
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)

@@ -87,11 +87,14 @@ int main(int argc, char** argv) {
              fdb.size(), fdb.dim(), fdb_path.c_str());
 
     // ---- 2. Open the destination SQLite DB --------------------------
+    // Offline tool: no async writer thread (code-review P3-6).
     ResidentDB db;
-    if (!db.open(db_path, schema_path)) {
+    if (!db.open(db_path, schema_path, /*spawn_writer=*/false)) {
         LOG_ERROR("migrate", "failed to open SQLite DB: %s", db_path.c_str());
         return 1;
     }
+    // Batch all inserts in one transaction (code-review P3-1).
+    db.begin();
 
     // ---- 3. Import each identity ------------------------------------
     int imported = 0;   // identities whose embedding got written
@@ -145,6 +148,7 @@ int main(int argc, char** argv) {
         ++imported;
     }
 
+    db.commit();
     db.close();
 
     // ---- 4. Summary --------------------------------------------------

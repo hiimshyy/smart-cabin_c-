@@ -69,7 +69,7 @@ tối đa 1 event/phiên (guard `state != CONFIRMED` chỉ chặn sau khi ĐÃ p
 `tests/test_interaction.cpp` (suppressed-then-retry) → InteractionManager 50 checks pass.
 
 ### P2-2. Reap session sau đúng 1 frame vắng mặt
-**Trạng thái:** `[ ]`
+**Trạng thái:** `[x]` ĐÃ SỬA — thêm `InteractionConfig.reap_grace_ms` (default 500ms). Reap chỉ xóa session khi `now - last_seen_ms > reap_grace_ms`, nên dropout 1-2 frame giữ nguyên streak. Test #11 (`tests/test_interaction.cpp`) phủ: sống qua dropout ngắn → confirm; vắng lâu → reaped. Các test cũ đặt `reap_grace_ms=0` để giữ nghĩa "reap ngay". InteractionManager 54 checks pass.
 **File:** `interaction.cpp:41-49`.
 **Vấn đề:** tracker off (largest face, key=0) → chỉ 1 frame miss detection là mất toàn bộ streak;
 detection flicker khiến khó đạt `confirm_streak=5`.
@@ -88,52 +88,55 @@ tùy nhu cầu audit. Ưu tiên thấp — bàn sau.
 ## 🟢 P3 — Nhỏ / dọn dẹp
 
 ### P3-1. `migrate_fdb` + `enroll` thiếu transaction bao ngoài
-**Trạng thái:** `[ ]`
-**File:** `migrate_fdb.cpp:108-158`, `enroll_faces.cpp` vòng import.
+**Trạng thái:** `[x]` ĐÃ SỬA — thêm `ResidentDB::begin()/commit()/rollback()` (wrap `BEGIN/COMMIT/ROLLBACK`). `migrate_fdb` và `enroll_faces` bọc toàn bộ vòng import trong 1 transaction (`begin()` trước loop, `commit()` khi xong, `rollback()` nếu 0 embedding). Verify: enroll 11 ảnh chạy 1 transaction OK.
+**File:** `migrate_fdb.cpp`, `enroll_faces.cpp`.
 **Vấn đề:** mỗi INSERT tự commit (WAL fsync) → chậm nhiều lần với ~1000 người; chết giữa chừng để lại DB nửa vời.
-**Đề xuất:** bọc `BEGIN;` … `COMMIT;` quanh toàn bộ vòng import (thêm API `begin()/commit()` cho ResidentDB
-hoặc dùng `exec_sql` trực tiếp).
+**Đề xuất:** bọc `BEGIN;` … `COMMIT;` quanh toàn bộ vòng import.
 
 ### P3-2. `enroll` giữ resident rỗng (không embedding) trong DB
-**Trạng thái:** `[ ]`
-**File:** `enroll_faces.cpp:225-227`.
+**Trạng thái:** `[x]` ĐÃ SỬA — dùng `find_resident` để biết resident mới tạo trong lần chạy này; nếu person không có embedding usable VÀ là mới tạo → `remove_resident(id)`. Resident tồn tại từ trước (đã có embedding) không bị đụng. Verify: folder không mặt → resident bị xóa, chỉ giữ person hợp lệ.
+**File:** `enroll_faces.cpp`.
 **Vấn đề:** resident active nhưng 0 vector → nạp vào `resident_by_id` nhưng không bao giờ match, chiếm chỗ.
-**Đề xuất:** nếu person không có embedding usable → xóa resident vừa tạo (hoặc không tạo trước, tạo lazy khi có embedding đầu tiên).
+**Đề xuất:** nếu person không có embedding usable → xóa resident vừa tạo.
 
 ### P3-3. `migrate_fdb` target thiếu `-lstdc++fs`
-**Trạng thái:** `[ ]`
-**File:** `Makefile:101`.
-**Vấn đề:** logger dùng `<filesystem>`; trên GCC <9 có thể link fail (các target khác đã có `-lstdc++fs`).
-**Đề xuất:** thêm `-lstdc++fs` vào rule `migrate_fdb` cho đồng nhất (an toàn dù toolchain mới không cần).
+**Trạng thái:** `[x]` ĐÃ SỬA — thêm `-lstdc++fs` vào rule `migrate_fdb` trong Makefile cho đồng nhất với các target khác.
+**File:** `Makefile`.
+**Vấn đề:** logger dùng `<filesystem>`; trên GCC <9 có thể link fail.
+**Đề xuất:** thêm `-lstdc++fs` vào rule `migrate_fdb`.
 
 ### P3-4. `enroll` chạy lại cùng folder → thêm embedding trùng (không dedup)
-**Trạng thái:** `[ ]`
-**File:** `enroll_faces.cpp` (upsert_resident tái dùng id rồi add thêm).
+**Trạng thái:** `[x]` ĐÃ SỬA — thêm cờ `--replace` cho `enroll_faces`: với resident đã tồn tại, `delete_embeddings(id)` trước khi add lại. Verify: run 2 lần không cờ → 22 embeddings (dup); thêm `--replace` → về 11.
+**File:** `enroll_faces.cpp`.
 **Vấn đề:** chạy enroll nhiều lần làm DB phình dần embedding trùng.
-**Đề xuất:** thêm cờ `--replace` cho enroll (delete_embeddings trước khi add), giống add_person.
+**Đề xuất:** thêm cờ `--replace` cho enroll.
 
 ### P3-5. `source` luôn `'id_photo'` kể cả ảnh cabin
-**Trạng thái:** `[ ]`
-**File:** `enroll_faces.cpp:212`, `add_person.cpp:288`.
-**Vấn đề:** schema phân biệt `id_photo/cabin/admin` nhưng tool không cho chọn → mất khả năng phân biệt quality sau này (liên quan self-supervised Đề xuất 2).
+**Trạng thái:** `[x]` ĐÃ SỬA — thêm cờ `--source <id_photo|cabin|admin>` (default `id_photo`) cho cả `enroll_faces` và `add_person`. Verify: `add_person --source cabin` ghi embedding source='cabin', cùng DB với id_photo cũ.
+**File:** `enroll_faces.cpp`, `add_person.cpp`.
+**Vấn đề:** schema phân biệt `id_photo/cabin/admin` nhưng tool không cho chọn.
 **Đề xuất:** thêm cờ `--source` (default `id_photo`).
 
 ### P3-6. `ResidentDB` writer thread + API đồng bộ chia sẻ `sqlite3*` không khóa
-**Trạng thái:** `[ ]`
-**File:** `resident_db.cpp:70-73` (luôn spawn writer), các API sync (`upsert/add/delete/find/load_active`).
-**Vấn đề:** hiện an toàn thực tế (tool offline 1 thread; app chỉ gọi sync lúc init trước khi có ghi), nhưng
-là bẫy nếu sau này gọi API sync trong lúc app đang chạy (writer thread active) → 2 thread dùng chung 1 handle.
-**Đề xuất:** hoặc (a) không spawn writer ở chế độ tool offline (thêm cờ `read_write_sync_only`), hoặc
-(b) bảo vệ handle bằng mutex chung, hoặc (c) tài liệu hóa rõ "không gọi API sync khi app đang chạy".
+**Trạng thái:** `[x]` ĐÃ SỬA — chọn phương án (a): `open(path, schema, bool spawn_writer=true)`. App chính giữ default (spawn). Tool offline (`enroll_faces`/`add_person`/`migrate_fdb`) mở với `spawn_writer=false` → không có writer thread, chỉ dùng sync API → không có 2 thread chia sẻ handle.
+**File:** `resident_db.cpp` (`open`), 3 tool.
+**Vấn đề:** bẫy nếu gọi API sync khi writer thread active → 2 thread dùng chung 1 handle.
+**Đề xuất:** (a) không spawn writer ở chế độ tool offline.
 
 ---
 
 ## Thứ tự xử lý đề xuất
 
-1. **P1-1** (di trú logger tầng lib) — gọn, ảnh hưởng vận hành ngay.
-2. **P1-2** (name collision → dùng `track_id→resident_id`).
-3. **P1-3** (dim cross-check).
-4. **P2-1 phần con** (cooldown chặn confirm đầu → mất event).
-5. Còn lại P2/P3 theo nhu cầu.
+1. ✅ **P1-1** (di trú logger tầng lib) — ĐÃ SỬA.
+2. ✅ **P1-2** (name collision → dùng `track_id→resident_id`) — ĐÃ SỬA.
+3. ✅ **P1-3** (dim cross-check) — ĐÃ SỬA.
+4. ✅ **P2-1 phần con** (cooldown chặn confirm đầu → mất event) — ĐÃ SỬA.
+5. ✅ **P2-2** (grace period) + toàn bộ **P3-1..P3-6** — ĐÃ SỬA.
 
-Các mục P1 + P2-1(con) test được trên máy dev (WSL, không cần NPU) qua `tests/`.
+**Còn lại (chờ quyết định):**
+- **P2-3** (lỗ audit match ngắn) — `[ ]` review đánh dấu "ưu tiên thấp, bàn sau". Việc thêm
+  `action='seen'` thay đổi ngữ nghĩa `match_events` (schema CHECK cho phép các action cố định) →
+  cần chốt nhu cầu audit + cập nhật schema CHECK trước khi làm.
+
+Tất cả mục đã sửa test được trên máy dev qua `tests/` (104 checks pass:
+logger 14 + match 14 + interaction 54 + resident_db 22).
