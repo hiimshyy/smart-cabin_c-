@@ -1,5 +1,6 @@
 #include "match_engine.h"
 #include "resident_db.h"   // full definition of EmbeddingRow
+#include "log/logger.h"
 
 #include <cstdio>
 
@@ -25,9 +26,8 @@ void MatchEngine::build(const std::vector<EmbeddingRow>& rows, int dim) {
         owner_.push_back(r.resident_id);
     }
     if (skipped > 0) {
-        std::fprintf(stderr,
-            "[match] WARN: skipped %d embedding(s) with dim != %d\n",
-            skipped, dim);
+        LOG_WARN("match", "skipped %d embedding(s) with dim != %d",
+                 skipped, dim);
     }
 }
 

@@ -108,17 +108,22 @@ InteractionManager::update(
         }
 
         // ---- 2c. Streak reached the confirmation threshold ----------
+        // Fire at most once per session (guarded by state != CONFIRMED once
+        // it actually fires). If the resident is still in cooldown from an
+        // earlier session/track, we do NOT confirm yet: stay in MATCHED so a
+        // later frame can retry the gate once the cooldown expires (P2-1).
+        // This avoids the previous bug where a cooldown-blocked first confirm
+        // set CONFIRMED permanently and lost the event forever.
         if (sess.matched_streak >= cfg_.confirm_streak &&
             sess.state != SessionState::CONFIRMED) {
-            sess.state        = SessionState::CONFIRMED;
-            sess.confirmed_ms = now_ms;
 
-            // Cooldown gate: same resident confirmed too recently on any
-            // subject → suppress the outcome but keep the state.
             auto cd_it       = last_confirmed_ms_.find(matched_id);
             const bool in_cd = (cd_it != last_confirmed_ms_.end()) &&
                                (now_ms - cd_it->second) < cfg_.cooldown_ms;
             if (!in_cd) {
+                sess.state        = SessionState::CONFIRMED;
+                sess.confirmed_ms = now_ms;
+
                 Outcome oc;
                 oc.subject_key = key;
                 oc.resident_id = matched_id;
@@ -127,6 +132,7 @@ InteractionManager::update(
                 outcomes.push_back(oc);
                 last_confirmed_ms_[matched_id] = now_ms;
             }
+            // else: stay in MATCHED; retry on a subsequent frame.
         }
     }
 

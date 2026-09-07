@@ -370,7 +370,10 @@ int main(int argc, char** argv) {
     MatchEngine         match_engine;
     InteractionManager  interaction;
     std::map<int64_t, Resident> resident_by_id;   // id -> metadata for overlay
-    std::map<std::string, int64_t> resident_id_by_name; // name/greeting -> id (tracker cache)
+    // Maps a track_id to the resident_id last recognized on it. This is the
+    // authoritative link for cached tracker frames — resolving by name would
+    // be ambiguous when two residents share a name/greeting_name (P1-2).
+    std::map<int, int64_t> track_resident_id;
     bool                use_resident_db = false;
 
     if (recog_model_path) {
@@ -404,11 +407,32 @@ int main(int argc, char** argv) {
                 shutdown_capture();
                 return 2;
             }
+            // Cross-check embedding dim vs --recog-dim (P1-3). Enrolling with a
+            // different dim than the runtime model silently drops every vector
+            // (MatchEngine skips size mismatches), turning everyone "unknown".
+            // Detect it up front and fail loudly instead.
+            if (!embeddings.empty()) {
+                int db_dim = (int)embeddings.front().vector.size();
+                if (db_dim != recog_dim) {
+                    LOG_ERROR("db", "embedding dim mismatch: DB has %d-D vectors "
+                              "but --recog-dim=%d. All matches would fail. "
+                              "Re-run with --recog-dim %d or re-enroll.",
+                              db_dim, recog_dim, db_dim);
+                    resident_db.close();
+                    delete recognizer;
+                    awnn_uninit();
+                    shutdown_capture();
+                    return 2;
+                }
+            }
             match_engine.build(embeddings, recog_dim);
+            if (!embeddings.empty() && match_engine.vector_count() == 0) {
+                LOG_ERROR("db", "no embeddings loaded into matcher despite %zu "
+                          "rows in DB — check embedding dim consistency",
+                          embeddings.size());
+            }
             for (const auto& r : residents) {
                 resident_by_id[r.id] = r;
-                resident_id_by_name[r.name] = r.id;
-                if (!r.greeting_name.empty()) resident_id_by_name[r.greeting_name] = r.id;
             }
 
             InteractionConfig icfg;
@@ -681,6 +705,12 @@ int main(int argc, char** argv) {
                     // linked_track pointer may have been invalidated by identity
                     // inheritance (which reorders IDs), so re-lookup for logging.
                     face_labels[f].track_id = linked_track->id;
+                    // Record the authoritative track_id -> resident_id link so
+                    // cached frames (and the overlay) resolve the ID directly,
+                    // never by ambiguous name (P1-2). Only on a real match.
+                    if (use_resident_db && rid >= 0) {
+                        track_resident_id[linked_track->id] = rid;
+                    }
                 }
             }
             t_recog_total = now_ms() - r0;
@@ -708,7 +738,8 @@ int main(int argc, char** argv) {
         //   - tracker off: the single largest face gets key 0 (others ignored,
         //                  a cabin only greets the person in front of it)
         // MatchResult resident_id/similarity come from face_labels; for cached
-        // tracker frames we resolve the resident_id back from the track's name.
+        // tracker frames (no recog this frame) we resolve the resident_id from
+        // the track_id -> resident_id map recorded at the last real match (P1-2).
         if (use_resident_db) {
             subjects.clear();
             for (size_t f = 0; f < faces.size(); ++f) {
@@ -725,11 +756,12 @@ int main(int argc, char** argv) {
                 MatchResult mr;
                 mr.similarity  = L.sim;
                 mr.resident_id = L.resident_id;
-                // Cached tracker frame: label carries a name but no resident_id.
-                // Resolve it from the name→id map so the session keeps its ID.
-                if (mr.resident_id < 0 && !L.name.empty() && L.name != "unknown") {
-                    auto it = resident_id_by_name.find(L.name);
-                    if (it != resident_id_by_name.end()) mr.resident_id = it->second;
+                // Cached tracker frame: label carries a cached name but no
+                // resident_id. Resolve it from the track's authoritative id
+                // link (never by name — avoids duplicate-name ambiguity).
+                if (mr.resident_id < 0 && use_tracker && L.track_id >= 0) {
+                    auto it = track_resident_id.find(L.track_id);
+                    if (it != track_resident_id.end()) mr.resident_id = it->second;
                 }
                 subjects.emplace_back(subject_key, mr);
             }
@@ -784,8 +816,8 @@ int main(int argc, char** argv) {
                     // when unregistered) so the operator sees the destination.
                     if (use_resident_db) {
                         int hf = -999;
-                        auto nit = resident_id_by_name.find(t->name);
-                        if (nit != resident_id_by_name.end()) {
+                        auto nit = track_resident_id.find(t->id);
+                        if (nit != track_resident_id.end()) {
                             auto rit = resident_by_id.find(nit->second);
                             if (rit != resident_by_id.end()) hf = rit->second.home_floor;
                         }

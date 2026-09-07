@@ -1,4 +1,5 @@
 #include "face_db.h"
+#include "log/logger.h"
 
 #include <cstdio>
 #include <cstring>
@@ -94,7 +95,7 @@ bool FaceDB::load(const std::string& path) {
     char magic[4];
     f.read(magic, 4);
     if (std::memcmp(magic, "FDB1", 4) != 0) {
-        fprintf(stderr, "[face_db] bad magic in %s\n", path.c_str());
+        LOG_ERROR("facedb", "bad magic in %s", path.c_str());
         return false;
     }
     int32_t dim = 0, n = 0;

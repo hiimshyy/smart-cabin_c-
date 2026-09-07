@@ -26,7 +26,7 @@ Danh sách vấn đề xếp theo mức độ ưu tiên bên dưới.
 ## 🔴 P1 — Nên sửa sớm (ảnh hưởng đúng đắn / vận hành)
 
 ### P1-1. Còn `fprintf(stderr)` làm log thật ở tầng thư viện — không vào file log
-**Trạng thái:** `[ ]`
+**Trạng thái:** `[x]` ĐÃ SỬA — di trú `fprintf(stderr)` (lỗi thật) sang `LOG_*` ở `resident_db.cpp` (tag `db`), `match_engine.cpp` (tag `match`), `face_recog.cpp` (tag `recog`), `face_db.cpp` (tag `facedb`). Giữ `fprintf` usage/help. Các file này include `log/logger.h`; logger.cpp đã có trong link của mọi target. Verify: ResidentDB test in log qua logger (`[db] applied schema`).
 **File:** `resident_db.cpp` (vd :20-24, :44-46, :116-118, :245-247), `match_engine.cpp:28-31`,
 `face_recog.cpp:15,30,37,69`, `face_db.cpp:97`.
 **Vấn đề:** các module này chưa di trú sang `LOG_*`. App chính chạy headless qua systemd →
@@ -36,7 +36,7 @@ lỗi DB/match/recog đi ra stderr chứ **không vào `/var/log/face-cabin`**, 
 **Lưu ý build:** các module lib này khi include `log/logger.h` cần logger.cpp đã link (đã có trong COMMON_SRCS).
 
 ### P1-2. `resident_id_by_name` ghi đè khi trùng tên / greeting_name
-**Trạng thái:** `[ ]`
+**Trạng thái:** `[x]` ĐÃ SỬA — bỏ hẳn map `name→id`; thêm `std::map<int,int64_t> track_resident_id` (track_id → resident_id) ghi tại điểm match trực tiếp (`rid>=0`). Cached-frame và overlay floor giờ resolve qua `track_id` (không còn suy ngược theo tên). Không còn tham chiếu `resident_id_by_name`.
 **File:** `main.cpp:500-503` (nạp map) + `main.cpp:730-736` (resolve cached-frame theo tên).
 **Vấn đề:** map `name→id` chỉ giữ id cuối. `greeting_name` rất dễ trùng ("anh Nam", "bác Nga").
 Khi resolve cached tracker frame theo tên → có thể trả **nhầm `resident_id`** → ghi sai audit +
@@ -46,7 +46,7 @@ sai floor overlay. Frame recog trực tiếp thì đúng (trả thẳng `residen
 tracker/`main.cpp` (track đã có sẵn danh tính khi record_recognition). Không dựa vào tên để suy ngược id.
 
 ### P1-3. Dim mismatch im lặng làm cả DB "biến mất"
-**Trạng thái:** `[ ]`
+**Trạng thái:** `[x]` ĐÃ SỬA — trước khi `match_engine.build()`, đọc dim thực từ `embeddings.front()` và cross-check với `--recog-dim`; nếu lệch → `LOG_ERROR` nêu rõ dim DB vs dim model + thoát (code 2) thay vì để mọi người thành unknown. Thêm cảnh báo phụ nếu build ra 0 vector dù DB có rows.
 **File:** `match_engine.cpp:19-31` (skip khi size != dim), `main.cpp:497` (`build(embeddings, recog_dim)`).
 **Vấn đề:** nếu enroll bằng dim khác mà runtime quên `--recog-dim`, `build()` skip TOÀN BỘ embedding,
 mọi người thành `unknown`, chỉ có 1 WARN mờ ra stderr (không qua LOG_*).
@@ -63,11 +63,10 @@ nếu lệch → `LOG_ERROR` rõ ràng (nêu dim DB vs dim model) thay vì skip 
 **Quyết định (đã chốt):** mỗi phiên tương tác chỉ phát 1 event `matched` — KHÔNG chào lại
 sau cooldown khi người vẫn ở trong cabin. Hành vi CONFIRMED-dính hiện tại là ĐÚNG Ý ĐỒ.
 Cooldown per-resident chỉ để chống flip-flop giữa các phiên/track khác nhau.
-**⚠ Phần con VẪN LÀ BUG (cần sửa):** nếu lần confirm đầu tiên bị cooldown chặn (`in_cd == true`,
-`interaction.cpp:133-140`), session vẫn chuyển sang CONFIRMED nhưng **không ghi event nào** và
-**không bao giờ retry** → mất hẳn event `matched` hợp lệ cho session đó.
-**Đề xuất sửa:** khi `in_cd == true`, KHÔNG đặt `state = CONFIRMED` (hoặc đặt cờ "chờ hết cooldown")
-để lần frame sau còn cơ hội phát event khi cooldown đã qua — nhưng vẫn đảm bảo tối đa 1 event/phiên.
+**⚠ Phần con:** `[x]` ĐÃ SỬA — khi `in_cd == true`, KHÔNG đặt `state = CONFIRMED` nữa; session
+giữ ở MATCHED và retry ở các frame sau, phát đúng 1 event `matched` khi cooldown hết. Vẫn đảm bảo
+tối đa 1 event/phiên (guard `state != CONFIRMED` chỉ chặn sau khi ĐÃ phát). Thêm test case #10 trong
+`tests/test_interaction.cpp` (suppressed-then-retry) → InteractionManager 50 checks pass.
 
 ### P2-2. Reap session sau đúng 1 frame vắng mặt
 **Trạng thái:** `[ ]`

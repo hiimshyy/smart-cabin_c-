@@ -1,4 +1,5 @@
 #include "resident_db.h"
+#include "log/logger.h"
 
 #include <sqlite3.h>
 
@@ -17,8 +18,7 @@ bool exec_sql(sqlite3* db, const char* sql) {
     char* err = nullptr;
     int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
     if (rc != SQLITE_OK) {
-        std::fprintf(stderr, "[residentdb] SQL error: %s\n",
-                     err ? err : sqlite3_errmsg(db));
+        LOG_ERROR("db", "SQL error: %s", err ? err : sqlite3_errmsg(db));
         if (err) sqlite3_free(err);
         return false;
     }
@@ -38,14 +38,14 @@ ResidentDB::~ResidentDB() {
 bool ResidentDB::open(const std::string& db_path,
                       const std::string& schema_sql_path) {
     if (db_) {
-        std::fprintf(stderr, "[residentdb] already open\n");
+        LOG_ERROR("db", "already open");
         return false;
     }
 
     int rc = sqlite3_open(db_path.c_str(), &db_);
     if (rc != SQLITE_OK) {
-        std::fprintf(stderr, "[residentdb] cannot open %s: %s\n",
-                     db_path.c_str(), sqlite3_errmsg(db_));
+        LOG_ERROR("db", "cannot open %s: %s",
+                  db_path.c_str(), sqlite3_errmsg(db_));
         if (db_) { sqlite3_close(db_); db_ = nullptr; }
         return false;
     }
@@ -61,15 +61,13 @@ bool ResidentDB::open(const std::string& db_path,
 
     if (!has_tables()) {
         if (!apply_schema(schema_sql_path)) {
-            std::fprintf(stderr,
-                "[residentdb] failed to apply schema from %s\n",
-                schema_sql_path.c_str());
+            LOG_ERROR("db", "failed to apply schema from %s",
+                      schema_sql_path.c_str());
             sqlite3_close(db_);
             db_ = nullptr;
             return false;
         }
-        std::fprintf(stderr, "[residentdb] applied schema from %s\n",
-                     schema_sql_path.c_str());
+        LOG_INFO("db", "applied schema from %s", schema_sql_path.c_str());
     }
 
     // Start background writer.
@@ -92,8 +90,7 @@ bool ResidentDB::has_tables() const {
 bool ResidentDB::apply_schema(const std::string& schema_sql_path) {
     std::ifstream f(schema_sql_path, std::ios::binary);
     if (!f) {
-        std::fprintf(stderr, "[residentdb] cannot read schema file %s\n",
-                     schema_sql_path.c_str());
+        LOG_ERROR("db", "cannot read schema file %s", schema_sql_path.c_str());
         return false;
     }
     std::ostringstream ss;
@@ -119,8 +116,7 @@ bool ResidentDB::load_active(std::vector<Resident>& residents,
             "FROM residents WHERE active=1;";
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) {
-            std::fprintf(stderr, "[residentdb] prepare residents failed: %s\n",
-                         sqlite3_errmsg(db_));
+            LOG_ERROR("db", "prepare residents failed: %s", sqlite3_errmsg(db_));
             return false;
         }
         while (sqlite3_step(st) == SQLITE_ROW) {
@@ -150,8 +146,7 @@ bool ResidentDB::load_active(std::vector<Resident>& residents,
             "WHERE r.active=1;";
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) {
-            std::fprintf(stderr, "[residentdb] prepare embeddings failed: %s\n",
-                         sqlite3_errmsg(db_));
+            LOG_ERROR("db", "prepare embeddings failed: %s", sqlite3_errmsg(db_));
             return false;
         }
         while (sqlite3_step(st) == SQLITE_ROW) {
@@ -257,15 +252,13 @@ void ResidentDB::flush_jobs(std::vector<WriteJob>& jobs) {
             sqlite3_bind_int (st_event, 6, e.floor_selected);
             sqlite3_bind_int (st_event, 7, e.latency_ms);
             if (sqlite3_step(st_event) != SQLITE_DONE) {
-                std::fprintf(stderr, "[residentdb] insert event failed: %s\n",
-                             sqlite3_errmsg(db_));
+                LOG_ERROR("db", "insert event failed: %s", sqlite3_errmsg(db_));
             }
         } else if (j.kind == WriteJob::Kind::Touch && st_touch) {
             sqlite3_reset(st_touch);
             sqlite3_bind_int64(st_touch, 1, j.resident_id);
             if (sqlite3_step(st_touch) != SQLITE_DONE) {
-                std::fprintf(stderr, "[residentdb] touch failed: %s\n",
-                             sqlite3_errmsg(db_));
+                LOG_ERROR("db", "touch failed: %s", sqlite3_errmsg(db_));
             }
         }
     }
@@ -304,8 +297,7 @@ int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor) {
     const char* ins =
         "INSERT INTO residents (name, home_floor) VALUES (?,?);";
     if (sqlite3_prepare_v2(db_, ins, -1, &st, nullptr) != SQLITE_OK) {
-        std::fprintf(stderr, "[residentdb] prepare upsert failed: %s\n",
-                     sqlite3_errmsg(db_));
+        LOG_ERROR("db", "prepare upsert failed: %s", sqlite3_errmsg(db_));
         return -1;
     }
     sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
@@ -313,8 +305,7 @@ int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor) {
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
-        std::fprintf(stderr, "[residentdb] insert resident failed: %s\n",
-                     sqlite3_errmsg(db_));
+        LOG_ERROR("db", "insert resident failed: %s", sqlite3_errmsg(db_));
         return -1;
     }
     return sqlite3_last_insert_rowid(db_);
@@ -329,8 +320,7 @@ bool ResidentDB::add_embedding(int64_t resident_id,
         "INSERT INTO embeddings (resident_id, source, dim, vector) "
         "VALUES (?,?,?,?);";
     if (sqlite3_prepare_v2(db_, ins, -1, &st, nullptr) != SQLITE_OK) {
-        std::fprintf(stderr, "[residentdb] prepare add_embedding failed: %s\n",
-                     sqlite3_errmsg(db_));
+        LOG_ERROR("db", "prepare add_embedding failed: %s", sqlite3_errmsg(db_));
         return false;
     }
     sqlite3_bind_int64(st, 1, resident_id);
@@ -342,8 +332,7 @@ bool ResidentDB::add_embedding(int64_t resident_id,
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
-        std::fprintf(stderr, "[residentdb] insert embedding failed: %s\n",
-                     sqlite3_errmsg(db_));
+        LOG_ERROR("db", "insert embedding failed: %s", sqlite3_errmsg(db_));
         return false;
     }
     return true;

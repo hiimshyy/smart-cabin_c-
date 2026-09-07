@@ -1,4 +1,5 @@
 #include "face_recog.h"
+#include "log/logger.h"
 
 #include <awnn_lib.h>
 #include <opencv2/imgproc.hpp>
@@ -12,7 +13,7 @@ FaceRecognizer::FaceRecognizer(const std::string& model_path,
     : path_(model_path), dim_(embedding_dim), rgb_(rgb) {
     ctx_ = awnn_create(model_path.c_str());
     if (!ctx_) {
-        fprintf(stderr, "[recog] awnn_create failed for %s\n", model_path.c_str());
+        LOG_ERROR("recog", "awnn_create failed for %s", model_path.c_str());
     }
     input_buf_.assign(112 * 112 * 3, 0);
 }
@@ -27,16 +28,16 @@ FaceRecognizer::~FaceRecognizer() {
 bool FaceRecognizer::extract(const cv::Mat& face, std::vector<float>& emb_out) {
     if (!ctx_) {
         static int _e = 0;
-        if (++_e <= 3) fprintf(stderr, "[recog] extract: ctx_ is NULL\n");
+        if (++_e <= 3) LOG_ERROR("recog", "extract: ctx_ is NULL");
         return false;
     }
     if (face.empty() || face.type() != CV_8UC3 ||
         face.cols != 112 || face.rows != 112) {
         static int _e = 0;
         if (++_e <= 3) {
-            fprintf(stderr, "[recog] bad input: empty=%d type=%d dims=%dx%d "
-                    "(expected CV_8UC3 (type=16) 112x112)\n",
-                    face.empty(), face.type(), face.cols, face.rows);
+            LOG_ERROR("recog", "bad input: empty=%d type=%d dims=%dx%d "
+                      "(expected CV_8UC3 (type=16) 112x112)",
+                      face.empty(), face.type(), face.cols, face.rows);
         }
         return false;
     }
@@ -66,8 +67,8 @@ bool FaceRecognizer::extract(const cv::Mat& face, std::vector<float>& emb_out) {
     if (!outs || !outs[0]) {
         static int _e = 0;
         if (++_e <= 3) {
-            fprintf(stderr, "[recog] NPU output null (outs=%p outs0=%p)\n",
-                    (void*)outs, outs ? (void*)outs[0] : nullptr);
+            LOG_ERROR("recog", "NPU output null (outs=%p outs0=%p)",
+                      (void*)outs, outs ? (void*)outs[0] : nullptr);
         }
         return false;
     }

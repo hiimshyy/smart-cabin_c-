@@ -220,6 +220,36 @@ int main() {
         CHECK(m.session_count() == 2, "two concurrent sessions");
     }
 
+    // -----------------------------------------------------------------
+    // 10) P2-1 regression: a confirm blocked by cooldown must NOT stick as
+    //     CONFIRMED-with-no-event. The session stays MATCHED and retries,
+    //     firing exactly once after the cooldown expires.
+    // -----------------------------------------------------------------
+    {
+        InteractionManager m(cfg);   // cooldown 1000ms, streak 3
+        // Session A (key 1) confirms resident 88 around t=60ms.
+        for (int i = 0; i < 3; ++i) m.update(frame(1, 88, 0.80f), i * 30.0);
+
+        // Session B (key 2), SAME resident 88, reaches streak while A's
+        // cooldown is still active (t≈100-160ms). Must be suppressed now.
+        int b_confirms = 0;
+        for (int i = 0; i < 3; ++i) {
+            auto out = m.update(frame(2, 88, 0.81f), 100.0 + i * 30.0);
+            for (const auto& o : out) if (o.confirmed) ++b_confirms;
+        }
+        CHECK(b_confirms == 0, "P2-1: second subject suppressed during cooldown");
+
+        // Keep subject 2 present past the cooldown window (t > 1060ms). The
+        // fix lets it retry and finally emit exactly one confirmed outcome.
+        int b_confirms_after = 0;
+        for (int i = 0; i < 5; ++i) {
+            auto out = m.update(frame(2, 88, 0.82f), 1100.0 + i * 30.0);
+            for (const auto& o : out) if (o.confirmed) ++b_confirms_after;
+        }
+        CHECK(b_confirms_after == 1,
+              "P2-1: suppressed session retries and fires once after cooldown");
+    }
+
     std::printf("\n[test_interaction] %d checks, %d failed\n", g_checks, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
