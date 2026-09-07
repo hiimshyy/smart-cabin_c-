@@ -20,6 +20,10 @@ tests/*.out
 # Runtime data (mỗi user có dataset riêng)
 faces/
 db/*.fdb
+
+# Log output (fallback ./logs + any local log dir)
+logs/
+*.log
 # SQLite resident DB + WAL/SHM sidecars (runtime data, per-deployment)
 db/*.db
 db/*.db-wal
