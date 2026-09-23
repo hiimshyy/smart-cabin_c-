@@ -23,7 +23,8 @@ RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
 # reuses these too. Requires libsqlite3-dev (apt: libsqlite3-dev).
 DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
                $(SRC_DIR)/match_engine.cpp \
-               $(SRC_DIR)/interaction.cpp
+               $(SRC_DIR)/interaction.cpp \
+               $(SRC_DIR)/cabin_config.cpp
 
 # App-only modules extracted from main.cpp (spec main-cpp-refactor). Used ONLY
 # by face_recog_app — do NOT add to COMMON_SRCS (other tools don't need them).

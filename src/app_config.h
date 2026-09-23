@@ -32,6 +32,21 @@ struct AppConfig {
     bool   recog_rgb         = true;
     bool   fullscreen        = true;
     float  match_threshold   = 0.35f;
+
+    // Which Nhóm A params the user ACTUALLY passed on the CLI (spec
+    // cabin-runtime-config, R3.2). Lets main build CliOverrides so a CLI value
+    // overrides the DB only when truly supplied — not when it merely equals a
+    // default. Set by parse_args; the value lives in the field above.
+    struct Passed {
+        bool source         = false;
+        bool gst_latency    = false;
+        bool match_thr      = false;
+        bool confirm_streak = false;
+        bool cooldown       = false;
+        bool unknown_after  = false;
+        bool reconnect_min  = false;
+        bool reconnect_max  = false;
+    } passed;
 };
 
 // Prints the Baseline usage text (byte-for-byte) to stderr.

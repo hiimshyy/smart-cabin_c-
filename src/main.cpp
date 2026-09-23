@@ -56,6 +56,7 @@
 #include "overlay.h"
 #include "benchmark.h"
 #include "face_label.h"
+#include "cabin_config.h"
 
 static constexpr int NPU_INPUT_W = 640;
 static constexpr int NPU_INPUT_H = 640;
@@ -96,6 +97,66 @@ int main(int argc, char** argv) {
     bool is_stream = (cfg.custom_pipeline != nullptr) ||
                      (cfg.source_url != nullptr && is_stream_source(cfg.source_url));
 
+    // ---- Resolve cabin runtime config (spec cabin-runtime-config) --------
+    // Operational mode (--resident-db) reads Nhóm A config from the cabins
+    // table; precedence CLI > DB > default. Dev mode (--face-db only) keeps the
+    // pure CLI>default path. A custom --gst-pipeline stays CLI-only (Nhóm C).
+    const bool operational = (cfg.recog_model_path && cfg.resident_db_path);
+    CabinConfig eff;                 // effective resolved config
+    eff.gst_latency_ms   = cfg.gst_latency_ms;
+    eff.match_thr        = cfg.match_threshold;
+    eff.confirm_streak   = cfg.confirm_streak;
+    eff.cooldown_ms      = cfg.cooldown_ms;
+    eff.unknown_after_ms = cfg.unknown_after_ms;
+    eff.reconnect_min_ms = cfg.reconnect_min_ms;
+    eff.reconnect_max_ms = cfg.reconnect_max_ms;
+    bool cabin_resolved = false;
+
+    if (operational && cfg.custom_pipeline == nullptr) {
+        // Read the cabins row via a short-lived read-only handle (no writer);
+        // the operational DB is opened again below for load_active + logging.
+        ResidentDB cfg_db;
+        if (cfg_db.open(cfg.resident_db_path, "db/schema.sql", /*spawn_writer=*/false)) {
+            CabinRow row = cfg_db.load_cabin(cfg.cabin_id);
+            if (!row.found) {
+                LOG_WARN("cfg", "cabin id=%d not in DB — using defaults", cfg.cabin_id);
+            }
+            CliOverrides cli;
+            cli.has_source         = cfg.passed.source;         cli.source_val         = cfg.source_url ? cfg.source_url : "";
+            cli.has_gst_latency    = cfg.passed.gst_latency;    cli.gst_latency_val    = cfg.gst_latency_ms;
+            cli.has_match_thr      = cfg.passed.match_thr;      cli.match_thr_val      = cfg.match_threshold;
+            cli.has_confirm_streak = cfg.passed.confirm_streak; cli.confirm_streak_val = cfg.confirm_streak;
+            cli.has_cooldown       = cfg.passed.cooldown;       cli.cooldown_val       = cfg.cooldown_ms;
+            cli.has_unknown_after  = cfg.passed.unknown_after;  cli.unknown_after_val  = cfg.unknown_after_ms;
+            cli.has_reconnect_min  = cfg.passed.reconnect_min;  cli.reconnect_min_val  = cfg.reconnect_min_ms;
+            cli.has_reconnect_max  = cfg.passed.reconnect_max;  cli.reconnect_max_val  = cfg.reconnect_max_ms;
+
+            CabinConfig def;   // compile-in defaults
+            eff = resolve_cabin_config(cli, row, def);
+            cabin_resolved = true;
+            // Effective config summary + source of the camera (R3.3, observability).
+            LOG_INFO("cfg", "cabin id=%d effective: stream=%d url=%s match_thr=%.2f "
+                     "confirm=%d cooldown=%.0f unknown=%.0f latency=%d reconnect=%d-%d "
+                     "floors=%d-%d [src: %s]",
+                     cfg.cabin_id, eff.use_stream ? 1 : 0,
+                     eff.rtsp_url.empty() ? "(usb)" : eff.rtsp_url.c_str(),
+                     eff.match_thr, eff.confirm_streak, eff.cooldown_ms,
+                     eff.unknown_after_ms, eff.gst_latency_ms,
+                     eff.reconnect_min_ms, eff.reconnect_max_ms,
+                     eff.floors_min, eff.floors_max,
+                     cfg.passed.source ? "cli" : (row.found ? "db" : "default"));
+            cfg_db.close();
+        } else {
+            LOG_WARN("cfg", "cannot open resident DB to read cabin config — using CLI/defaults");
+        }
+    }
+
+    // If the cabin config resolved a stream URL (from DB or CLI), that decides
+    // stream mode. Otherwise fall back to the original CLI-based detection.
+    if (cabin_resolved) {
+        is_stream = eff.use_stream || (cfg.custom_pipeline != nullptr);
+    }
+
     // Build a reusable camera config so the capture thread can reopen the
     // source on its own if it drops (RTSP reconnect).
     CamConfig cam_cfg;
@@ -104,12 +165,19 @@ int main(int argc, char** argv) {
     cam_cfg.cam_w          = CAM_W;
     cam_cfg.cam_h          = CAM_H;
     cam_cfg.cam_fps        = 30;
-    cam_cfg.backoff_min_ms = cfg.reconnect_min_ms;
-    cam_cfg.backoff_max_ms = cfg.reconnect_max_ms;
+    cam_cfg.backoff_min_ms = eff.reconnect_min_ms;
+    cam_cfg.backoff_max_ms = eff.reconnect_max_ms;
     if (is_stream) {
-        cam_cfg.pipeline = cfg.custom_pipeline
-            ? std::string(cfg.custom_pipeline)
-            : build_gst_pipeline(cfg.source_url, cfg.gst_latency_ms);
+        // Priority: a custom CLI pipeline (dev) wins; else the resolved stream
+        // URL (cabin DB or CLI --source) via build_gst_pipeline; else the raw
+        // CLI source (dev --face-db mode).
+        if (cfg.custom_pipeline) {
+            cam_cfg.pipeline = std::string(cfg.custom_pipeline);
+        } else if (cabin_resolved && eff.use_stream) {
+            cam_cfg.pipeline = build_gst_pipeline(eff.rtsp_url, eff.gst_latency_ms);
+        } else {
+            cam_cfg.pipeline = build_gst_pipeline(cfg.source_url, cfg.gst_latency_ms);
+        }
         LOG_INFO("cam", "GStreamer pipeline: %s", cam_cfg.pipeline.c_str());
     }
 
@@ -230,9 +298,9 @@ int main(int argc, char** argv) {
             }
 
             InteractionConfig icfg;
-            icfg.confirm_streak   = cfg.confirm_streak;
-            icfg.cooldown_ms      = cfg.cooldown_ms;
-            icfg.unknown_after_ms = cfg.unknown_after_ms;
+            icfg.confirm_streak   = eff.confirm_streak;
+            icfg.cooldown_ms      = eff.cooldown_ms;
+            icfg.unknown_after_ms = eff.unknown_after_ms;
             interaction.set_config(icfg);
 
             use_resident_db = true;
@@ -240,7 +308,7 @@ int main(int argc, char** argv) {
                      residents.size(), embeddings.size(), cfg.recog_dim);
             LOG_INFO("db", "cabin_id=%d confirm_streak=%d cooldown_ms=%.0f "
                      "unknown_after_ms=%.0f",
-                     cfg.cabin_id, cfg.confirm_streak, cfg.cooldown_ms, cfg.unknown_after_ms);
+                     cfg.cabin_id, eff.confirm_streak, eff.cooldown_ms, eff.unknown_after_ms);
             if (match_engine.vector_count() == 0) {
                 LOG_WARN("db", "no embeddings loaded — everyone will be unknown");
             }
@@ -449,7 +517,7 @@ int main(int argc, char** argv) {
                         face_labels[f].stat = 'D';
                         continue;
                     }
-                    MatchResult mr = match_engine.match(emb, cfg.match_threshold);
+                    MatchResult mr = match_engine.match(emb, eff.match_thr);
                     sim = mr.similarity;
                     rid = mr.resident_id;
                     if (rid >= 0) {

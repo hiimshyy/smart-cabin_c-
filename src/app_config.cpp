@@ -69,10 +69,10 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         else if (sv("--face-db"))        cfg.face_db_path = argv[++i];
         else if (sv("--resident-db"))    cfg.resident_db_path = argv[++i];
         else if (sv("--cabin-id"))       cfg.cabin_id = std::atoi(argv[++i]);
-        else if (sv("--confirm-streak")) cfg.confirm_streak = std::max(1, std::atoi(argv[++i]));
-        else if (sv("--cooldown-ms"))    cfg.cooldown_ms = std::atof(argv[++i]);
-        else if (sv("--unknown-after-ms")) cfg.unknown_after_ms = std::atof(argv[++i]);
-        else if (sv("--match-thr"))      cfg.match_threshold = (float)std::atof(argv[++i]);
+        else if (sv("--confirm-streak")) { cfg.confirm_streak = std::max(1, std::atoi(argv[++i])); cfg.passed.confirm_streak = true; }
+        else if (sv("--cooldown-ms"))    { cfg.cooldown_ms = std::atof(argv[++i]); cfg.passed.cooldown = true; }
+        else if (sv("--unknown-after-ms")) { cfg.unknown_after_ms = std::atof(argv[++i]); cfg.passed.unknown_after = true; }
+        else if (sv("--match-thr"))      { cfg.match_threshold = (float)std::atof(argv[++i]); cfg.passed.match_thr = true; }
         else if (sv("--person-model"))   cfg.person_model_path = argv[++i];
         else if (sv("--person-thr"))     cfg.person_thr = (float)std::atof(argv[++i]);
         else if (sv("--person-every"))   cfg.person_every = std::max(1, std::atoi(argv[++i]));
@@ -80,11 +80,11 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         else if (sv("--track-max-miss")) cfg.track_max_miss = std::atoi(argv[++i]);
         else if (sv("--recog-retry"))    cfg.recog_retry = std::atoi(argv[++i]);
         else if (sv("--ui-scale"))       cfg.ui_scale_override = (float)std::atof(argv[++i]);
-        else if (sv("--source"))         cfg.source_url = argv[++i];
+        else if (sv("--source"))         { cfg.source_url = argv[++i]; cfg.passed.source = true; }
         else if (sv("--gst-pipeline"))   cfg.custom_pipeline = argv[++i];
-        else if (sv("--gst-latency"))    cfg.gst_latency_ms = std::atoi(argv[++i]);
-        else if (sv("--reconnect-min-ms")) cfg.reconnect_min_ms = std::atoi(argv[++i]);
-        else if (sv("--reconnect-max-ms")) cfg.reconnect_max_ms = std::atoi(argv[++i]);
+        else if (sv("--gst-latency"))    { cfg.gst_latency_ms = std::atoi(argv[++i]); cfg.passed.gst_latency = true; }
+        else if (sv("--reconnect-min-ms")) { cfg.reconnect_min_ms = std::atoi(argv[++i]); cfg.passed.reconnect_min = true; }
+        else if (sv("--reconnect-max-ms")) { cfg.reconnect_max_ms = std::atoi(argv[++i]); cfg.passed.reconnect_max = true; }
         else if (std::strcmp(a, "--windowed") == 0)   cfg.fullscreen = false;
         else if (std::strcmp(a, "--fullscreen") == 0) cfg.fullscreen = true;
         else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) {
