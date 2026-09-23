@@ -49,6 +49,13 @@ thành `CamConfig` / `InteractionConfig` / `match_threshold`. Không chỗ nào 
 | `src/main.cpp` | Sau khi mở `--resident-db`, gọi `load_cabin` + `resolve_cabin_config`; dùng kết quả thay CLI trực tiếp; log config hiệu lực |
 | REST API (spec Enroll API) | Thêm `GET/PATCH /api/v1/cabins/{id}` dùng `load_cabin`/`update_cabin_config` |
 
+> **Ghi chú triển khai (khác design gốc):** `struct CabinRow` (và `CabinPatch`) được đặt trong
+> `src/resident_db.h` thay vì `src/cabin_config.h` như phác thảo ban đầu. Lý do: `load_cabin()` /
+> `update_cabin_config()` thuộc `ResidentDB`, nên `CabinRow` phải nằm ở tầng resident_db; đặt nó ở
+> cabin_config.h sẽ khiến resident_db phụ thuộc ngược vào cabin_config. Chiều phụ thuộc đúng là
+> `cabin_config.h` include `resident_db.h` (dùng `CabinRow`/`CabinPatch`), không ngược lại.
+> `cabin_config.h` chỉ giữ `CabinConfig` (đã resolve) + `CliOverrides`.
+
 Module `cabin_config` **tách khỏi NPU** (chỉ cần sqlite3 + std) → test độc lập nhanh bằng g++ +
 sqlite3 ngay trên Orange Pi (không cần load model), giống các
 module khác của `resident-db-layer`.

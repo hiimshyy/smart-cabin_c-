@@ -394,6 +394,11 @@ face_help() {
  ── Ghi chú ──
    SQLite (residents.db) là NGUỒN DỮ LIỆU DUY NHẤT: enroll/add ghi thẳng
    vào đây, KHÔNG còn .fdb. Cabin thật chạy RTSP qua face_cabin; USB chỉ dev.
+   Config vận hành (RTSP url, match_thr, cooldown, backoff...) lưu ở bảng
+   cabins trong DB (schema_version 2), đọc theo --cabin-id lúc khởi động.
+   Thứ tự ưu tiên CLI > DB > default: truyền cờ CLI (vd face_cabin URL, hoặc
+   --match-thr) sẽ ĐÈ giá trị DB cho lần chạy đó. Đổi config trong DB cần
+   khởi động lại app để áp dụng (v1 restart-to-apply, chưa hot-reload).
    Tracker duy trì ID kể cả khi người quay lưng, cache recog giảm tải NPU
    (~15 FPS). SCRFD-only (_lite) nhanh hơn nhưng mất persistence.
 ==============================================================

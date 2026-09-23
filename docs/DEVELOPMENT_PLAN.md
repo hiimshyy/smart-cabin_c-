@@ -183,8 +183,10 @@ log cực cao — chưa cần ở v1. Chi tiết design: `.kiro/specs/system-log
 
 ### 3.2 Config vận hành: DB-driven (KHÔNG dùng YAML)
 
-Hiện tại app + tool cấu hình qua **CLI args + env** (`--resident-db`, `--cabin-id`, `--match-thr`,
-`--confirm-streak`, `--cooldown-ms`, `--log-level`, `--log-dir`, `FACE_CABIN_LOG_*`...).
+Config vận hành cabin giờ **DB-driven** (bảng `cabins`, schema_version 2) — đã implement (spec
+`cabin-runtime-config` Task 1–4: migration + `load_cabin`/`update_cabin_config` + module
+`cabin_config` resolve/validate + khâu nối `main.cpp`). Log/model path vẫn qua CLI args + env
+(`--resident-db`, `--cabin-id`, `--log-level`, `--log-dir`, `FACE_CABIN_LOG_*`... — Nhóm C).
 
 **Quyết định (16/9): bỏ ý tưởng `config.yaml`, chuyển config vận hành sang DB-driven.** Lý do: web/app
 cần đổi được config từng cabin từ xa (quan trọng nhất là **link RTSP**), mà web ghi được vào **SQLite**
@@ -365,7 +367,7 @@ ElevCore (đội IoT) là cổng giao tiếp cloud/app AIoT.
 **Còn lại của Giai đoạn 1 (chưa làm — GIỮ trong plan):**
 
 - [~] RTSP reconnect logic trong `capture_worker`: exponential backoff — CODE XONG, build OK trên Orange Pi. `open_capture()` dùng chung init+reconnect; sau N read fail liên tiếp (`fail_reopen_threshold=30`) → release + reopen với backoff 500ms→10s (cap, ×2 mỗi lần); backoff ngắt được khi shutdown. Initial-open fail với RTSP KHÔNG thoát app mà vào reconnect loop (quan trọng cho khởi động 24/7 khi camera/mạng chưa sẵn sàng); USB thiếu thiết bị vẫn thoát. CLI `--reconnect-min-ms/--reconnect-max-ms`. **⏳ Test tích hợp PENDING: chờ camera RTSP kết nối lại để xác nhận reconnect <10s + tiếp tục nhận diện sau khi reconnect.**
-- [ ] Config vận hành DB-driven (thay YAML): migration schema_version 2 (cột config vào `cabins`) + `CabinConfig` đọc từ DB, precedence CLI>DB>default. Web đổi RTSP + thresholds. Spec `.kiro/specs/cabin-runtime-config/` (xem §3.2) — **nâng ưu tiên** vì web cần đổi RTSP
+- [~] Config vận hành DB-driven (thay YAML): migration schema_version 2 + `CabinConfig` đọc từ DB, precedence CLI>DB>default — **XONG phần app** (spec `cabin-runtime-config` Task 1–4, build+129 test pass trên Orange Pi; live RTSP-from-DB gộp đợt test camera pending). Còn REST `GET/PATCH /api/v1/cabins/{id}` (Task 5) — hoãn cùng spec Enroll API (backend `validate_cabin_patch`/`update_cabin_config` đã sẵn).
 - [ ] systemd service `face-cabin.service` với `Restart=always` (chưa có)
 - [ ] Tool `bulk_enroll`: CSV + `--photos-dir` → SQLite (spec format có ở `docs/BULK_ENROLL_FORMAT.md`, chưa code) — **hạ ưu tiên**, web enroll thay thế cho lần test này
 - [ ] SDL2 skeleton `src/cabin_ui.{h,cpp}`: fullscreen 1024×600, font VN UTF-8, 3 màn IDLE/DETECTING/MATCHED (chưa có)

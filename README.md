@@ -32,6 +32,37 @@ vẫn chào tên nhưng không auto-gọi tầng) — nhớ `face_set_floor` sau
 
 Chi tiết spec: `.kiro/specs/resident-db-layer/`.
 
+## Config vận hành: DB-driven (bảng `cabins`)
+
+Config vận hành từng cabin lưu trong **bảng `cabins`** của SQLite (schema_version 2),
+không còn hardcode qua CLI. Web/app đổi được các tham số này từ xa (qua REST API — đang
+làm cùng spec Enroll API); app đọc lúc khởi động theo `--cabin-id`. Thứ tự ưu tiên:
+**CLI > DB > default** (CLI chỉ để dev override; truyền `--source`/`--match-thr`... sẽ đè giá trị DB).
+
+Web/app **chỉnh được** (Nhóm A, cột trong `cabins`):
+
+| Setting | Cột `cabins` | Ràng buộc |
+|---|---|---|
+| RTSP camera URL | `camera_urls` (JSON array, v1 dùng [0]) | scheme rtsp/http/https; **pipeline GStreamer bị từ chối** |
+| RTSP jitter latency | `gst_latency_ms` | ≥ 0 (default 100) |
+| Match threshold | `match_thr` | [0.05, 0.95] (default 0.35) |
+| Confirm streak | `confirm_streak` | ≥ 1 (default 5) |
+| Cooldown ms | `cooldown_ms` | ≥ 0 (default 3000) |
+| Unknown timeout ms | `unknown_after_ms` | ≥ 0 (default 2000) |
+| Reconnect backoff min/max | `reconnect_min_ms` / `reconnect_max_ms` | min ≥ 1, min ≤ max |
+| Elevator endpoint, dải tầng | `elevator_endpoint`, `floors_min/max` | min ≤ max |
+
+Web **KHÔNG chỉnh** (Nhóm C — gắn thiết bị/triển khai): đường dẫn model, `--recog-dim`,
+DB/log path, và **chuỗi GStreamer pipeline tùy ý** (chống command-injection). Đổi các thứ này
+vẫn qua CLI/env trên Pi.
+
+**Đổi RTSP / config khi đang chạy 24/7**: ghi DB → **khởi động lại service** để áp dụng
+(v1 restart-to-apply qua systemd `Restart=always`, chưa hot-reload). Đổi camera chỉ ghi cột
+`cabins`, không đụng residents/embeddings. Gián đoạn khi restart ~vài giây — chấp nhận vì đổi
+camera là thao tác hiếm.
+
+Chi tiết spec: `.kiro/specs/cabin-runtime-config/`.
+
 ## Kết quả benchmark (USB webcam)
 
 | Chỉ số | SCRFD + Recognition |
