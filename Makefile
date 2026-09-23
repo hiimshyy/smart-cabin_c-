@@ -25,7 +25,14 @@ DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
                $(SRC_DIR)/match_engine.cpp \
                $(SRC_DIR)/interaction.cpp
 
-APP_SRCS_CPP     := $(SRC_DIR)/main.cpp           $(COMMON_SRCS) $(RECOG_SRCS) $(DB_SRCS)
+# App-only modules extracted from main.cpp (spec main-cpp-refactor). Used ONLY
+# by face_recog_app — do NOT add to COMMON_SRCS (other tools don't need them).
+APP_ONLY_SRCS := $(SRC_DIR)/app_config.cpp \
+                 $(SRC_DIR)/video_io.cpp \
+                 $(SRC_DIR)/overlay.cpp \
+                 $(SRC_DIR)/benchmark.cpp
+
+APP_SRCS_CPP     := $(SRC_DIR)/main.cpp           $(COMMON_SRCS) $(RECOG_SRCS) $(DB_SRCS) $(APP_ONLY_SRCS)
 ENROLL_SRCS_CPP  := $(SRC_DIR)/enroll_faces.cpp   $(COMMON_SRCS) \
                     $(SRC_DIR)/face_align.cpp $(SRC_DIR)/face_recog.cpp \
                     $(SRC_DIR)/resident_db.cpp
