@@ -17,9 +17,11 @@
 - `camera_urls` chỉ nhận URL (rtsp/http/https); chuỗi GStreamer pipeline tùy ý bị từ chối (chống injection).
 - Migration gộp `residents.ext_id` cùng version 2 (DEVELOPMENT_PLAN §3.5) để migrate 1 lần.
 
-**Ghi chú build/test:** module `src/cabin_config.{h,cpp}` không cần NPU → test trên máy dev (g++ + sqlite3),
-giống các module `resident-db-layer`. Migration test bằng DB tạm. Khâu nối `main.cpp` cần build trên
-Orange Pi để xác nhận (NPU/OpenCV).
+**Ghi chú build/test:** toàn bộ công việc chạy **trực tiếp trên Orange Pi** (Linux, có đủ g++ +
+sqlite3 + NPU/OpenCV/AI SDK). Module `src/cabin_config.{h,cpp}` không phụ thuộc NPU nên có thể test
+độc lập bằng g++ + sqlite3 (nhanh, không cần load model), giống các module `resident-db-layer`;
+migration test bằng DB tạm. Khâu nối `main.cpp` build đầy đủ bằng `make` trên chính Orange Pi để xác
+nhận (NPU/OpenCV). Không có ràng buộc "blocked-pending-Linux" — mọi task đều verify được tại chỗ.
 
 ---
 
@@ -81,6 +83,7 @@ Orange Pi để xác nhận (NPU/OpenCV).
 
 ## Thứ tự đề xuất
 
-Task 1–3 làm **trên máy dev** trước (không cần NPU): migration + module config + test. Task 4 cần
-**Orange Pi** để build/smoke. Task 5 gộp vào đợt dựng REST layer của spec Enroll API (Ưu tiên 1) —
+Task 1–3 (migration + module config + test) không phụ thuộc NPU → làm + test trước bằng g++ +
+sqlite3 ngay trên Orange Pi (nhanh, không cần load model). Task 4 build đầy đủ bằng `make` trên
+Orange Pi (NPU/OpenCV) + smoke test tại chỗ. Task 5 gộp vào đợt dựng REST layer của spec Enroll API
 không dựng server riêng cho config. Task 6 chốt cuối.

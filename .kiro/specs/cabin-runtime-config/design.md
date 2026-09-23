@@ -49,7 +49,8 @@ thành `CamConfig` / `InteractionConfig` / `match_threshold`. Không chỗ nào 
 | `src/main.cpp` | Sau khi mở `--resident-db`, gọi `load_cabin` + `resolve_cabin_config`; dùng kết quả thay CLI trực tiếp; log config hiệu lực |
 | REST API (spec Enroll API) | Thêm `GET/PATCH /api/v1/cabins/{id}` dùng `load_cabin`/`update_cabin_config` |
 
-Module `cabin_config` **tách khỏi NPU** (chỉ cần sqlite3 + std) → test được trên máy dev, giống các
+Module `cabin_config` **tách khỏi NPU** (chỉ cần sqlite3 + std) → test độc lập nhanh bằng g++ +
+sqlite3 ngay trên Orange Pi (không cần load model), giống các
 module khác của `resident-db-layer`.
 
 ## 3. Migration schema_version 2 (R1)
