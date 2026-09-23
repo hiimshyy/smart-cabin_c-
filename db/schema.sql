@@ -25,11 +25,14 @@ CREATE TABLE IF NOT EXISTS residents (
     updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at    TIMESTAMP,                            -- last successful match
     match_count     INTEGER NOT NULL DEFAULT 0,           -- total successful matches
-    notes           TEXT
+    notes           TEXT,
+    ext_id          TEXT                                  -- cloud id (ElevCore), nullable (schema_version 2)
 );
 
 CREATE INDEX IF NOT EXISTS idx_residents_active     ON residents(active);
 CREATE INDEX IF NOT EXISTS idx_residents_apartment  ON residents(apartment);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_residents_ext_id
+    ON residents(ext_id) WHERE ext_id IS NOT NULL;
 
 -- --------------------------------------------------------------------------
 -- embeddings: multiple embedding vectors per resident (self-supervised)
@@ -64,6 +67,15 @@ CREATE TABLE IF NOT EXISTS cabins (
     elevator_endpoint  TEXT,                               -- 'gpio:...' or 'modbus://...'
     floors_min         INTEGER NOT NULL DEFAULT 1,
     floors_max         INTEGER NOT NULL DEFAULT 30,
+    -- schema_version 2: cabin runtime config (spec cabin-runtime-config, Nhóm A).
+    -- Defaults MUST equal the compile-in CLI defaults (precedence CLI>DB>default).
+    gst_latency_ms     INTEGER NOT NULL DEFAULT 100,
+    match_thr          REAL    NOT NULL DEFAULT 0.35,
+    confirm_streak     INTEGER NOT NULL DEFAULT 5,
+    cooldown_ms        INTEGER NOT NULL DEFAULT 3000,
+    unknown_after_ms   INTEGER NOT NULL DEFAULT 2000,
+    reconnect_min_ms   INTEGER NOT NULL DEFAULT 500,
+    reconnect_max_ms   INTEGER NOT NULL DEFAULT 10000,
     created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -103,6 +115,10 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+-- A freshly created DB from this file already has all schema_version 2 columns
+-- (cabins runtime config + residents.ext_id), so record version 2 too. Existing
+-- v1 DBs are upgraded at runtime by ResidentDB::apply_migrations().
+INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 
 -- --------------------------------------------------------------------------
 -- Default cabin (for single-cabin dev/test)

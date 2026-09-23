@@ -122,6 +122,13 @@ private:
     bool apply_schema(const std::string& schema_sql_path);
     bool has_tables() const;
 
+    // Upgrade an existing DB to the latest schema_version (spec
+    // cabin-runtime-config, R1). Reads MAX(version); if below target, runs the
+    // incremental ALTER blocks in a transaction, tolerating "duplicate column"
+    // (a fresh DB from schema.sql already has the v2 columns). Idempotent.
+    bool apply_migrations();
+    int  current_schema_version() const;
+
     sqlite3* db_ = nullptr;
 
     std::thread             writer_;

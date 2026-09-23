@@ -71,6 +71,16 @@ bool ResidentDB::open(const std::string& db_path,
         LOG_INFO("db", "applied schema from %s", schema_sql_path.c_str());
     }
 
+    // Upgrade older DBs to the latest schema_version (spec cabin-runtime-config).
+    // Runs for both freshly-created and pre-existing DBs; it is idempotent and
+    // tolerates already-present columns.
+    if (!apply_migrations()) {
+        LOG_ERROR("db", "schema migration failed");
+        sqlite3_close(db_);
+        db_ = nullptr;
+        return false;
+    }
+
     // Start background writer (skipped for offline tools that only use the
     // synchronous write API — see spawn_writer / code-review P3-6).
     stop_ = false;
@@ -101,6 +111,77 @@ bool ResidentDB::apply_schema(const std::string& schema_sql_path) {
     ss << f.rdbuf();
     std::string sql = ss.str();
     return exec_sql(db_, sql.c_str());
+}
+
+// --------------------------------------------------------------------------
+// Schema migrations (spec cabin-runtime-config, R1)
+// --------------------------------------------------------------------------
+int ResidentDB::current_schema_version() const {
+    sqlite3_stmt* st = nullptr;
+    const char* q = "SELECT MAX(version) FROM schema_version;";
+    if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) return 0;
+    int v = 0;
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
+        v = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+    return v;
+}
+
+namespace {
+// Run one statement, swallowing only the "duplicate column name" error that
+// happens when the column already exists (fresh DB created from a schema.sql
+// that already defines the v2 columns). Any other error is fatal.
+bool exec_allow_dup_column(sqlite3* db, const char* sql) {
+    char* err = nullptr;
+    int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (rc == SQLITE_OK) { if (err) sqlite3_free(err); return true; }
+    std::string msg = err ? err : sqlite3_errmsg(db);
+    if (err) sqlite3_free(err);
+    if (msg.find("duplicate column name") != std::string::npos) {
+        return true;   // column already present — fine
+    }
+    LOG_ERROR("db", "migration SQL error: %s", msg.c_str());
+    return false;
+}
+}  // namespace
+
+bool ResidentDB::apply_migrations() {
+    int cur = current_schema_version();
+
+    // ---- version 2: cabin runtime config columns + residents.ext_id -------
+    if (cur < 2) {
+        LOG_INFO("db", "migrating schema %d -> 2", cur);
+        static const char* kV2Cols[] = {
+            "ALTER TABLE cabins ADD COLUMN gst_latency_ms   INTEGER NOT NULL DEFAULT 100;",
+            "ALTER TABLE cabins ADD COLUMN match_thr        REAL    NOT NULL DEFAULT 0.35;",
+            "ALTER TABLE cabins ADD COLUMN confirm_streak   INTEGER NOT NULL DEFAULT 5;",
+            "ALTER TABLE cabins ADD COLUMN cooldown_ms      INTEGER NOT NULL DEFAULT 3000;",
+            "ALTER TABLE cabins ADD COLUMN unknown_after_ms INTEGER NOT NULL DEFAULT 2000;",
+            "ALTER TABLE cabins ADD COLUMN reconnect_min_ms INTEGER NOT NULL DEFAULT 500;",
+            "ALTER TABLE cabins ADD COLUMN reconnect_max_ms INTEGER NOT NULL DEFAULT 10000;",
+            "ALTER TABLE residents ADD COLUMN ext_id TEXT;",
+        };
+        if (!exec_sql(db_, "BEGIN;")) return false;
+        for (const char* stmt : kV2Cols) {
+            if (!exec_allow_dup_column(db_, stmt)) {
+                exec_sql(db_, "ROLLBACK;");
+                return false;
+            }
+        }
+        // Partial unique index is created with IF NOT EXISTS (no dup issue).
+        if (!exec_sql(db_,
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_residents_ext_id "
+                "ON residents(ext_id) WHERE ext_id IS NOT NULL;") ||
+            !exec_sql(db_,
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (2);")) {
+            exec_sql(db_, "ROLLBACK;");
+            return false;
+        }
+        if (!exec_sql(db_, "COMMIT;")) return false;
+        LOG_INFO("db", "schema now at version %d", current_schema_version());
+    }
+    return true;
 }
 
 // --------------------------------------------------------------------------
