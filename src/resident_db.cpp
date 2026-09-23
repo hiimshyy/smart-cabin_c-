@@ -185,6 +185,106 @@ bool ResidentDB::apply_migrations() {
 }
 
 // --------------------------------------------------------------------------
+// Cabin runtime config (spec cabin-runtime-config, Task 2)
+// --------------------------------------------------------------------------
+CabinRow ResidentDB::load_cabin(int64_t id) const {
+    CabinRow row;
+    row.id = id;
+    sqlite3_stmt* st = nullptr;
+    const char* q =
+        "SELECT name, location, camera_urls, elevator_endpoint, "
+        "       floors_min, floors_max, gst_latency_ms, match_thr, "
+        "       confirm_streak, cooldown_ms, unknown_after_ms, "
+        "       reconnect_min_ms, reconnect_max_ms "
+        "FROM cabins WHERE id = ? LIMIT 1;";
+    if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) {
+        LOG_WARN("db", "load_cabin prepare failed: %s", sqlite3_errmsg(db_));
+        return row;   // found=false
+    }
+    sqlite3_bind_int64(st, 1, id);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        auto text = [&](int c) -> std::string {
+            const unsigned char* t = sqlite3_column_text(st, c);
+            return t ? reinterpret_cast<const char*>(t) : std::string();
+        };
+        row.name              = text(0);
+        row.location          = text(1);
+        row.camera_urls       = text(2);
+        row.elevator_endpoint = text(3);
+        row.floors_min        = sqlite3_column_int(st, 4);
+        row.floors_max        = sqlite3_column_int(st, 5);
+        row.gst_latency_ms    = sqlite3_column_int(st, 6);
+        row.match_thr         = (float)sqlite3_column_double(st, 7);
+        row.confirm_streak    = sqlite3_column_int(st, 8);
+        row.cooldown_ms       = sqlite3_column_int(st, 9);
+        row.unknown_after_ms  = sqlite3_column_int(st, 10);
+        row.reconnect_min_ms  = sqlite3_column_int(st, 11);
+        row.reconnect_max_ms  = sqlite3_column_int(st, 12);
+        row.found             = true;
+    }
+    sqlite3_finalize(st);
+    return row;
+}
+
+bool ResidentDB::update_cabin_config(int64_t id, const CabinPatch& patch) {
+    // Build the SET clause from only the flagged fields.
+    std::vector<std::string> sets;
+    // For bound params we keep a parallel list of (type, value) via lambdas at
+    // bind time; simpler: build "col=?" and bind in the same order.
+    struct Bind { char kind; int64_t i; double d; std::string s; };
+    std::vector<Bind> binds;
+    auto add_int  = [&](const char* col, int v)         { sets.push_back(std::string(col) + "=?"); binds.push_back({'i', v, 0, {}}); };
+    auto add_real = [&](const char* col, double v)      { sets.push_back(std::string(col) + "=?"); binds.push_back({'d', 0, v, {}}); };
+    auto add_text = [&](const char* col, const std::string& v) { sets.push_back(std::string(col) + "=?"); binds.push_back({'s', 0, 0, v}); };
+
+    if (patch.has_camera_urls)       add_text("camera_urls",       patch.camera_urls);
+    if (patch.has_elevator_endpoint) add_text("elevator_endpoint", patch.elevator_endpoint);
+    if (patch.has_floors_min)        add_int ("floors_min",        patch.floors_min);
+    if (patch.has_floors_max)        add_int ("floors_max",        patch.floors_max);
+    if (patch.has_gst_latency_ms)    add_int ("gst_latency_ms",    patch.gst_latency_ms);
+    if (patch.has_match_thr)         add_real("match_thr",         patch.match_thr);
+    if (patch.has_confirm_streak)    add_int ("confirm_streak",    patch.confirm_streak);
+    if (patch.has_cooldown_ms)       add_int ("cooldown_ms",       patch.cooldown_ms);
+    if (patch.has_unknown_after_ms)  add_int ("unknown_after_ms",  patch.unknown_after_ms);
+    if (patch.has_reconnect_min_ms)  add_int ("reconnect_min_ms",  patch.reconnect_min_ms);
+    if (patch.has_reconnect_max_ms)  add_int ("reconnect_max_ms",  patch.reconnect_max_ms);
+
+    if (sets.empty()) {
+        LOG_WARN("db", "update_cabin_config: empty patch, nothing to do");
+        return false;
+    }
+
+    std::string sql = "UPDATE cabins SET ";
+    for (size_t i = 0; i < sets.size(); ++i) {
+        if (i) sql += ", ";
+        sql += sets[i];
+    }
+    sql += " WHERE id=?;";
+
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) {
+        LOG_ERROR("db", "update_cabin_config prepare failed: %s", sqlite3_errmsg(db_));
+        return false;
+    }
+    int idx = 1;
+    for (const auto& b : binds) {
+        if      (b.kind == 'i') sqlite3_bind_int64(st, idx, b.i);
+        else if (b.kind == 'd') sqlite3_bind_double(st, idx, b.d);
+        else                    sqlite3_bind_text(st, idx, b.s.c_str(), -1, SQLITE_TRANSIENT);
+        ++idx;
+    }
+    sqlite3_bind_int64(st, idx, id);
+
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR("db", "update_cabin_config step failed: %s", sqlite3_errmsg(db_));
+        return false;
+    }
+    return sqlite3_changes(db_) > 0;
+}
+
+// --------------------------------------------------------------------------
 // Task 3.2 — load_active()
 // --------------------------------------------------------------------------
 bool ResidentDB::load_active(std::vector<Resident>& residents,

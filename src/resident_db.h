@@ -49,6 +49,46 @@ struct MatchEvent {
     int         latency_ms     = 0;
 };
 
+// Raw one-to-one mapping of a `cabins` row (spec cabin-runtime-config). This is
+// the DB row as stored (camera_urls is the raw JSON string); resolution +
+// validation into effective runtime config happens in cabin_config.{h,cpp}.
+// Kept here (not in cabin_config.h) so ResidentDB has no dependency on the
+// config module — the dependency flows cabin_config -> resident_db.
+struct CabinRow {
+    int64_t     id               = 1;
+    std::string name;
+    std::string location;
+    std::string camera_urls;              // raw JSON array string, e.g. ["rtsp://..."]
+    std::string elevator_endpoint;
+    int         floors_min       = 1;
+    int         floors_max       = 30;
+    int         gst_latency_ms   = 100;   // schema_version 2 (Nhóm A)
+    float       match_thr        = 0.35f;
+    int         confirm_streak   = 5;
+    int         cooldown_ms      = 3000;
+    int         unknown_after_ms = 2000;
+    int         reconnect_min_ms = 500;
+    int         reconnect_max_ms = 10000;
+    bool        found            = false; // false if no cabin with this id
+};
+
+// Sparse patch for update_cabin_config(): only fields with the matching flag
+// set are written. Used by the REST PATCH path (spec Enroll API) and tests.
+struct CabinPatch {
+    // camera_urls: raw JSON string to store (already validated by caller).
+    bool has_camera_urls = false;       std::string camera_urls;
+    bool has_elevator_endpoint = false; std::string elevator_endpoint;
+    bool has_floors_min = false;        int floors_min = 1;
+    bool has_floors_max = false;        int floors_max = 30;
+    bool has_gst_latency_ms = false;    int gst_latency_ms = 100;
+    bool has_match_thr = false;         float match_thr = 0.35f;
+    bool has_confirm_streak = false;    int confirm_streak = 5;
+    bool has_cooldown_ms = false;       int cooldown_ms = 3000;
+    bool has_unknown_after_ms = false;  int unknown_after_ms = 2000;
+    bool has_reconnect_min_ms = false;  int reconnect_min_ms = 500;
+    bool has_reconnect_max_ms = false;  int reconnect_max_ms = 10000;
+};
+
 class ResidentDB {
 public:
     ResidentDB() = default;
@@ -71,6 +111,18 @@ public:
     // Load all active (active=1) residents plus their embeddings.
     bool load_active(std::vector<Resident>& residents,
                      std::vector<EmbeddingRow>& embeddings);
+
+    // ---- Cabin runtime config (spec cabin-runtime-config) -------------
+    // Load the cabins row for `id`. On success returns a CabinRow with
+    // found=true; if no such row exists, found=false (caller falls back to
+    // defaults, R2.2). Synchronous read.
+    CabinRow load_cabin(int64_t id) const;
+
+    // Apply a sparse patch to the cabins row for `id` (only flagged fields are
+    // written). Synchronous; used by the REST PATCH path. Values must already
+    // be validated by the caller (validate_cabin_patch in cabin_config).
+    // Returns true if a row was updated.
+    bool update_cabin_config(int64_t id, const CabinPatch& patch);
 
     // ---- Async (non-blocking) writes ---------------------------------
     // Queue a match event for the background writer.
