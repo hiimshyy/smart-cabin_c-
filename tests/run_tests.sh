@@ -51,9 +51,18 @@ if [ "$SQLITE_INC" != "MISSING" ]; then
         $SQLITE_LIB -lpthread \
         -o "$OUT/test_resident_db" \
         && "$OUT/test_resident_db" "$ROOT/db/schema.sql" || fail=1
+
+    echo ""
+    echo "== CabinConfig =="
+    g++ -std=c++17 -Isrc $SQLITE_INC \
+        tests/test_cabin_config.cpp src/cabin_config.cpp src/resident_db.cpp src/log/logger.cpp \
+        $SQLITE_LIB -lpthread \
+        -o "$OUT/test_cabin_config" \
+        && "$OUT/test_cabin_config" || fail=1
 else
     echo ""
     echo "== ResidentDB == SKIPPED (no sqlite3.h)"
+    echo "== CabinConfig == SKIPPED (no sqlite3.h)"
     echo "   option 1: sudo apt-get install -y libsqlite3-dev"
     echo "   option 2 (no sudo): bash tests/_setup_sqlite_local.sh"
 fi
