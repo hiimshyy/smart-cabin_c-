@@ -179,7 +179,9 @@ bảng đối chiếu đầy đủ ở `requirements.md` §4. Tóm tắt các ta
 {"20000":1773909005000,"20001":1,"20003":"UNKNOWN_FACE","20008":0.41}
 ```
 
-> `confidence` = similarity tốt nhất của phiên (nếu có), else `0`. `20001` = cabin_id.
+> Tag số nhất quán với `0x1001` (không dùng key chữ). `20003` = literal `"UNKNOWN_FACE"` (ô "họ tên"
+> mang trạng thái người lạ, theo quy ước chốt với Edge Core). `20008` = similarity tốt nhất của
+> phiên (nếu có), else `0`, format `%.2f`. `20001` = cabin_id.
 
 `0x1003` heartbeat:
 
@@ -327,7 +329,7 @@ Cả hai suite build bằng `g++ -std=c++17 -Isrc`, không cần NPU/OpenCV/sqli
 - `json_escape`: `"`, `\`, `\n`, control `\u0001`; UTF-8 tiếng Việt giữ nguyên byte.
 - `0x1001` body: đúng thứ tự/kiểu tag (`20000/20001/20002/20003/20005/20008`), `20008` format
   `%.2f`, không có `20007`.
-- `0x1002` body: `status="UNKNOWN_FACE"`, `confidence` format `%.2f` bất kể locale.
+- `0x1002` body: `20003="UNKNOWN_FACE"` (literal), `20008` format `%.2f` bất kể locale, có `20001`.
 - `kvi` int64 biên (âm, lớn).
 
 **`test_edge_frame.cpp`** (R2, + transport qua socketpair):

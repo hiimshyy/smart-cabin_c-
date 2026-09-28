@@ -46,7 +46,7 @@ buộc "blocked-pending-Linux".
     - _Requirements: R3.2_
   - [ ] 1.2 `JsonObj` builder: `kv` (string, có escape), `kvi` (int64), `kvf` (double, `%.2f`, locale-independent); `str()` bọc `{...}`.
     - _Requirements: R3.1, R3.4_
-  - [ ] 1.3 Hàm dựng body theo msg_type (dải tag v2): `build_recog(cabin_id,id,name,floor,similarity,ts)` → 0x1001 với `20000/20001/20002/20003/20005/20008` (`20008` = similarity, `%.2f`), KHÔNG có `20007`; `build_unknown(cabin_id,conf,ts)` → 0x1002 với `20000/20001/status/confidence`; `build_heartbeat(ts)` → 0x1003 với `20000`.
+  - [ ] 1.3 Hàm dựng body theo msg_type (dải tag v2): `build_recog(cabin_id,id,name,floor,similarity,ts)` → 0x1001 với `20000/20001/20002/20003/20005/20008` (`20008` = similarity, `%.2f`), KHÔNG có `20007`; `build_unknown(cabin_id,conf,ts)` → 0x1002 với `20000/20001/20003=UNKNOWN_FACE/20008` (tag số nhất quán, không dùng key chữ); `build_heartbeat(ts)` → 0x1003 với `20000`.
     - _Requirements: R3.3, R3.4, R3.5, R7.1, R7.2, R7.4_
 
 - [ ] 2. Framing + transport (`src/edge_client.{h,cpp}` — phần thuần logic, không thread)
@@ -88,7 +88,7 @@ buộc "blocked-pending-Linux".
 - [ ] 6. Build + test
   - [ ] 6.1 `Makefile`: thêm `edge_client.cpp` + `edge_json.cpp` vào `DB_SRCS` (link vào `face_recog_app`). Không thêm lib.
     - _Requirements: NFR build_
-  - [ ] 6.2 `tests/test_edge_json.cpp`: escape (`"`, `\`, `\n`, control, UTF-8 tiếng Việt giữ nguyên); body 0x1001 (đúng tag dải v2 `20000/20001/20002/20003/20005/20008`, có `20001` cabin + `20008` similarity `%.2f`, KHÔNG có `20007`); body 0x1002 (có `20001`, `status`, `confidence` `%.2f` bất kể locale); `kvi` int64 biên; `kvf` `%.2f` locale-independent.
+  - [ ] 6.2 `tests/test_edge_json.cpp`: escape (`"`, `\`, `\n`, control, UTF-8 tiếng Việt giữ nguyên); body 0x1001 (đúng tag dải v2 `20000/20001/20002/20003/20005/20008`, có `20001` cabin + `20008` similarity `%.2f`, KHÔNG có `20007`); body 0x1002 (`20000/20001/20003=UNKNOWN_FACE/20008` `%.2f`, tag số nhất quán); `kvi` int64 biên; `kvf` `%.2f` locale-independent.
     - _Requirements: R3.1, R3.2, R3.3, R3.4, R7.2_
   - [ ] 6.3 `tests/test_edge_frame.cpp`: `encode_frame` (magic, `ntohs`/`ntohl` round-trip, tổng độ dài); round-trip qua `socketpair` (2 frame liền → tách gói đúng, chống dính gói); (tùy chọn) partial-write.
     - _Requirements: R2.1, R2.2, R2.3, R2.4_

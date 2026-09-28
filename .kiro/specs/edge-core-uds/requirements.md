@@ -148,9 +148,10 @@ Là AI Core, tôi cần tạo body JSON đúng định dạng tag-số mà khôn
 3. `0x1001` PHẢI serialize đúng các tag: `20000` (int64), `20001` (int, cabin_id), `20002` (string,
    mã NV/ID), `20003` (string, họ tên), `20005` (int, tầng mặc định), `20008` (float, độ tương đồng
    nhận diện). KHÔNG chứa `20007`.
-4. `0x1002` PHẢI serialize: `20000` (int64), `20001` (int, cabin_id), `status` = `"UNKNOWN_FACE"`,
-   `confidence` (số thực, ví dụ similarity tốt nhất của phiên; nếu không có thì `0`). (Theo mẫu
-   §3.4.3 tài liệu, có bổ sung `20001`.)
+4. `0x1002` PHẢI serialize (dùng tag số nhất quán với `0x1001`): `20000` (int64, timestamp),
+   `20001` (int, cabin_id), `20003` = literal `"UNKNOWN_FACE"` (ô "họ tên" mang trạng thái người
+   lạ theo quy ước chốt với Edge Core), `20008` (float, độ tương đồng tốt nhất của phiên; nếu không
+   có thì `0`). KHÔNG dùng key chữ `status`/`confidence` — mọi trường là tag số.
 5. `0x1003` PHẢI serialize tối thiểu `20000` (int64) làm heartbeat.
 
 ### R4 — Gửi non-blocking (không chặn vòng lặp frame)
