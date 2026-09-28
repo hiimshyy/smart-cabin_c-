@@ -340,6 +340,33 @@ ElevCore (đội IoT) là cổng giao tiếp cloud/app AIoT.
 **Chuẩn bị trước ngay từ giờ**: thêm cột `ext_id` (ID cư dân phía cloud, nullable, unique) vào
 `residents` trong `schema_version = 2`. Rẻ, và tránh phải migrate dữ liệu đã enroll khi bật sync.
 
+### 3.6 Phân tách trách nhiệm AI Core vs Edge Core (gọi tầng)
+
+`face_recog_app` = **AI Core**. Sau khi nhận diện, nó **báo cáo sự kiện cá nhân** cho **Edge Core**
+qua Unix Domain Socket (AI Core = client, Edge Core = server tại `/run/elev_edge_core.sock` hoặc
+`@elev_edge_core.sock`) — đã implement chiều AI→Edge (spec `edge-core-uds`, đợt a).
+
+**Nguyên tắc trung tâm** (trả lời "một người đổi tầng bằng tay không được ảnh hưởng gọi tầng tự
+động của người khác"):
+
+- **AI Core** chỉ phát sự kiện *"người X (tầng mặc định Y) vừa được nhận diện lúc T tại cabin C"* —
+  mỗi sự kiện gắn định danh cá nhân + tầng mặc định của chính người đó + timestamp + cabin.
+  AI Core **không giữ trạng thái "tầng cabin" toàn cục**, nên **không có gì để bị ghi đè**. Nhiều
+  người trong cabin ⇒ nhiều sự kiện độc lập.
+- **Edge Core** (đội IoT, ngoài scope repo này) nhận các sự kiện đó, **cộng dồn** đích đến của thang
+  theo từng người (không thay thế), và tương quan với nút bấm tay (đến từ board tầng qua Modbus →
+  COMM Core). "Bấm tay" chỉ tác động phần đóng góp của chính người bấm.
+
+**Thông điệp AI→Edge** (framing header 8 byte + JSON tag-số, dải tag v2):
+`0x1001` nhận diện được (`20000` ts, `20001` cabin, `20002` mã NV/ext_id, `20003` tên, `20005` tầng
+mặc định, `20008` độ tương đồng), `0x1002` người lạ (`20003="UNKNOWN_FACE"`, `20008`), `0x1003`
+heartbeat. Gửi non-blocking qua thread nền + bounded queue, reconnect bền bỉ. Bật bằng
+`--edge-socket`; không truyền ⇒ tắt hẳn (không hồi quy). AI Core **không** gửi `20007` (tầng bấm
+tay) — trường đó thuộc Edge Core.
+
+Chiều Edge→AI (`0x2001` kết quả gọi tầng, `0x2002` yêu cầu đăng ký khuôn mặt) để **đợt b**.
+Chi tiết spec: `.kiro/specs/edge-core-uds/`.
+
 ---
 
 ## 4. Lịch triển khai chi tiết (điều chỉnh cho 1 dev)
