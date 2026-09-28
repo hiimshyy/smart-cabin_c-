@@ -38,6 +38,8 @@ void print_usage(const char* prog) {
         "    --gst-latency MS      RTSP jitter buffer latency (default 100ms)\n"
         "    --reconnect-min-ms N  Reconnect backoff floor (default 500)\n"
         "    --reconnect-max-ms N  Reconnect backoff ceiling (default 10000)\n"
+        "    --edge-socket PATH    UDS path to Edge Core (e.g. /run/elev_edge_core.sock or\n"
+        "                          @elev_edge_core.sock). Empty = disabled (default).\n"
         "    --windowed / --fullscreen\n"
         "    --log-level L         trace|debug|info|warn|error (default info)\n"
         "    --log-dir DIR         log file directory (default /var/log/face-cabin)\n",
@@ -82,6 +84,7 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         else if (sv("--ui-scale"))       cfg.ui_scale_override = (float)std::atof(argv[++i]);
         else if (sv("--source"))         { cfg.source_url = argv[++i]; cfg.passed.source = true; }
         else if (sv("--gst-pipeline"))   cfg.custom_pipeline = argv[++i];
+        else if (sv("--edge-socket"))    cfg.edge_socket = argv[++i];
         else if (sv("--gst-latency"))    { cfg.gst_latency_ms = std::atoi(argv[++i]); cfg.passed.gst_latency = true; }
         else if (sv("--reconnect-min-ms")) { cfg.reconnect_min_ms = std::atoi(argv[++i]); cfg.passed.reconnect_min = true; }
         else if (sv("--reconnect-max-ms")) { cfg.reconnect_max_ms = std::atoi(argv[++i]); cfg.passed.reconnect_max = true; }

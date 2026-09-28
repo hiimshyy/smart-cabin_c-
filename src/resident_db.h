@@ -31,6 +31,7 @@ struct Resident {
     std::string language;        // "vi" | "en"
     std::string greeting_name;
     std::string role;            // resident | staff | vip | guest_regular
+    std::string ext_id;          // cloud id (ElevCore), "" if NULL (spec edge-core-uds)
 };
 
 struct EmbeddingRow {

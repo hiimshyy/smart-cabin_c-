@@ -57,6 +57,8 @@
 #include "benchmark.h"
 #include "face_label.h"
 #include "cabin_config.h"
+#include "edge_client.h"
+#include <memory>
 
 static constexpr int NPU_INPUT_W = 640;
 static constexpr int NPU_INPUT_H = 640;
@@ -231,6 +233,7 @@ int main(int argc, char** argv) {
     ResidentDB          resident_db;
     MatchEngine         match_engine;
     InteractionManager  interaction;
+    std::unique_ptr<EdgeClient> edge;   // nullptr unless --edge-socket given
     std::map<int64_t, Resident> resident_by_id;   // id -> metadata for overlay
     // Maps a track_id to the resident_id last recognized on it. This is the
     // authoritative link for cached tracker frames — resolving by name would
@@ -311,6 +314,25 @@ int main(int argc, char** argv) {
                      cfg.cabin_id, eff.confirm_streak, eff.cooldown_ms, eff.unknown_after_ms);
             if (match_engine.vector_count() == 0) {
                 LOG_WARN("db", "no embeddings loaded — everyone will be unknown");
+            }
+
+            // ---- Edge Core UDS client (spec edge-core-uds, đợt a) --------
+            // Only when --edge-socket is given; otherwise EdgeClient stays off
+            // (no thread, no socket) — no regression.
+            if (cfg.edge_socket && cfg.edge_socket[0]) {
+                EdgeConfig ec;
+                ec.socket_path     = cfg.edge_socket;
+                ec.cabin_id        = cfg.cabin_id;
+                ec.reconnect_min_ms = eff.reconnect_min_ms;   // reuse CabinConfig backoff
+                ec.reconnect_max_ms = eff.reconnect_max_ms;
+                edge = std::make_unique<EdgeClient>(ec);
+                if (!edge->start()) {
+                    LOG_WARN("edge", "EdgeClient start failed; disabled");
+                    edge.reset();
+                } else {
+                    LOG_INFO("edge", "EdgeClient -> %s (cabin_id=%d)",
+                             cfg.edge_socket, cfg.cabin_id);
+                }
             }
         } else if (cfg.face_db_path && face_db.load(cfg.face_db_path)) {
             LOG_INFO("recog", "loaded .fdb %s: %zu identities, dim=%d",
@@ -633,12 +655,24 @@ int main(int argc, char** argv) {
                     LOG_INFO("event", "CONFIRMED resident_id=%lld sim=%.2f home_floor=%d%s",
                              (long long)oc.resident_id, oc.similarity, hf,
                              hf <= HOME_FLOOR_UNSET ? " [no floor -> greet only]" : "");
+                    // Notify Edge Core (spec edge-core-uds, 0x1001). 20002 = ext_id,
+                    // fallback to_string(resident_id) (R7.3). name goes on the socket
+                    // (business), never into the log above (PII stays out of logs).
+                    if (edge) {
+                        std::string id_str = (it != resident_by_id.end() &&
+                                              !it->second.ext_id.empty())
+                                             ? it->second.ext_id
+                                             : std::to_string(oc.resident_id);
+                        std::string name = (it != resident_by_id.end()) ? it->second.name : "";
+                        edge->send_recog(id_str, name, hf, oc.similarity, (int64_t)now_ms());
+                    }
                 } else if (oc.unknown) {
                     ev.resident_id = -1;   // NULL
                     ev.action      = "unknown";
                     resident_db.log_event(ev);
                     LOG_INFO("event", "UNKNOWN subject_key=%d sim=%.2f",
                              oc.subject_key, oc.similarity);
+                    if (edge) edge->send_unknown(oc.similarity, (int64_t)now_ms());
                 }
             }
         }
@@ -722,6 +756,12 @@ int main(int argc, char** argv) {
     }
     disp_slot.cv_new.notify_all();
     if (disp_th.joinable()) disp_th.join();
+
+    if (edge) {
+        LOG_INFO("edge", "closing EdgeClient (sent=%llu dropped=%llu)",
+                 (unsigned long long)edge->sent(), (unsigned long long)edge->dropped());
+        edge->close();
+    }
 
     if (use_resident_db) {
         LOG_INFO("db", "flushing resident-db event writer");

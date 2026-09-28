@@ -12,6 +12,7 @@ struct AppConfig {
     const char* person_model_path = nullptr;
     const char* source_url        = nullptr;
     const char* custom_pipeline   = nullptr;
+    const char* edge_socket       = nullptr;   // UDS path to Edge Core ("" / null = disabled)
 
     int    cam_id           = 0;
     int    max_frames       = 0;

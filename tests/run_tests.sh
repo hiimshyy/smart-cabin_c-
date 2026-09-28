@@ -29,6 +29,19 @@ g++ -std=c++17 -Isrc \
     -lpthread \
     -o "$OUT/test_interaction" && "$OUT/test_interaction" || fail=1
 
+echo ""
+echo "== EdgeJson =="
+g++ -std=c++17 -Isrc \
+    tests/test_edge_json.cpp src/edge_json.cpp \
+    -o "$OUT/test_edge_json" && "$OUT/test_edge_json" || fail=1
+
+echo ""
+echo "== EdgeFrame =="
+g++ -std=c++17 -Isrc \
+    tests/test_edge_frame.cpp src/edge_client.cpp src/edge_json.cpp src/log/logger.cpp \
+    -lpthread \
+    -o "$OUT/test_edge_frame" && "$OUT/test_edge_frame" || fail=1
+
 # ResidentDB test needs sqlite3.h + libsqlite3.
 # Prefer a system install; else fall back to a no-sudo local extract at
 # /tmp/sqlite_local (see tests/_setup_sqlite_local.sh).

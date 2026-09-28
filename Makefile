@@ -24,7 +24,9 @@ RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
 DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
                $(SRC_DIR)/match_engine.cpp \
                $(SRC_DIR)/interaction.cpp \
-               $(SRC_DIR)/cabin_config.cpp
+               $(SRC_DIR)/cabin_config.cpp \
+               $(SRC_DIR)/edge_client.cpp \
+               $(SRC_DIR)/edge_json.cpp
 
 # App-only modules extracted from main.cpp (spec main-cpp-refactor). Used ONLY
 # by face_recog_app — do NOT add to COMMON_SRCS (other tools don't need them).

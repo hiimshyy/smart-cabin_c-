@@ -297,7 +297,7 @@ bool ResidentDB::load_active(std::vector<Resident>& residents,
     {
         const char* q =
             "SELECT id, name, apartment, home_floor, language, "
-            "       greeting_name, role "
+            "       greeting_name, role, ext_id "
             "FROM residents WHERE active=1;";
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) {
@@ -317,6 +317,7 @@ bool ResidentDB::load_active(std::vector<Resident>& residents,
             r.language      = txt(4);
             r.greeting_name = txt(5);
             r.role          = txt(6);
+            r.ext_id        = txt(7);
             residents.push_back(std::move(r));
         }
         sqlite3_finalize(st);
