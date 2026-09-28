@@ -118,11 +118,11 @@ toolchain and are marked **blocked-pending-Linux** (Req 6.2).
     - VERIFIED on Orange Pi A733: `make clean && make -j4` builds all 6 binaries clean. New `.cpp` files compile through the `src/%.cpp -> build/%.o` rule (5.1); `face_recog_app` links with the new objects, zero unresolved symbols (5.2, 4.6); same `LIBS` set (5.3); zero NEW warnings from the 5 new files under `-Wall` (5.4) — only 2 pre-existing warnings remain (logger.cpp:71 snprintf-truncation, awnn_lib.c buff_size). Unit tests 104/104 pass. Other tools (enroll_faces, add_person, capture_person, migrate_fdb, probe_models) still build (APP_ONLY not in COMMON_SRCS).
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 6.2, 6.5_
 
-- [~] 11. Linux runtime differential verification (PARTIAL on Orange Pi; full diff pending a camera/recorded frames)
-  - [~]* 11.1 Full Pipeline_Behavior differential run
+- [ ] 11. Linux runtime differential verification (PARTIAL on Orange Pi; full diff pending a camera/recorded frames)
+  - [ ]* 11.1 Full Pipeline_Behavior differential run
     - PARTIAL: exit codes verified on Orange Pi (`-h` → 0 with byte-identical usage on stderr; bad camera → 1). Exit codes 2/3/4 confirmed present at the correct return sites by static review, but cannot be isolated at runtime without a camera that opens (camera-open runs first and returns 1). Full frame-sequence differential (SCRFD-only + YOLO+tracker) needs `/dev/video0` or recorded frames — currently absent. **Blocked-pending-camera** (same as RTSP integration test).
     - _Requirements: 1.1, 3.1, 3.2, 6.1, 6.2, 6.5_
-  - [~]* 11.2 Log-line diff and q/ESC shutdown check
+  - [ ]* 11.2 Log-line diff and q/ESC shutdown check
     - PARTIAL: usage string byte-identical to pre-refactor `main.cpp` (git HEAD). q/ESC GUI shutdown + normalized log diff need a live camera window — **blocked-pending-camera**.
     - _Requirements: 1.5, 1.6, 3.1, 3.2, 6.2, 6.5_
 
