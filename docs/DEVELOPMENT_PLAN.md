@@ -263,6 +263,16 @@ dùng chung NPU context với frame loop (serialize bằng mutex) — tránh xun
 > ⚠️ **API này CHƯA tồn tại** — hiện enroll chỉ có CLI (`enroll_faces`, `add_person`).
 > Đội web đang bị chặn chờ hợp đồng này → **ưu tiên số 1**.
 
+> **Phương án A (tạm thời, ĐÃ triển khai 29/9)** — mở chặn cho đội web trước khi có REST/UDS:
+> `edge_elevator` (Node) sau khi lưu ảnh + ghi Mongo thì **spawn `add_person`** qua
+> `enroll_bridge.js::enrollFace()`. `add_person` đã có `--ext-id` (khóa theo mã NV = `resident_id`
+> của Mongo), `--home-floor`, `--role` (14 role snake_case, schema_version 3), `--json` (in 1 dòng
+> `{ok,resident_id,ext_id,embeddings[,error]}` cho Node parse). Node cập nhật `enroll_status` vào
+> Mongo + trả UI. Đây là bước trung gian **tháo bỏ được**: luồng cuối sẽ là
+> Mobile → Cloud → Edge Core → AI Core qua UDS (`edge-core-uds` đợt b, `0x2002` register request),
+> không spawn process. Hạn chế của A: mỗi enroll spawn 1 tiến trình (load NPU ~vài giây) và app
+> đang chạy chỉ thấy người mới sau khi restart (load embeddings 1 lần lúc khởi động).
+
 ```
 POST   /api/v1/enroll                       multipart: name, apartment, home_floor,
                                             language, greeting_name, role, images[]
