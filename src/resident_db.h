@@ -140,6 +140,18 @@ public:
                           const std::vector<float>& vec);
     bool    delete_embeddings(int64_t resident_id);
 
+    // Find a resident by external id (ext_id). Returns -1 if not found.
+    int64_t find_by_ext_id(const std::string& ext_id) const;
+
+    // Upsert keyed by ext_id (spec enroll phase A): if a resident with this
+    // ext_id exists, update name/home_floor/role on it; otherwise insert a new
+    // resident carrying ext_id. `role` must be one of the schema CHECK values;
+    // callers should validate first. Returns the resident id, or -1 on error.
+    int64_t upsert_resident_by_ext_id(const std::string& ext_id,
+                                      const std::string& name,
+                                      int home_floor,
+                                      const std::string& role);
+
     // Look up a resident id by exact name. Returns -1 if not found.
     // Synchronous; used by migrate_fdb to decide skip vs overwrite.
     int64_t find_resident(const std::string& name) const;

@@ -181,6 +181,81 @@ bool ResidentDB::apply_migrations() {
         if (!exec_sql(db_, "COMMIT;")) return false;
         LOG_INFO("db", "schema now at version %d", current_schema_version());
     }
+
+    // ---- version 3: rebuild residents with the org-role CHECK set ---------
+    // SQLite can't ALTER a CHECK constraint, so rebuild the table: new table
+    // with the new CHECK, copy rows (mapping legacy roles -> new set), drop
+    // old, rename. id (PK) is preserved so embeddings/match_events FKs stay
+    // valid. foreign_keys must be toggled OUTSIDE a transaction.
+    // Role set = 12 org roles (snake_case) + vip + guest_regular (kept for
+    // building guests/VIPs). Legacy 'resident' -> 'staff'; vip/guest_regular/
+    // staff kept as-is; unknown -> 'staff' (CHECK never fails).
+    if (cur < 3) {
+        LOG_INFO("db", "migrating schema %d -> 3 (rebuild residents, org-role CHECK)", cur);
+        static const char* kV3Sql =
+            "PRAGMA foreign_keys=OFF;\n"
+            "BEGIN;\n"
+            "CREATE TABLE residents_new (\n"
+            "    id              INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    name            TEXT    NOT NULL,\n"
+            "    apartment       TEXT,\n"
+            "    home_floor      INTEGER NOT NULL,\n"
+            "    language        TEXT    NOT NULL DEFAULT 'vi' CHECK (language IN ('vi','en')),\n"
+            "    greeting_name   TEXT,\n"
+            "    role            TEXT    NOT NULL DEFAULT 'staff'\n"
+            "                    CHECK (role IN ('chairman','vice_president','deputy_general_director',\n"
+            "                                    'head','director','manager','specialist','team_leader',\n"
+            "                                    'sales','engineer','staff','intern',\n"
+            "                                    'vip','guest_regular')),\n"
+            "    active          INTEGER NOT NULL DEFAULT 1,\n"
+            "    consent_at      TIMESTAMP,\n"
+            "    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n"
+            "    updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n"
+            "    last_seen_at    TIMESTAMP,\n"
+            "    match_count     INTEGER NOT NULL DEFAULT 0,\n"
+            "    notes           TEXT,\n"
+            "    ext_id          TEXT\n"
+            ");\n"
+            "INSERT INTO residents_new\n"
+            "  (id,name,apartment,home_floor,language,greeting_name,role,active,\n"
+            "   consent_at,created_at,updated_at,last_seen_at,match_count,notes,ext_id)\n"
+            "SELECT id,name,apartment,home_floor,language,greeting_name,\n"
+            "  CASE lower(COALESCE(role,''))\n"
+            "    WHEN 'resident'      THEN 'staff'\n"   // legacy default -> staff
+            "    WHEN 'staff'         THEN 'staff'\n"
+            "    WHEN 'vip'           THEN 'vip'\n"      // keep VIP
+            "    WHEN 'guest_regular' THEN 'guest_regular'\n"  // keep guest
+            "    WHEN 'chairman' THEN 'chairman'\n"
+            "    WHEN 'vice_president' THEN 'vice_president'\n"
+            "    WHEN 'deputy_general_director' THEN 'deputy_general_director'\n"
+            "    WHEN 'head' THEN 'head'\n"
+            "    WHEN 'director' THEN 'director'\n"
+            "    WHEN 'manager' THEN 'manager'\n"
+            "    WHEN 'specialist' THEN 'specialist'\n"
+            "    WHEN 'team_leader' THEN 'team_leader'\n"
+            "    WHEN 'sales' THEN 'sales'\n"
+            "    WHEN 'engineer' THEN 'engineer'\n"
+            "    WHEN 'intern' THEN 'intern'\n"
+            "    ELSE 'staff'\n"                          // unknown -> staff
+            "  END,\n"
+            "  active,consent_at,created_at,updated_at,last_seen_at,match_count,notes,ext_id\n"
+            "FROM residents;\n"
+            "DROP TABLE residents;\n"
+            "ALTER TABLE residents_new RENAME TO residents;\n"
+            "CREATE INDEX IF NOT EXISTS idx_residents_active    ON residents(active);\n"
+            "CREATE INDEX IF NOT EXISTS idx_residents_apartment ON residents(apartment);\n"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_residents_ext_id ON residents(ext_id) WHERE ext_id IS NOT NULL;\n"
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (3);\n"
+            "COMMIT;\n"
+            "PRAGMA foreign_keys=ON;\n";
+        if (!exec_sql(db_, kV3Sql)) {
+            exec_sql(db_, "ROLLBACK;");
+            exec_sql(db_, "PRAGMA foreign_keys=ON;");
+            LOG_ERROR("db", "schema v3 migration failed");
+            return false;
+        }
+        LOG_INFO("db", "schema now at version %d", current_schema_version());
+    }
     return true;
 }
 
@@ -508,6 +583,72 @@ int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor) {
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         LOG_ERROR("db", "insert resident failed: %s", sqlite3_errmsg(db_));
+        return -1;
+    }
+    return sqlite3_last_insert_rowid(db_);
+}
+
+// --------------------------------------------------------------------------
+// Enroll phase A: ext_id-keyed lookup + upsert (name/floor/role)
+// --------------------------------------------------------------------------
+int64_t ResidentDB::find_by_ext_id(const std::string& ext_id) const {
+    if (!db_ || ext_id.empty()) return -1;
+    sqlite3_stmt* st = nullptr;
+    const char* q = "SELECT id FROM residents WHERE ext_id = ? LIMIT 1;";
+    if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) return -1;
+    sqlite3_bind_text(st, 1, ext_id.c_str(), -1, SQLITE_TRANSIENT);
+    int64_t id = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) id = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return id;
+}
+
+int64_t ResidentDB::upsert_resident_by_ext_id(const std::string& ext_id,
+                                              const std::string& name,
+                                              int home_floor,
+                                              const std::string& role) {
+    if (!db_ || ext_id.empty()) return -1;
+
+    int64_t existing = find_by_ext_id(ext_id);
+    if (existing >= 0) {
+        // Update mutable fields on the existing resident.
+        sqlite3_stmt* st = nullptr;
+        const char* upd =
+            "UPDATE residents SET name=?, home_floor=?, role=?, "
+            "updated_at=CURRENT_TIMESTAMP WHERE id=?;";
+        if (sqlite3_prepare_v2(db_, upd, -1, &st, nullptr) != SQLITE_OK) {
+            LOG_ERROR("db", "prepare upsert-by-ext_id (update) failed: %s", sqlite3_errmsg(db_));
+            return -1;
+        }
+        sqlite3_bind_text (st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int  (st, 2, home_floor);
+        sqlite3_bind_text (st, 3, role.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, existing);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) {
+            LOG_ERROR("db", "update resident by ext_id failed: %s", sqlite3_errmsg(db_));
+            return -1;
+        }
+        return existing;
+    }
+
+    // Insert new resident carrying ext_id.
+    sqlite3_stmt* st = nullptr;
+    const char* ins =
+        "INSERT INTO residents (name, home_floor, role, ext_id) VALUES (?,?,?,?);";
+    if (sqlite3_prepare_v2(db_, ins, -1, &st, nullptr) != SQLITE_OK) {
+        LOG_ERROR("db", "prepare upsert-by-ext_id (insert) failed: %s", sqlite3_errmsg(db_));
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int (st, 2, home_floor);
+    sqlite3_bind_text(st, 3, role.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 4, ext_id.c_str(), -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR("db", "insert resident by ext_id failed: %s", sqlite3_errmsg(db_));
         return -1;
     }
     return sqlite3_last_insert_rowid(db_);

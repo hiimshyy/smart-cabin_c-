@@ -82,11 +82,45 @@ static void print_usage(const char* prog) {
         "           [--merge]       (append to resident's embeddings)\n"
         "           [--min-face-px N (default 40)]\n"
         "           [--source S     (embedding source id_photo|cabin|admin, default id_photo)]\n"
+        "           [--ext-id STR   (external id / mã NV; when set, resident is keyed by ext_id)]\n"
+        "           [--home-floor N (default 0 = no floor registered)]\n"
+        "           [--role R       (snake_case org role: chairman|vice_president|\n"
+        "                            deputy_general_director|head|director|manager|specialist|\n"
+        "                            team_leader|sales|engineer|staff|intern|vip|guest_regular)]\n"
+        "           [--json         (print one machine-readable JSON result line to stdout)]\n"
         "           [--schema PATH  (schema.sql for empty DB, default db/schema.sql)]\n"
         "\n"
         "  Each image -> one embedding row (source='id_photo'), NOT averaged.\n"
         "  New residents are created with home_floor=0 (\"no floor registered\").\n",
         prog);
+}
+
+// Result line for the web (spec enroll phase A): a single JSON object on stdout
+// so the Node caller can JSON.parse the last line. No PII beyond what the caller
+// already has (ext_id/resident_id/counts). Emitted only with --json.
+static void print_json_result(bool ok, int64_t resident_id,
+                              const std::string& ext_id, int embeddings,
+                              const char* error) {
+    // Minimal manual JSON (no dependency); values here are numeric/ascii ids.
+    printf("{\"ok\":%s", ok ? "true" : "false");
+    if (resident_id >= 0) printf(",\"resident_id\":%lld", (long long)resident_id);
+    if (!ext_id.empty())  printf(",\"ext_id\":\"%s\"", ext_id.c_str());
+    printf(",\"embeddings\":%d", embeddings);
+    if (error && error[0]) printf(",\"error\":\"%s\"", error);
+    printf("}\n");
+    fflush(stdout);
+}
+
+// The 14 accepted roles (schema_version 3 CHECK). Empty role is allowed
+// (falls back to the DB default 'staff').
+static bool role_is_valid(const std::string& r) {
+    static const char* kRoles[] = {
+        "chairman","vice_president","deputy_general_director","head","director",
+        "manager","specialist","team_leader","sales","engineer","staff","intern",
+        "vip","guest_regular"
+    };
+    for (const char* k : kRoles) if (r == k) return true;
+    return false;
 }
 
 int main(int argc, char** argv) {
@@ -100,6 +134,10 @@ int main(int argc, char** argv) {
     bool  do_replace  = false;
     bool  do_merge    = false;
     std::string emb_source = "id_photo";   // schema: id_photo|cabin|admin (P3-5)
+    std::string ext_id;                     // enroll phase A: external id (mã NV)
+    std::string role;                       // org role (snake_case); "" = keep default
+    int   home_floor  = HOME_FLOOR_UNSET;   // -1 sentinel not used; 0 = no floor
+    bool  json_out    = false;              // machine-readable result line (for web)
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -119,6 +157,10 @@ int main(int argc, char** argv) {
         else if (a == "--merge")        do_merge    = true;
         else if (a == "--min-face-px")  min_face_px = std::atoi(next("--min-face-px"));
         else if (a == "--source")       emb_source  = next("--source");
+        else if (a == "--ext-id")       ext_id      = next("--ext-id");
+        else if (a == "--home-floor")   home_floor  = std::atoi(next("--home-floor"));
+        else if (a == "--role")         role        = next("--role");
+        else if (a == "--json")         json_out    = true;
         else if (a == "--log-level" || a == "--log-dir") { next(a.c_str()); } // consumed by resolve_log_config
         else if (a == "-h" || a == "--help") { print_usage(argv[0]); return 0; }
         else {
@@ -133,6 +175,11 @@ int main(int argc, char** argv) {
     }
     if (do_replace && do_merge) {
         fprintf(stderr, "use --replace OR --merge, not both\n");
+        return 2;
+    }
+    if (!role.empty() && !role_is_valid(role)) {
+        fprintf(stderr, "invalid --role '%s' (must be one of the 14 org roles)\n", role.c_str());
+        if (json_out) print_json_result(false, -1, ext_id, 0, "invalid_role");
         return 2;
     }
 
@@ -150,8 +197,10 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    // Does this resident already exist? Decide merge/replace semantics.
-    int64_t existing_id = db.find_resident(name);
+    // Does this resident already exist? Key by ext_id when given (enroll phase
+    // A / mobile flow), else fall back to name (legacy CLI use).
+    int64_t existing_id = ext_id.empty() ? db.find_resident(name)
+                                         : db.find_by_ext_id(ext_id);
     if (existing_id >= 0 && !do_replace && !do_merge) {
         LOG_ERROR("add", "resident id=%lld already exists; use --replace to "
                   "overwrite its embeddings or --merge to add",
@@ -238,18 +287,27 @@ int main(int argc, char** argv) {
         awnn_destroy(det_ctx);
         awnn_uninit();
         db.close();
+        if (json_out) print_json_result(false, -1, ext_id, 0, "no_face");
         return 6;
     }
 
     // ---- Write to SQLite (spec R6.2) -----------------------------------
-    // Ensure the resident exists (creates with home_floor=0 if new).
-    int64_t resident_id = db.upsert_resident(name, HOME_FLOOR_UNSET);
+    // Ensure the resident exists. Keyed by ext_id when given (sets role +
+    // home_floor), else legacy name-keyed upsert (home_floor=0, default role).
+    int64_t resident_id;
+    if (!ext_id.empty()) {
+        std::string eff_role = role.empty() ? std::string("staff") : role;
+        resident_id = db.upsert_resident_by_ext_id(ext_id, name, home_floor, eff_role);
+    } else {
+        resident_id = db.upsert_resident(name, home_floor);
+    }
     if (resident_id < 0) {
         LOG_ERROR("add", "upsert_resident failed");
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
         db.close();
+        if (json_out) print_json_result(false, -1, ext_id, 0, "db_upsert_failed");
         return 7;
     }
 
@@ -262,6 +320,7 @@ int main(int argc, char** argv) {
             awnn_destroy(det_ctx);
             awnn_uninit();
             db.close();
+            if (json_out) print_json_result(false, resident_id, ext_id, 0, "db_delete_failed");
             return 7;
         }
     }
@@ -278,6 +337,7 @@ int main(int argc, char** argv) {
         awnn_destroy(det_ctx);
         awnn_uninit();
         db.close();
+        if (json_out) print_json_result(false, resident_id, ext_id, 0, "db_write_failed");
         return 7;
     }
 
@@ -290,6 +350,7 @@ int main(int argc, char** argv) {
     awnn_destroy(det_ctx);
     awnn_uninit();
     db.close();
+    if (json_out) print_json_result(true, resident_id, ext_id, written, nullptr);
     Logger::instance().shutdown();
     return 0;
 }

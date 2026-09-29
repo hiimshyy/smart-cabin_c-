@@ -17,8 +17,11 @@ CREATE TABLE IF NOT EXISTS residents (
     language        TEXT    NOT NULL DEFAULT 'vi'
                     CHECK (language IN ('vi','en')),
     greeting_name   TEXT,                                 -- "bác Nga" / "Mr. Smith"
-    role            TEXT    NOT NULL DEFAULT 'resident'
-                    CHECK (role IN ('resident','staff','vip','guest_regular')),
+    role            TEXT    NOT NULL DEFAULT 'staff'
+                    CHECK (role IN ('chairman','vice_president','deputy_general_director',
+                                    'head','director','manager','specialist','team_leader',
+                                    'sales','engineer','staff','intern',
+                                    'vip','guest_regular')),
     active          INTEGER NOT NULL DEFAULT 1,           -- 0 = soft-deleted
     consent_at      TIMESTAMP,                            -- privacy consent time
     created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -116,9 +119,11 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 -- A freshly created DB from this file already has all schema_version 2 columns
--- (cabins runtime config + residents.ext_id), so record version 2 too. Existing
--- v1 DBs are upgraded at runtime by ResidentDB::apply_migrations().
+-- (cabins runtime config + residents.ext_id) and the schema_version 3 role set
+-- (12 org roles, snake_case). Existing older DBs are upgraded at runtime by
+-- ResidentDB::apply_migrations().
 INSERT OR IGNORE INTO schema_version (version) VALUES (2);
+INSERT OR IGNORE INTO schema_version (version) VALUES (3);
 
 -- --------------------------------------------------------------------------
 -- Default cabin (for single-cabin dev/test)
