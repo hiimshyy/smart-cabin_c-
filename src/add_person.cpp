@@ -72,7 +72,9 @@ static bool detect_largest_face(Awnn_Context_t* ctx,
 
 static void print_usage(const char* prog) {
     fprintf(stderr,
-        "Usage: %s --name X --image img1.jpg [--image img2.jpg ...]\n"
+        "Usage: %s --name X --image <img_or_dir> [--image ... ]\n"
+        "           (--image accepts a file OR a directory; a directory is\n"
+        "            scanned for .jpg/.jpeg/.png/.bmp/.webp — one resident folder)\n"
         "           --db residents.db\n"
         "           --det-model <scrfd.nb>\n"
         "           --recog-model <recog.nb>\n"
@@ -121,6 +123,40 @@ static bool role_is_valid(const std::string& r) {
     };
     for (const char* k : kRoles) if (r == k) return true;
     return false;
+}
+
+// True if the filename has a supported image extension (case-insensitive).
+static bool is_image_file(const std::string& name) {
+    std::string ext = fs::path(name).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c){ return std::tolower(c); });
+    return ext == ".jpg" || ext == ".jpeg" || ext == ".png" ||
+           ext == ".bmp" || ext == ".webp";
+}
+
+// Expand any directory entries in `paths` into the image files they contain
+// (non-recursive, sorted for deterministic order). File paths pass through
+// unchanged. Enroll phase A: the web passes ONE resident folder
+// (faces/floor_<n>/<ext_id>/) and we scan every image in it.
+static std::vector<std::string> expand_image_inputs(const std::vector<std::string>& paths) {
+    std::vector<std::string> out;
+    for (const auto& p : paths) {
+        std::error_code ec;
+        if (fs::is_directory(p, ec)) {
+            std::vector<std::string> found;
+            for (const auto& de : fs::directory_iterator(p, ec)) {
+                if (ec) break;
+                if (!de.is_regular_file()) continue;
+                const std::string f = de.path().string();
+                if (is_image_file(f)) found.push_back(f);
+            }
+            std::sort(found.begin(), found.end());
+            for (auto& f : found) out.push_back(std::move(f));
+        } else {
+            out.push_back(p);
+        }
+    }
+    return out;
 }
 
 int main(int argc, char** argv) {
@@ -181,6 +217,16 @@ int main(int argc, char** argv) {
         fprintf(stderr, "invalid --role '%s' (must be one of the 14 org roles)\n", role.c_str());
         if (json_out) print_json_result(false, -1, ext_id, 0, "invalid_role");
         return 2;
+    }
+
+    // Expand any --image that points at a directory into the images inside it
+    // (enroll phase A: web passes one resident folder). If a directory has no
+    // usable image, this yields an empty list -> treated as no_face below.
+    images = expand_image_inputs(images);
+    if (images.empty()) {
+        fprintf(stderr, "no image files found in the given --image path(s)\n");
+        if (json_out) print_json_result(false, -1, ext_id, 0, "no_image_file");
+        return 6;
     }
 
     // Logger: offline tool -> stderr only unless --log-dir given. No PII (R7):
