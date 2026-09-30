@@ -35,9 +35,14 @@ struct Resident {
 };
 
 struct EmbeddingRow {
+    int64_t            id = -1;
     int64_t            resident_id = -1;
-    std::string        source;    // id_photo | cabin | admin
-    std::vector<float> vector;    // L2-normalized, size == dim
+    std::string        source;       // id_photo | cabin | admin
+    int64_t             declared_dim = 0;
+    int64_t             blob_nbytes = 0;
+    bool                metadata_valid = false; // SQLite integer types/ranges are sane
+    bool                blob_valid = false; // non-NULL blob; exact validation lives in catalog builder
+    std::vector<float>  vector;       // only allocated after safe exact-size checks
 };
 
 struct MatchEvent {
@@ -108,6 +113,26 @@ public:
     bool open(const std::string& db_path,
               const std::string& schema_sql_path = "db/schema.sql",
               bool spawn_writer = true);
+
+    // Open an existing DB as a dedicated catalog reader. No schema/migration/
+    // WAL mutation and no writer thread. A short busy timeout keeps polling
+    // from stalling the realtime frame loop.
+    bool open_readonly(const std::string& db_path, int busy_timeout_ms = 50);
+
+    // Connection-local SQLite commit generation (PRAGMA data_version).
+    bool data_version(int64_t& value) const;
+
+    // Coherent active-catalog snapshot: residents + embeddings are selected in
+    // one deferred read transaction with deterministic ordering.
+    bool load_active_snapshot(std::vector<Resident>& residents,
+                              std::vector<EmbeddingRow>& embeddings);
+
+#ifdef RESIDENT_DB_TEST_HOOK
+    using SnapshotTestHook = bool (*)(void*);
+    void set_snapshot_test_hook(SnapshotTestHook hook, void* ctx) {
+        snapshot_test_hook_ = hook; snapshot_test_hook_ctx_ = ctx;
+    }
+#endif
 
     // Load all active (active=1) residents plus their embeddings.
     bool load_active(std::vector<Resident>& residents,
@@ -193,6 +218,15 @@ private:
     // (a fresh DB from schema.sql already has the v2 columns). Idempotent.
     bool apply_migrations();
     int  current_schema_version() const;
+
+    bool read_only_ = false;
+    // Serialize direct sqlite3* use with the async writer. Hot reload uses a
+    // separate reader connection, but load_active() remains a safe public API.
+    mutable std::mutex db_mtx_;
+#ifdef RESIDENT_DB_TEST_HOOK
+    SnapshotTestHook snapshot_test_hook_ = nullptr;
+    void* snapshot_test_hook_ctx_ = nullptr;
+#endif
 
     sqlite3* db_ = nullptr;
 

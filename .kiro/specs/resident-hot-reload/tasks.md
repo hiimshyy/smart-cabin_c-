@@ -37,51 +37,51 @@ reader connection riêng, candidate-build-then-swap và cache invalidation có c
         success commit một generation đầy đủ và JSON/commit contract đúng.
     - _Requirements: R3.1, acceptance 10_
 
-- [ ] 1. ResidentDB reader primitives
-  - [ ] 1.1 Thêm `ResidentDB::open_readonly(path, busy_timeout_ms=50)` dùng READONLY/query_only,
+- [x] 1. ResidentDB reader primitives
+  - [x] 1.1 Thêm `ResidentDB::open_readonly(path, busy_timeout_ms=50)` dùng READONLY/query_only,
         không WAL/migration/writer; và `data_version()` đọc `PRAGMA data_version`.
     - _Requirements: R2.1–R2.4, R3.4, R7.2_
-  - [ ] 1.2 Thêm `load_active_snapshot()`: `BEGIN` read transaction → SELECT active residents
+  - [x] 1.2 Thêm `load_active_snapshot()`: `BEGIN` read transaction → SELECT active residents
         `ORDER BY id` → SELECT `e.id,resident_id,source,dim,vector,length(vector)`
         `ORDER BY resident_id,id` → kiểm terminal SQLITE_DONE → COMMIT; mọi lỗi ROLLBACK và không trả
         dữ liệu nửa chừng. Mở rộng EmbeddingRow với metadata validation cần thiết.
     - _Requirements: R3.2–R3.5, R4.1–R4.3_
-  - [ ] 1.3 Giữ `load_active()` tương thích (delegate snapshot hoặc giữ wrapper); xác nhận không gọi
+  - [x] 1.3 Giữ `load_active()` tương thích (delegate snapshot hoặc giữ wrapper); xác nhận không gọi
         `BEGIN IMMEDIATE` trên reader.
     - _Requirements: R3.4, R8.2_
-  - [ ] 1.4 Thêm test-only phase hook/barrier sau SELECT residents; test deterministic external commit
+  - [x] 1.4 Thêm test-only phase hook/barrier sau SELECT residents; test deterministic external commit
         giữa hai SELECT. Test busy trả trong timeout ngắn, reconnect force full snapshot và connection
         dùng tiếp được.
     - _Requirements: R2, R3, R7.2_
 
-- [ ] 2. Module `resident_catalog` — fingerprint/candidate/diff
-  - [ ] 2.1 Tạo `src/resident_catalog.{h,cpp}` với `CatalogFingerprint`, `ResidentDigest`,
+- [x] 2. Module `resident_catalog` — fingerprint/candidate/diff
+  - [x] 2.1 Tạo `src/resident_catalog.{h,cpp}` với `CatalogFingerprint`, `ResidentDigest`,
         `CatalogDiff`, candidate/generation structs; hash deterministic toàn bộ runtime metadata +
         embedding vector bytes, không hash audit fields.
     - _Requirements: R2.5–R2.7, R6.4_
-  - [ ] 2.2 Validate tất cả embedding: owner active tồn tại, blob non-NULL, declared dim đúng,
+  - [x] 2.2 Validate tất cả embedding: owner active tồn tại, blob non-NULL, declared dim đúng,
         exact byte length, mọi float finite, norm > epsilon và trong L2 tolerance; catalog rỗng hợp
         lệ; lỗi từ chối toàn candidate.
     - _Requirements: R4.1–R4.4, R4.9_
-  - [ ] 2.3 Build temporary `MatchEngine` + `resident_by_id`; tính diff added/changed/removed theo
+  - [x] 2.3 Build temporary `MatchEngine` + `resident_by_id`; tính diff added/changed/removed theo
         per-resident digest; expose output move-only để main swap atomically.
     - _Requirements: R4.3–R4.6_
-  - [ ] 2.4 Unit/property tests: fingerprint không phụ thuộc row order; audit/touch không đổi;
+  - [x] 2.4 Unit/property tests: fingerprint không phụ thuộc row order; audit/touch không đổi;
         metadata/vector/add/replace/delete/deactivate đổi đúng; corrupt blob/dim giữ generation cũ.
     - _Requirements: R2, R4_
 
 - [ ] 3. `ResidentCatalogReloader` poll state machine
-  - [ ] 3.1 Implement interval scheduling bằng monotonic time; fast path data_version unchanged;
+  - [x] 3.1 Implement interval scheduling bằng monotonic time; fast path data_version unchanged;
         pending failure retry; reader open/reopen backoff 1–10s, mỗi reconnect reset accepted version
         và force full snapshot.
     - _Requirements: R1.3–R1.4, R2.2–R2.5, R3.6–R3.7_
-  - [ ] 3.2 Khi data_version đổi: snapshot → fingerprint; fingerprint bằng thì accepted version mới
+  - [x] 3.2 Khi data_version đổi: snapshot → fingerprint; fingerprint bằng thì accepted version mới
         nhưng không build/swap; fingerprint khác thì tạo candidate.
     - _Requirements: R2.4–R2.7, R7.1–R7.3_
   - [ ] 3.3 Counters/log state: polls, version changes, content changes, success/failure; rate-limit lỗi;
         không PII.
     - _Requirements: R6_
-  - [ ] 3.4 Integration test hai SQLite connections: external enroll-equivalent commit reload đúng một
+  - [x] 3.4 Integration test hai SQLite connections: external enroll-equivalent commit reload đúng một
         lần; nhiều match_events/touch commits không tăng generation; failure retry thành công.
     - _Requirements: R2, R3, R7_
 

@@ -51,7 +51,8 @@ if [ -f /usr/include/sqlite3.h ]; then
     :  # system install present
 elif [ -f /tmp/sqlite_local/usr/include/sqlite3.h ]; then
     SQLITE_INC="-I/tmp/sqlite_local/usr/include"
-    SQLITE_LIB="/tmp/sqlite_local/usr/lib/x86_64-linux-gnu/libsqlite3.a -ldl"
+    SQLITE_ARCHIVE="$(find /tmp/sqlite_local/usr/lib -name libsqlite3.a -print -quit 2>/dev/null)"
+    if [ -n "$SQLITE_ARCHIVE" ]; then SQLITE_LIB="$SQLITE_ARCHIVE -ldl"; else SQLITE_INC="MISSING"; fi
 else
     SQLITE_INC="MISSING"
 fi
@@ -74,6 +75,15 @@ if [ "$SQLITE_INC" != "MISSING" ]; then
         && "$OUT/test_resident_enroll" "$ROOT/db/schema.sql" || fail=1
 
     echo ""
+    echo "== ResidentCatalog hot reload =="
+    g++ -std=c++17 -DRESIDENT_DB_TEST_HOOK -Isrc $SQLITE_INC \
+        tests/test_resident_catalog.cpp src/resident_catalog.cpp src/resident_enroll.cpp \
+        src/resident_db.cpp src/match_engine.cpp src/log/logger.cpp \
+        $SQLITE_LIB -lpthread \
+        -o "$OUT/test_resident_catalog" \
+        && "$OUT/test_resident_catalog" "$ROOT/db/schema.sql" || fail=1
+
+    echo ""
     echo "== CabinConfig =="
     g++ -std=c++17 -Isrc $SQLITE_INC \
         tests/test_cabin_config.cpp src/cabin_config.cpp src/resident_db.cpp src/log/logger.cpp \
@@ -82,10 +92,11 @@ if [ "$SQLITE_INC" != "MISSING" ]; then
         && "$OUT/test_cabin_config" || fail=1
 else
     echo ""
-    echo "== ResidentDB == SKIPPED (no sqlite3.h)"
-    echo "== CabinConfig == SKIPPED (no sqlite3.h)"
+    echo "== SQLite-dependent tests == FAILED (no sqlite3 headers/library)"
+    echo "   ResidentDB, ResidentEnroll, ResidentCatalog and CabinConfig did NOT run."
     echo "   option 1: sudo apt-get install -y libsqlite3-dev"
     echo "   option 2 (no sudo): bash tests/_setup_sqlite_local.sh"
+    fail=1
 fi
 
 echo ""

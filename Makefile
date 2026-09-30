@@ -1,5 +1,7 @@
 # Makefile for retinaface camera realtime app (Orange Pi A733 NPU)
 
+.DEFAULT_GOAL := all
+
 TARGET     := face_recog_app
 BUILD_DIR  := build
 SRC_DIR    := src
@@ -22,6 +24,7 @@ RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
 # multi-embedding matcher. Linked into the realtime app; migrate_fdb
 # reuses these too. Requires libsqlite3-dev (apt: libsqlite3-dev).
 DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
+               $(SRC_DIR)/resident_catalog.cpp \
                $(SRC_DIR)/match_engine.cpp \
                $(SRC_DIR)/interaction.cpp \
                $(SRC_DIR)/cabin_config.cpp \
@@ -82,6 +85,12 @@ ADD_OBJS     := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(ADD_SRCS_CPP))
 MIGRATE_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(MIGRATE_SRCS_CPP))
 SDK_OBJS     := $(patsubst $(AI_SDK)/%.c,$(BUILD_DIR)/sdk_%.o,$(SDK_SRCS_C))
 
+# Header dependency tracking. Without .d files, changing a shared struct such
+# as EmbeddingRow can leave old and new object ABIs linked into one binary.
+ALL_OBJS := $(sort $(APP_OBJS) $(ENROLL_OBJS) $(CAPTURE_OBJS) $(ADD_OBJS) $(MIGRATE_OBJS) $(SDK_OBJS))
+DEPS     := $(ALL_OBJS:.o=.d)
+-include $(DEPS)
+
 # ---- Rules ----
 .PHONY: all clean run
 
@@ -114,11 +123,11 @@ migrate_fdb: $(MIGRATE_OBJS)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF $(@:.o=.d) -c $< -o $@
 
 $(BUILD_DIR)/sdk_%.o: $(AI_SDK)/%.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -MF $(@:.o=.d) -c $< -o $@
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)

@@ -3,6 +3,7 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -42,6 +43,7 @@ bool ResidentDB::open(const std::string& db_path,
         LOG_ERROR("db", "already open");
         return false;
     }
+    read_only_ = false;
 
     int rc = sqlite3_open(db_path.c_str(), &db_);
     if (rc != SQLITE_OK) {
@@ -88,6 +90,45 @@ bool ResidentDB::open(const std::string& db_path,
         writer_ = std::thread(&ResidentDB::writer_loop, this);
     }
     return true;
+}
+
+bool ResidentDB::open_readonly(const std::string& db_path, int busy_timeout_ms) {
+    if (db_) {
+        LOG_ERROR("db", "already open");
+        return false;
+    }
+    int rc = sqlite3_open_v2(db_path.c_str(), &db_,
+                             SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+                             nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR("db-reload", "cannot open catalog reader: %s",
+                  db_ ? sqlite3_errmsg(db_) : "sqlite open failed");
+        if (db_) { sqlite3_close(db_); db_ = nullptr; }
+        return false;
+    }
+    read_only_ = true;
+    sqlite3_busy_timeout(db_, std::max(0, busy_timeout_ms));
+    if (!exec_sql(db_, "PRAGMA query_only=ON;")) {
+        sqlite3_close(db_);
+        db_ = nullptr;
+        read_only_ = false;
+        return false;
+    }
+    return true;
+}
+
+bool ResidentDB::data_version(int64_t& value) const {
+    if (!db_) return false;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, "PRAGMA data_version;", -1, &st, nullptr) != SQLITE_OK)
+        return false;
+    bool ok = false;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        value = sqlite3_column_int64(st, 0);
+        ok = true;
+    }
+    sqlite3_finalize(st);
+    return ok;
 }
 
 bool ResidentDB::has_tables() const {
@@ -360,72 +401,123 @@ bool ResidentDB::update_cabin_config(int64_t id, const CabinPatch& patch) {
 }
 
 // --------------------------------------------------------------------------
-// Task 3.2 — load_active()
+// Active catalog snapshot (resident-hot-reload)
 // --------------------------------------------------------------------------
 bool ResidentDB::load_active(std::vector<Resident>& residents,
                              std::vector<EmbeddingRow>& embeddings) {
-    if (!db_) return false;
-    residents.clear();
-    embeddings.clear();
+    return load_active_snapshot(residents, embeddings);
+}
 
-    // ---- residents (active only) ----
-    {
-        const char* q =
-            "SELECT id, name, apartment, home_floor, language, "
-            "       greeting_name, role, ext_id "
-            "FROM residents WHERE active=1;";
-        sqlite3_stmt* st = nullptr;
-        if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) {
-            LOG_ERROR("db", "prepare residents failed: %s", sqlite3_errmsg(db_));
-            return false;
-        }
-        while (sqlite3_step(st) == SQLITE_ROW) {
+bool ResidentDB::load_active_snapshot(std::vector<Resident>& residents,
+                                      std::vector<EmbeddingRow>& embeddings) {
+    if (!db_) return false;
+    std::lock_guard<std::mutex> db_lock(db_mtx_);
+    std::vector<Resident> tmp_residents;
+    std::vector<EmbeddingRow> tmp_embeddings;
+
+    if (!exec_sql(db_, "BEGIN;")) return false;
+    bool ok = true;
+
+    // Active residents in stable order. Runtime fingerprint intentionally
+    // excludes last_seen_at/match_count/audit-only fields.
+    sqlite3_stmt* st = nullptr;
+    const char* rq =
+        "SELECT id,name,apartment,home_floor,language,greeting_name,role,ext_id "
+        "FROM residents WHERE active=1 ORDER BY id;";
+    if (sqlite3_prepare_v2(db_, rq, -1, &st, nullptr) != SQLITE_OK) {
+        ok = false;
+    } else {
+        int rc = SQLITE_ROW;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
             Resident r;
-            r.id         = sqlite3_column_int64(st, 0);
+            r.id = sqlite3_column_int64(st, 0);
             auto txt = [&](int c) -> std::string {
                 const unsigned char* p = sqlite3_column_text(st, c);
                 return p ? reinterpret_cast<const char*>(p) : std::string();
             };
-            r.name          = txt(1);
-            r.apartment     = txt(2);
-            r.home_floor    = sqlite3_column_int(st, 3);
-            r.language      = txt(4);
+            r.name = txt(1);
+            r.apartment = txt(2);
+            r.home_floor = sqlite3_column_int(st, 3);
+            r.language = txt(4);
             r.greeting_name = txt(5);
-            r.role          = txt(6);
-            r.ext_id        = txt(7);
-            residents.push_back(std::move(r));
+            r.role = txt(6);
+            r.ext_id = txt(7);
+            tmp_residents.push_back(std::move(r));
         }
+        if (rc != SQLITE_DONE) ok = false;
         sqlite3_finalize(st);
+        st = nullptr;
     }
 
-    // ---- embeddings for active residents ----
-    {
-        const char* q =
-            "SELECT e.resident_id, e.source, e.vector "
-            "FROM embeddings e "
-            "JOIN residents r ON r.id = e.resident_id "
-            "WHERE r.active=1;";
-        sqlite3_stmt* st = nullptr;
-        if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) {
-            LOG_ERROR("db", "prepare embeddings failed: %s", sqlite3_errmsg(db_));
-            return false;
-        }
-        while (sqlite3_step(st) == SQLITE_ROW) {
-            EmbeddingRow e;
-            e.resident_id = sqlite3_column_int64(st, 0);
-            const unsigned char* src = sqlite3_column_text(st, 1);
-            e.source = src ? reinterpret_cast<const char*>(src) : std::string();
-            const void* blob = sqlite3_column_blob(st, 2);
-            int nbytes       = sqlite3_column_bytes(st, 2);
-            int nfloats      = nbytes / static_cast<int>(sizeof(float));
-            e.vector.resize(nfloats);
-            if (blob && nfloats > 0) {
-                std::memcpy(e.vector.data(), blob, nfloats * sizeof(float));
+#ifdef RESIDENT_DB_TEST_HOOK
+    if (ok && snapshot_test_hook_ && !snapshot_test_hook_(snapshot_test_hook_ctx_)) ok = false;
+#endif
+
+    // Embeddings from the same read transaction/snapshot. Preserve declared
+    // dim and exact blob length so the catalog validator can reject malformed
+    // rows rather than silently truncating trailing bytes.
+    if (ok) {
+        const char* eq =
+            "SELECT e.id,e.resident_id,e.source,e.dim,length(e.vector), "
+            "       typeof(e.dim),typeof(e.vector), "
+            "       CASE WHEN typeof(e.dim)='integer' AND e.dim BETWEEN 1 AND 4096 "
+            "                  AND typeof(e.vector)='blob' "
+            "                  AND length(e.vector)=e.dim*4 "
+            "            THEN e.vector ELSE NULL END "
+            "FROM embeddings e JOIN residents r ON r.id=e.resident_id "
+            "WHERE r.active=1 ORDER BY e.resident_id,e.id;";
+        if (sqlite3_prepare_v2(db_, eq, -1, &st, nullptr) != SQLITE_OK) {
+            ok = false;
+        } else {
+            int rc = SQLITE_ROW;
+            while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+                EmbeddingRow e;
+                e.id = sqlite3_column_int64(st, 0);
+                e.resident_id = sqlite3_column_int64(st, 1);
+                const unsigned char* src = sqlite3_column_text(st, 2);
+                e.source = src ? reinterpret_cast<const char*>(src) : std::string();
+                auto col_is = [&](int col, const char* expected) {
+                    const unsigned char* v = sqlite3_column_text(st, col);
+                    return v && std::strcmp(reinterpret_cast<const char*>(v), expected) == 0;
+                };
+                const bool dim_is_integer = col_is(5, "integer");
+                e.declared_dim = sqlite3_column_int64(st, 3);
+                e.blob_nbytes = sqlite3_column_type(st, 4) == SQLITE_NULL
+                                  ? 0 : sqlite3_column_int64(st, 4);
+                e.blob_valid = col_is(6, "blob");
+                // The SQL CASE returns payload column 7 only after these
+                // metadata guards pass, preventing SQLite from materializing an
+                // unbounded corrupt BLOB into this process.
+                constexpr int64_t MAX_SAFE_EMBEDDING_DIM = 4096;
+                e.metadata_valid = dim_is_integer && e.declared_dim > 0 &&
+                    e.declared_dim <= MAX_SAFE_EMBEDDING_DIM && e.blob_valid &&
+                    e.blob_nbytes == e.declared_dim * (int64_t)sizeof(float) &&
+                    sqlite3_column_type(st, 7) != SQLITE_NULL;
+                if (e.metadata_valid) {
+                    const void* blob = sqlite3_column_blob(st, 7);
+                    e.vector.resize((size_t)e.declared_dim);
+                    if (blob) std::memcpy(e.vector.data(), blob, (size_t)e.blob_nbytes);
+                    else { e.blob_valid = false; e.metadata_valid = false; e.vector.clear(); }
+                }
+                tmp_embeddings.push_back(std::move(e));
             }
-            embeddings.push_back(std::move(e));
+            if (rc != SQLITE_DONE) ok = false;
+            sqlite3_finalize(st);
+            st = nullptr;
         }
-        sqlite3_finalize(st);
     }
+
+    if (!ok) {
+        if (st) sqlite3_finalize(st);
+        exec_sql(db_, "ROLLBACK;");
+        return false;
+    }
+    if (!exec_sql(db_, "COMMIT;")) {
+        exec_sql(db_, "ROLLBACK;");
+        return false;
+    }
+    residents.swap(tmp_residents);
+    embeddings.swap(tmp_embeddings);
     return true;
 }
 
@@ -482,6 +574,7 @@ void ResidentDB::writer_loop() {
 
 void ResidentDB::flush_jobs(std::vector<WriteJob>& jobs) {
     if (!db_ || jobs.empty()) return;
+    std::lock_guard<std::mutex> db_lock(db_mtx_);
 
     const char* ins_event =
         "INSERT INTO match_events "
@@ -498,7 +591,12 @@ void ResidentDB::flush_jobs(std::vector<WriteJob>& jobs) {
     sqlite3_prepare_v2(db_, ins_event, -1, &st_event, nullptr);
     sqlite3_prepare_v2(db_, upd_touch, -1, &st_touch, nullptr);
 
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) {
+        if (st_event) sqlite3_finalize(st_event);
+        if (st_touch) sqlite3_finalize(st_touch);
+        LOG_ERROR("db", "async writer batch begin failed; batch dropped");
+        return;
+    }
     for (const auto& j : jobs) {
         if (j.kind == WriteJob::Kind::Event && st_event) {
             const MatchEvent& e = j.event;
@@ -558,7 +656,7 @@ bool ResidentDB::remove_resident(int64_t resident_id) {
 // Transaction helpers for batching synchronous writes (offline tools).
 // IMMEDIATE acquires the single SQLite writer reservation up front, so an
 // enroll batch either starts before any mutation or fails cleanly.
-bool ResidentDB::begin()    { return db_ && exec_sql(db_, "BEGIN IMMEDIATE;"); }
+bool ResidentDB::begin()    { return db_ && !read_only_ && exec_sql(db_, "BEGIN IMMEDIATE;"); }
 bool ResidentDB::commit()   { return db_ && exec_sql(db_, "COMMIT;"); }
 bool ResidentDB::rollback() { return db_ && exec_sql(db_, "ROLLBACK;"); }
 
@@ -710,4 +808,9 @@ void ResidentDB::close() {
         sqlite3_close(db_);
         db_ = nullptr;
     }
+    read_only_ = false;
+#ifdef RESIDENT_DB_TEST_HOOK
+    snapshot_test_hook_ = nullptr;
+    snapshot_test_hook_ctx_ = nullptr;
+#endif
 }
