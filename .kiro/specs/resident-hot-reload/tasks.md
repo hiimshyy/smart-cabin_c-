@@ -85,19 +85,19 @@ reader connection riêng, candidate-build-then-swap và cache invalidation có c
         lần; nhiều match_events/touch commits không tăng generation; failure retry thành công.
     - _Requirements: R2, R3, R7_
 
-- [ ] 4. Cache invalidation có chọn lọc
-  - [ ] 4.1 Thêm Tracker API invalidate unknown/unrecognized tracks và tracks map tới changed/removed
+- [x] 4. Cache invalidation có chọn lọc
+  - [x] 4.1 Thêm Tracker API invalidate unknown/unrecognized tracks và tracks map tới changed/removed
         resident IDs; clear name/sim/last_recog nhưng giữ bbox, track ID/state/hit/miss. Purge toàn bộ
         ghost cache khi content catalog đổi (Ghost hiện không có resident_id).
     - _Requirements: R5.1–R5.5_
-  - [ ] 4.2 Thêm `InteractionManager::drop_sessions(subject_keys)` chỉ erase affected sessions, giữ
+  - [x] 4.2 Thêm `InteractionManager::drop_sessions(subject_keys)` chỉ erase affected sessions, giữ
         `last_confirmed_ms_` cooldown history.
     - _Requirements: R5.6_
-  - [ ] 4.3 Helper reconcile `track_resident_id`: xóa mapping affected; added resident invalidates unknown
+  - [x] 4.3 Helper reconcile `track_resident_id`: xóa mapping affected; added resident invalidates unknown
         tracks; changed/removed invalidates mapped tracks. SCRFD-only không drop key 0 khi chỉ add
         resident khác; chỉ reconcile nếu SessionView resident hiện tại thuộc changed/removed.
     - _Requirements: R5.1–R5.8_
-  - [ ] 4.4 Thay `Tracker::try_inherit_identity` printf chứa name bằng structured logger không PII.
+  - [x] 4.4 Thay `Tracker::try_inherit_identity` printf chứa name bằng structured logger không PII.
         Unit test geometry/ID preserved + next `needs_recog=true`; affected-only session reset và
         cooldown vẫn chặn duplicate; ghost bị purge; duplicate-name/privacy regression. Thêm case:
         confirm A, để cooldown hết, add/change B không liên quan, tiếp tục match A và assert không có

@@ -12,6 +12,7 @@
 
 #include <vector>
 #include <string>
+#include <set>
 #include <cstdint>
 
 #include "yolo_post.h"     // PersonDet
@@ -81,8 +82,17 @@ public:
     // Read-only view of internal tracks (includes NEW state).
     const std::vector<Track>& all_tracks() const { return tracks_; }
 
+    // Catalog-content reconciliation: invalidate recognition only (not person
+    // geometry/lifetime). Explicit affected_track_ids cover changed/removed
+    // residents; invalidate_unknown handles newly-added residents that may
+    // match tracks cached as unknown. Ghost purge is mandatory because Ghost
+    // currently stores display names rather than resident IDs.
+    std::vector<int> invalidate_catalog_cache(const std::set<int>& affected_track_ids,
+                                              bool invalidate_unknown);
+
     // Diagnostics
     int  active_count() const;
+    size_t ghost_count() const { return ghosts_.size(); }
 
 private:
     struct Ghost {

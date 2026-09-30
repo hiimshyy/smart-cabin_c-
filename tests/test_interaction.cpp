@@ -280,6 +280,35 @@ int main() {
         CHECK(m.session_count() == 0, "P2-2: session reaped after long absence");
     }
 
+    // -----------------------------------------------------------------
+    // 12) Catalog reload reconciliation: drop affected sessions only and
+    //     preserve cooldown history. Unaffected confirmed A must never emit a
+    //     duplicate merely because unrelated B changed.
+    // -----------------------------------------------------------------
+    {
+        InteractionManager m(cfg);
+        std::vector<std::pair<int, MatchResult>> two;
+        MatchResult a; a.resident_id=101; a.similarity=0.9f;
+        MatchResult b; b.resident_id=202; b.similarity=0.9f;
+        two={{1,a},{2,b}};
+        m.update(two,0.0); m.update(two,30.0); m.update(two,60.0);
+        CHECK(m.session_count()==2,"reload: two confirmed sessions exist");
+
+        m.drop_sessions({2}); // only resident B was affected
+        CHECK(m.session_count()==1,"reload: only affected session dropped");
+
+        int during_cooldown=0;
+        for(int i=0;i<3;++i){
+            std::vector<std::pair<int, MatchResult>> present={{1,a},{2,b}};
+            auto out=m.update(present,100.0+i*30.0);
+            for(const auto& o:out) if(o.confirmed) ++during_cooldown;
+        }
+        CHECK(during_cooldown==0,"reload: dropped affected session still honors resident cooldown");
+
+        auto unchanged=m.update(frame(1,101,0.9f),2000.0); // A cooldown already expired
+        CHECK(unchanged.empty(),"reload: unchanged confirmed A does not re-confirm");
+    }
+
     std::printf("\n[test_interaction] %d checks, %d failed\n", g_checks, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

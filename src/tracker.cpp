@@ -4,6 +4,8 @@
 #include <cfloat>
 #include <cstdio>
 
+#include "log/logger.h"
+
 float bbox_iou(float ax1, float ay1, float ax2, float ay2,
                float bx1, float by1, float bx2, float by2) {
     float xx1 = std::max(ax1, bx1);
@@ -157,6 +159,24 @@ bool Tracker::needs_recog(const Track& t, int frame_idx) const {
     return (frame_idx - t.last_recog_frame) >= recog_retry_frames;
 }
 
+std::vector<int> Tracker::invalidate_catalog_cache(
+    const std::set<int>& affected_track_ids, bool invalidate_unknown) {
+    std::vector<int> invalidated;
+    for (auto& t : tracks_) {
+        if (!t.alive) continue;
+        const bool unknown = t.name.empty() || t.name == "unknown";
+        if (affected_track_ids.count(t.id) == 0 && !(invalidate_unknown && unknown)) continue;
+        t.name.clear();
+        t.match_sim = -1.0f;
+        t.last_recog_frame = -1;
+        invalidated.push_back(t.id);
+    }
+    // Mandatory on every catalog content generation: Ghost currently stores a
+    // display name, not resident_id, so selective reconciliation is unsafe.
+    ghosts_.clear();
+    return invalidated;
+}
+
 int Tracker::active_count() const {
     int n = 0;
     for (const auto& t : tracks_)
@@ -171,8 +191,8 @@ void Tracker::try_inherit_identity(Track& t, int frame_idx) {
             int old_id = t.id;
             t.id = it->id;
             t.first_seen_frame = it->first_seen_frame;
-            printf("[track] inherit identity '%s': ghost id=%d -> current id=%d (was %d)\n",
-                   t.name.c_str(), it->id, t.id, old_id);
+            LOG_INFO("track", "inherit ghost track_id=%d into current_track_id=%d",
+                     it->id, old_id);
             ghosts_.erase(it);
             return;
         }

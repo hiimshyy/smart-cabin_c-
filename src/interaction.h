@@ -83,6 +83,10 @@ public:
     // Reset all state (drop sessions and cooldown history).
     void reset();
 
+    // Drop only affected subject sessions after a catalog reload. Per-resident
+    // cooldown history is deliberately preserved to prevent duplicate actions.
+    void drop_sessions(const std::vector<int>& subject_keys);
+
     std::vector<SessionView> sessions() const;
     std::size_t              session_count() const { return sessions_.size(); }
 

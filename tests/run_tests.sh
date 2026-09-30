@@ -23,6 +23,21 @@ g++ -std=c++17 -Isrc \
     -o "$OUT/test_match_engine" && "$OUT/test_match_engine" || fail=1
 
 echo ""
+echo "== Tracker catalog invalidation =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_tracker.cpp src/tracker.cpp src/log/logger.cpp \
+    -lpthread \
+    -o "$OUT/test_tracker" && "$OUT/test_tracker" || fail=1
+
+echo ""
+echo "== Resident catalog reconciliation =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_resident_reconcile.cpp src/resident_reconcile.cpp \
+    src/tracker.cpp src/interaction.cpp src/log/logger.cpp \
+    -lpthread \
+    -o "$OUT/test_resident_reconcile" && "$OUT/test_resident_reconcile" || fail=1
+
+echo ""
 echo "== InteractionManager =="
 g++ -std=c++17 -Isrc \
     tests/test_interaction.cpp src/interaction.cpp src/match_engine.cpp src/log/logger.cpp \

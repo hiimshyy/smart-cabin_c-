@@ -16,6 +16,10 @@ void InteractionManager::reset() {
     last_confirmed_ms_.clear();
 }
 
+void InteractionManager::drop_sessions(const std::vector<int>& subject_keys) {
+    for (int key : subject_keys) sessions_.erase(key);
+}
+
 std::vector<InteractionManager::SessionView>
 InteractionManager::sessions() const {
     std::vector<SessionView> out;
