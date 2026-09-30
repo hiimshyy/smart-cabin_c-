@@ -70,7 +70,7 @@ reader connection riêng, candidate-build-then-swap và cache invalidation có c
         metadata/vector/add/replace/delete/deactivate đổi đúng; corrupt blob/dim giữ generation cũ.
     - _Requirements: R2, R4_
 
-- [ ] 3. `ResidentCatalogReloader` poll state machine
+- [x] 3. `ResidentCatalogReloader` poll state machine
   - [x] 3.1 Implement interval scheduling bằng monotonic time; fast path data_version unchanged;
         pending failure retry; reader open/reopen backoff 1–10s, mỗi reconnect reset accepted version
         và force full snapshot.
@@ -78,7 +78,7 @@ reader connection riêng, candidate-build-then-swap và cache invalidation có c
   - [x] 3.2 Khi data_version đổi: snapshot → fingerprint; fingerprint bằng thì accepted version mới
         nhưng không build/swap; fingerprint khác thì tạo candidate.
     - _Requirements: R2.4–R2.7, R7.1–R7.3_
-  - [ ] 3.3 Counters/log state: polls, version changes, content changes, success/failure; rate-limit lỗi;
+  - [x] 3.3 Counters/log state: polls, version changes, content changes, success/failure; rate-limit lỗi;
         không PII.
     - _Requirements: R6_
   - [x] 3.4 Integration test hai SQLite connections: external enroll-equivalent commit reload đúng một
@@ -104,34 +104,34 @@ reader connection riêng, candidate-build-then-swap và cache invalidation có c
         confirmed/floor-action mới.
     - _Requirements: R5, R6.4_
 
-- [ ] 5. CLI/config wiring
-  - [ ] 5.1 Thêm `AppConfig::resident_reload_ms=1000`, parser/help `--resident-reload-ms N`; validate N≥0.
+- [x] 5. CLI/config wiring
+  - [x] 5.1 Thêm `AppConfig::resident_reload_ms=1000`, parser/help `--resident-reload-ms N`; validate N≥0.
     - _Requirements: R1.1–R1.5_
-  - [ ] 5.2 `--resident-reload-ms 0` disable hoàn toàn reader/poll và giữ behavior load-once hiện tại.
+  - [x] 5.2 `--resident-reload-ms 0` disable hoàn toàn reader/poll và giữ behavior load-once hiện tại.
     - _Requirements: R1.2, R8.3_
-  - [ ] 5.3 Parser unit test/default/help behavior; cập nhật `env.sh face_help` nếu có liệt kê option.
+  - [x] 5.3 Parser unit test/default/help behavior; cập nhật `env.sh face_help` nếu có liệt kê option.
     - _Requirements: R1, R8_
 
-- [ ] 6. Main-loop integration
-  - [ ] 6.1 Trong resident DB mode, mở dedicated catalog reader bằng `open_readonly()` timeout ngắn;
+- [x] 6. Main-loop integration
+  - [x] 6.1 Trong resident DB mode, mở dedicated catalog reader bằng `open_readonly()` timeout ngắn;
         initial catalog dùng cùng snapshot/validation path để tránh logic startup và reload lệch nhau.
     - _Requirements: R2.1, R3, R8.2_
-  - [ ] 6.2 Đổi capture wait sang `wait_until(next_reload_deadline)` khi reload enabled: deadline tới
+  - [x] 6.2 Đổi capture wait sang `wait_until(next_reload_deadline)` khi reload enabled: deadline tới
         thì poll dù không có frame; không frame mới thì quay lại wait, không chạy NPU/busy-loop. Khi
         có candidate, build ngoài DB transaction, swap matcher + map cùng block rồi reconcile cache.
     - _Requirements: R1.3–R1.4, R4.5–R4.8, R5.8, R7.3–R7.5_
-  - [ ] 6.3 Failure path giữ active objects; catalog rỗng hợp lệ; reader close trong shutdown trước
+  - [x] 6.3 Failure path giữ active objects; catalog rỗng hợp lệ; reader close trong shutdown trước
         teardown cuối.
     - _Requirements: R3.4–R3.6, R4.7, R7.5_
-  - [ ] 6.4 Log startup/reload đúng privacy: interval/generation/count/latency/affected tracks, không tên.
+  - [x] 6.4 Log startup/reload đúng privacy: interval/generation/count/latency/affected tracks, không tên.
     - _Requirements: R6_
 
-- [ ] 7. Build và validation không NPU
-  - [ ] 7.1 Thêm source/test vào Makefile + `tests/run_tests.sh`; build `make -j4` không warning mới.
+- [x] 7. Build và validation không NPU
+  - [x] 7.1 Thêm source/test vào Makefile + `tests/run_tests.sh`; build `make -j4` không warning mới.
     - _Requirements: R8_
-  - [ ] 7.2 Chạy full unit suite; test catalog quy mô giả lập (0, 1, 1000 residents; multi-embedding).
+  - [x] 7.2 Chạy full unit suite; test catalog quy mô giả lập (0, 1, 1000 residents; multi-embedding).
     - _Requirements: R4, R7.1_
-  - [ ] 7.3 Regression test: `.fdb` mode không mở poll reader; reload disabled tương đương load-once;
+  - [x] 7.3 Regression test: `.fdb` mode không mở poll reader; reload disabled tương đương load-once;
         capture không publish frame vẫn poll đúng cadence; reader busy không block ~5s.
     - _Requirements: R1.1–R1.4, R7.2, R8.2–R8.4_
 

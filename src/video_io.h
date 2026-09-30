@@ -22,6 +22,16 @@ struct FrameSlot {
     bool                     stop = false;
 };
 
+// Wait for a new latest frame, shutdown, or an optional deadline. timeout_ms < 0
+// preserves the legacy indefinite wait. Used by resident hot reload so DB polls
+// still run when RTSP is stalled and no frame wakes the main loop.
+enum class FrameWaitResult { Frame, Deadline, Stop };
+FrameWaitResult wait_for_frame_or_deadline(FrameSlot* slot,
+                                           std::atomic<bool>* stop_flag,
+                                           uint64_t* last_seq,
+                                           cv::Mat* frame,
+                                           double timeout_ms);
+
 // All the parameters needed to (re)open the video source, so the capture
 // thread can rebuild a dead VideoCapture on its own (RTSP reconnect).
 struct CamConfig {

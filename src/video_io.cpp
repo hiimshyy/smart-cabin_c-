@@ -30,6 +30,29 @@ bool open_capture(cv::VideoCapture& cap, const CamConfig& cfg) {
     return true;
 }
 
+
+FrameWaitResult wait_for_frame_or_deadline(FrameSlot* slot,
+                                           std::atomic<bool>* stop_flag,
+                                           uint64_t* last_seq,
+                                           cv::Mat* frame,
+                                           double timeout_ms) {
+    if (!slot || !stop_flag || !last_seq || !frame) return FrameWaitResult::Stop;
+    std::unique_lock<std::mutex> lk(slot->mtx);
+    auto pred = [&] {
+        return slot->seq != *last_seq || slot->stop || stop_flag->load();
+    };
+    if (timeout_ms < 0) {
+        slot->cv_new.wait(lk, pred);
+    } else {
+        slot->cv_new.wait_for(lk,
+            std::chrono::duration<double, std::milli>(std::max(0.0, timeout_ms)), pred);
+    }
+    if (slot->stop || stop_flag->load()) return FrameWaitResult::Stop;
+    if (slot->seq == *last_seq) return FrameWaitResult::Deadline;
+    slot->latest.copyTo(*frame);
+    *last_seq = slot->seq;
+    return FrameWaitResult::Frame;
+}
 // Capture thread. Reads frames into the latest-frame slot. On a run of failed
 // reads (source dropped — RTSP disconnect, USB unplug), it tears the capture
 // down and reopens it with exponential backoff instead of spinning forever on

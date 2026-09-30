@@ -23,6 +23,7 @@ struct AppConfig {
     int    person_every     = 1;
     int    track_max_miss   = 30;
     int    recog_retry      = 90;
+    int    resident_reload_ms = 1000; // SQLite resident/embedding hot-reload; 0=disabled
     int    cabin_id         = 1;
     int    confirm_streak   = 5;
     double cooldown_ms       = 3000.0;
@@ -56,5 +57,8 @@ void print_usage(const char* prog);
 // Parse argv into cfg using the exact Baseline argv loop. On -h/--help the
 // usage is printed here (to stderr) and help_requested is set true; the caller
 // (main) then returns exit code 0, preserving exit-code ownership in main.
-struct ParseResult { bool help_requested = false; };
+struct ParseResult {
+    bool help_requested = false;
+    bool invalid_args = false;
+};
 ParseResult parse_args(int argc, char** argv, AppConfig& cfg);

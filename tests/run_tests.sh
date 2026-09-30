@@ -16,6 +16,19 @@ g++ -std=c++17 -Isrc \
     -o "$OUT/test_logger" && "$OUT/test_logger" || fail=1
 
 echo ""
+echo "== AppConfig =="
+g++ -std=c++17 -Isrc \
+    tests/test_app_config.cpp src/app_config.cpp \
+    -o "$OUT/test_app_config" && "$OUT/test_app_config" || fail=1
+
+echo ""
+echo "== Video frame/deadline wait =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_video_wait.cpp src/video_io.cpp src/log/logger.cpp \
+    $(pkg-config --libs opencv4) -lpthread \
+    -o "$OUT/test_video_wait" && "$OUT/test_video_wait" || fail=1
+
+echo ""
 echo "== MatchEngine =="
 g++ -std=c++17 -Isrc \
     tests/test_match_engine.cpp src/match_engine.cpp src/log/logger.cpp \
@@ -97,6 +110,15 @@ if [ "$SQLITE_INC" != "MISSING" ]; then
         $SQLITE_LIB -lpthread \
         -o "$OUT/test_resident_catalog" \
         && "$OUT/test_resident_catalog" "$ROOT/db/schema.sql" || fail=1
+
+    echo ""
+    echo "== Resident reload during no-frame outage =="
+    g++ -std=c++17 -Isrc $SQLITE_INC $(pkg-config --cflags opencv4) \
+        tests/test_reload_no_frame.cpp src/resident_catalog.cpp src/resident_enroll.cpp \
+        src/resident_db.cpp src/match_engine.cpp src/video_io.cpp src/log/logger.cpp \
+        $SQLITE_LIB $(pkg-config --libs opencv4) -lpthread \
+        -o "$OUT/test_reload_no_frame" \
+        && "$OUT/test_reload_no_frame" "$ROOT/db/schema.sql" || fail=1
 
     echo ""
     echo "== CabinConfig =="

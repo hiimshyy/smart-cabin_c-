@@ -26,6 +26,15 @@ bool exec_sql(sqlite3* db, const char* sql) {
     return true;
 }
 
+// Poll-path transaction control must not log every second on a persistent DB
+// error; the main loop owns rate-limited db-reload reporting.
+bool exec_sql_quiet(sqlite3* db, const char* sql) {
+    char* err = nullptr;
+    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (err) sqlite3_free(err);
+    return rc == SQLITE_OK;
+}
+
 }  // namespace
 
 // --------------------------------------------------------------------------
@@ -415,7 +424,7 @@ bool ResidentDB::load_active_snapshot(std::vector<Resident>& residents,
     std::vector<Resident> tmp_residents;
     std::vector<EmbeddingRow> tmp_embeddings;
 
-    if (!exec_sql(db_, "BEGIN;")) return false;
+    if (!exec_sql_quiet(db_, "BEGIN;")) return false;
     bool ok = true;
 
     // Active residents in stable order. Runtime fingerprint intentionally
@@ -509,11 +518,11 @@ bool ResidentDB::load_active_snapshot(std::vector<Resident>& residents,
 
     if (!ok) {
         if (st) sqlite3_finalize(st);
-        exec_sql(db_, "ROLLBACK;");
+        exec_sql_quiet(db_, "ROLLBACK;");
         return false;
     }
-    if (!exec_sql(db_, "COMMIT;")) {
-        exec_sql(db_, "ROLLBACK;");
+    if (!exec_sql_quiet(db_, "COMMIT;")) {
+        exec_sql_quiet(db_, "ROLLBACK;");
         return false;
     }
     residents.swap(tmp_residents);

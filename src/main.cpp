@@ -47,6 +47,8 @@
 #include "face_recog.h"
 #include "face_db.h"
 #include "resident_db.h"
+#include "resident_catalog.h"
+#include "resident_reconcile.h"
 #include "match_engine.h"
 #include "interaction.h"
 #include "log/logger.h"
@@ -78,6 +80,7 @@ int main(int argc, char** argv) {
     AppConfig cfg;
     ParseResult pr = parse_args(argc, argv, cfg);
     if (pr.help_requested) return 0;
+    if (pr.invalid_args) return 2;
 
     // ---- Init application logger (system-logging spec) --------------------
     // Main app defaults: write a daily-rotated file under /var/log/face-cabin
@@ -231,6 +234,7 @@ int main(int argc, char** argv) {
     // matching goes through MatchEngine (multi-embedding) instead of the .fdb
     // FaceDB, interaction sessions are tracked, and match_events are logged.
     ResidentDB          resident_db;
+    ResidentCatalogReloader catalog_reloader;
     MatchEngine         match_engine;
     InteractionManager  interaction;
     std::unique_ptr<EdgeClient> edge;   // nullptr unless --edge-socket given
@@ -262,42 +266,75 @@ int main(int argc, char** argv) {
                 shutdown_capture();
                 return 2;
             }
-            std::vector<Resident>     residents;
-            std::vector<EmbeddingRow> embeddings;
-            if (!resident_db.load_active(residents, embeddings)) {
-                LOG_ERROR("db", "load_active failed on %s", cfg.resident_db_path);
-                resident_db.close();
-                delete recognizer;
-                awnn_uninit();
-                shutdown_capture();
-                return 2;
-            }
-            // Cross-check embedding dim vs --recog-dim (P1-3). Enrolling with a
-            // different dim than the runtime model silently drops every vector
-            // (MatchEngine skips size mismatches), turning everyone "unknown".
-            // Detect it up front and fail loudly instead.
-            if (!embeddings.empty()) {
-                int db_dim = (int)embeddings.front().vector.size();
-                if (db_dim != cfg.recog_dim) {
-                    LOG_ERROR("db", "embedding dim mismatch: DB has %d-D vectors "
-                              "but --recog-dim=%d. All matches would fail. "
-                              "Re-run with --recog-dim %d or re-enroll.",
-                              db_dim, cfg.recog_dim, db_dim);
+            size_t loaded_resident_count = 0;
+            size_t loaded_embedding_count = 0;
+            if (cfg.resident_reload_ms > 0) {
+                std::string reload_error;
+                if (!catalog_reloader.open(cfg.resident_db_path, cfg.recog_dim,
+                                            cfg.resident_reload_ms, now_ms(), reload_error)) {
+                    LOG_ERROR("db-reload", "catalog reader startup failed error=%s",
+                              reload_error.c_str());
                     resident_db.close();
                     delete recognizer;
                     awnn_uninit();
                     shutdown_capture();
                     return 2;
                 }
-            }
-            match_engine.build(embeddings, cfg.recog_dim);
-            if (!embeddings.empty() && match_engine.vector_count() == 0) {
-                LOG_ERROR("db", "no embeddings loaded into matcher despite %zu "
-                          "rows in DB — check embedding dim consistency",
-                          embeddings.size());
-            }
-            for (const auto& r : residents) {
-                resident_by_id[r.id] = r;
+                ResidentCatalogCandidate initial;
+                auto result = catalog_reloader.poll(now_ms(), initial, reload_error);
+                if (result != ResidentCatalogReloader::PollResult::Reloaded) {
+                    LOG_ERROR("db-reload", "initial catalog load failed error=%s",
+                              reload_error.empty() ? "unexpected_poll_result" : reload_error.c_str());
+                    catalog_reloader.close();
+                    resident_db.close();
+                    delete recognizer;
+                    awnn_uninit();
+                    shutdown_capture();
+                    return 2;
+                }
+                loaded_resident_count = initial.fingerprint.resident_count;
+                loaded_embedding_count = initial.fingerprint.embedding_count;
+                match_engine = std::move(initial.matcher);
+                resident_by_id = std::move(initial.resident_by_id);
+                catalog_reloader.accept(initial);
+                LOG_INFO("db-reload", "enabled interval_ms=%d generation=%llu",
+                         cfg.resident_reload_ms,
+                         (unsigned long long)catalog_reloader.generation());
+            } else {
+                std::vector<Resident> residents;
+                std::vector<EmbeddingRow> embeddings;
+                if (!resident_db.load_active(residents, embeddings)) {
+                    LOG_ERROR("db", "load_active failed on %s", cfg.resident_db_path);
+                    resident_db.close();
+                    delete recognizer;
+                    awnn_uninit();
+                    shutdown_capture();
+                    return 2;
+                }
+                // Legacy reload-disabled path keeps the startup dimension check.
+                if (!embeddings.empty()) {
+                    int db_dim = (int)embeddings.front().vector.size();
+                    if (db_dim != cfg.recog_dim) {
+                        LOG_ERROR("db", "embedding dim mismatch: DB has %d-D vectors "
+                                  "but --recog-dim=%d. All matches would fail. "
+                                  "Re-run with --recog-dim %d or re-enroll.",
+                                  db_dim, cfg.recog_dim, db_dim);
+                        resident_db.close();
+                        delete recognizer;
+                        awnn_uninit();
+                        shutdown_capture();
+                        return 2;
+                    }
+                }
+                match_engine.build(embeddings, cfg.recog_dim);
+                if (!embeddings.empty() && match_engine.vector_count() == 0) {
+                    LOG_ERROR("db", "no embeddings loaded into matcher despite %zu "
+                              "rows in DB — check embedding dim consistency", embeddings.size());
+                }
+                for (const auto& r : residents) resident_by_id[r.id] = r;
+                loaded_resident_count = residents.size();
+                loaded_embedding_count = embeddings.size();
+                LOG_INFO("db-reload", "disabled interval_ms=0");
             }
 
             InteractionConfig icfg;
@@ -308,7 +345,7 @@ int main(int argc, char** argv) {
 
             use_resident_db = true;
             LOG_INFO("db", "loaded %zu residents, %zu embeddings (dim=%d)",
-                     residents.size(), embeddings.size(), cfg.recog_dim);
+                     loaded_resident_count, loaded_embedding_count, cfg.recog_dim);
             LOG_INFO("db", "cabin_id=%d confirm_streak=%d cooldown_ms=%.0f "
                      "unknown_after_ms=%.0f",
                      cfg.cabin_id, eff.confirm_streak, eff.cooldown_ms, eff.unknown_after_ms);
@@ -423,19 +460,60 @@ int main(int argc, char** argv) {
     uint64_t last_seq = 0;
     UiScale ui;                       // computed lazily on first frame
     bool    ui_ready = false;
+    double  last_reload_error_log_ms = -1e12;
 
     while (true) {
         double t0 = now_ms();
-        {
-            std::unique_lock<std::mutex> lk(slot.mtx);
-            slot.cv_new.wait(lk, [&]{
-                return slot.seq != last_seq || slot.stop || g_stop.load();
-            });
-            if (slot.stop || g_stop.load()) break;
-            slot.latest.copyTo(frame);
-            last_seq = slot.seq;
+        const double wait_ms = (use_resident_db && catalog_reloader.enabled())
+            ? std::max(0.0, catalog_reloader.next_deadline_ms() - now_ms())
+            : -1.0;
+        FrameWaitResult wait_result = wait_for_frame_or_deadline(
+            &slot, &g_stop, &last_seq, &frame, wait_ms);
+        if (wait_result == FrameWaitResult::Stop) break;
+        const bool have_frame = (wait_result == FrameWaitResult::Frame);
+
+        // Poll at a frame-boundary safe point. The timed capture wait above
+        // reaches this block even during an RTSP outage (no frame available).
+        double reload_overhead_ms = 0.0;
+        if (use_resident_db && catalog_reloader.enabled() &&
+            now_ms() >= catalog_reloader.next_deadline_ms()) {
+            const double reload_start = now_ms();
+            ResidentCatalogCandidate candidate;
+            std::string reload_error;
+            auto reload_result = catalog_reloader.poll(now_ms(), candidate, reload_error);
+            if (reload_result == ResidentCatalogReloader::PollResult::Reloaded) {
+                const size_t resident_count = candidate.fingerprint.resident_count;
+                const size_t embedding_count = candidate.fingerprint.embedding_count;
+                match_engine = std::move(candidate.matcher);
+                resident_by_id = std::move(candidate.resident_by_id);
+                CatalogReconcileResult reconciled = reconcile_catalog_runtime(
+                    candidate.diff, use_tracker, tracker, track_resident_id, interaction);
+                catalog_reloader.accept(candidate);
+                LOG_INFO("db-reload", "generation=%llu residents=%zu embeddings=%zu "
+                         "latency_ms=%.2f affected_subjects=%zu live_tracks=%d",
+                         (unsigned long long)catalog_reloader.generation(),
+                         resident_count, embedding_count, now_ms() - reload_start,
+                         reconciled.affected_subject_keys.size(),
+                         reconciled.invalidated_live_tracks);
+                if (match_engine.empty())
+                    LOG_WARN("db-reload", "catalog has no embeddings; everyone will be unknown");
+            } else if (reload_result == ResidentCatalogReloader::PollResult::Failed) {
+                const double n = now_ms();
+                if (n - last_reload_error_log_ms >= 5000.0) {
+                    LOG_WARN("db-reload", "reload failed error=%s; keeping generation=%llu",
+                             reload_error.empty() ? "unknown" : reload_error.c_str(),
+                             (unsigned long long)catalog_reloader.generation());
+                    last_reload_error_log_ms = n;
+                }
+            }
+            reload_overhead_ms = now_ms() - reload_start;
         }
+
+        if (!have_frame) continue;
         if (frame.empty()) continue;
+        // Keep stage timing semantically stable: polling affects wall-clock FPS
+        // but is not capture or per-frame inference work.
+        t0 += reload_overhead_ms;
         double t1 = now_ms();
 
         // Initialize UI scale once we know the frame size.
@@ -764,6 +842,21 @@ int main(int argc, char** argv) {
     }
 
     if (use_resident_db) {
+        if (catalog_reloader.enabled()) {
+            const auto& rs = catalog_reloader.stats();
+            LOG_INFO("db-reload", "closing generation=%llu polls=%llu version_changes=%llu "
+                     "full_scans=%llu content_changes=%llu matcher_builds=%llu "
+                     "success=%llu failure=%llu",
+                     (unsigned long long)catalog_reloader.generation(),
+                     (unsigned long long)rs.polls,
+                     (unsigned long long)rs.version_changes,
+                     (unsigned long long)rs.full_scans,
+                     (unsigned long long)rs.content_changes,
+                     (unsigned long long)rs.matcher_builds,
+                     (unsigned long long)rs.reload_success,
+                     (unsigned long long)rs.reload_failure);
+            catalog_reloader.close();
+        }
         LOG_INFO("db", "flushing resident-db event writer");
         resident_db.close();
     }

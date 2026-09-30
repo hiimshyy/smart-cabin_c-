@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <cerrno>
+#include <climits>
 
 // Moved verbatim from main.cpp (spec main-cpp-refactor). Usage text is
 // byte-for-byte identical to the Baseline and emitted to stderr.
@@ -21,6 +23,7 @@ void print_usage(const char* prog) {
         "                          no floor/language/audit — NOT for real cabin)\n"
         "    --resident-db PATH    SQLite resident DB (OPERATIONAL mode: floor,\n"
         "                          greeting, audit log). Takes precedence over --face-db.\n"
+        "    --resident-reload-ms N Poll resident/embedding changes (default 1000; 0=off)\n"
         "    --cabin-id N          Cabin id recorded in match_events (default 1)\n"
         "    --confirm-streak N    Frames of consecutive match to confirm (default 5)\n"
         "    --cooldown-ms N       Per-resident cooldown between events (default 3000)\n"
@@ -70,6 +73,20 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         else if (std::strcmp(a, "--recog-bgr") == 0) cfg.recog_rgb = false;
         else if (sv("--face-db"))        cfg.face_db_path = argv[++i];
         else if (sv("--resident-db"))    cfg.resident_db_path = argv[++i];
+        else if (std::strcmp(a, "--resident-reload-ms") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "--resident-reload-ms requires a non-negative integer\n");
+                res.invalid_args = true; return res;
+            }
+            const char* value = argv[++i];
+            char* end = nullptr; errno = 0;
+            long parsed = std::strtol(value, &end, 10);
+            if (errno || end == value || *end != '\0' || parsed < 0 || parsed > INT_MAX) {
+                std::fprintf(stderr, "invalid --resident-reload-ms: %s\n", value);
+                res.invalid_args = true; return res;
+            }
+            cfg.resident_reload_ms = static_cast<int>(parsed);
+        }
         else if (sv("--cabin-id"))       cfg.cabin_id = std::atoi(argv[++i]);
         else if (sv("--confirm-streak")) { cfg.confirm_streak = std::max(1, std::atoi(argv[++i])); cfg.passed.confirm_streak = true; }
         else if (sv("--cooldown-ms"))    { cfg.cooldown_ms = std::atof(argv[++i]); cfg.passed.cooldown = true; }
