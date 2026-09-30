@@ -42,10 +42,20 @@ export FACE_RESIDENT_DB="$FACE_DB_DIR/residents.db"
 export FACE_SCHEMA="$FACE_DB_DIR/schema.sql"
 export FACE_FACES_DIR="$FACE_ROOT/faces"
 
-# RTSP URL của cabin thật. Web local ghi biến này (hoặc export trong ~/.bashrc).
-# face_cabin dùng URL truyền trực tiếp trước, nếu không có thì lấy biến này.
-# (Config DB-driven trong bảng `cabins` là kế hoạch tương lai — chưa code.)
+# RTSP URL của cabin thật.
+# Thứ tự ưu tiên khi chạy face_cabin:
+#   1) URL truyền tay:  face_cabin rtsp://...      (để test nhiều camera)
+#   2) $FACE_CABIN_RTSP_URL nếu được export
+#   3) Tự lấy từ PostgreSQL (elevator_cameras) qua scripts/get_camera_url.js
+#      -> đây là nguồn config chính khi vận hành: cấu hình camera ở web, chạy
+#         'face_cabin' không tham số là tự nạp.
 export FACE_CABIN_RTSP_URL="${FACE_CABIN_RTSP_URL:-}"
+
+# Chọn camera nào từ PostgreSQL: rỗng = camera 'connected' đầu tiên;
+# hoặc đặt camera_id (vd '{SN}_{slaveId}') hoặc '#<dbId>' (vd '#6').
+export FACE_CAMERA_SELECT="${FACE_CAMERA_SELECT:-}"
+# node_modules chứa 'pg' (dùng chung của edge_elevator) cho get_camera_url.js.
+export FACE_PG_NODE_PATH="${FACE_PG_NODE_PATH:-/home/orangepi/edge_elevator/node_modules}"
 
 # X11 display
 [ -z "$DISPLAY" ]    && export DISPLAY=:0.0
@@ -59,17 +69,23 @@ export FACE_CABIN_RTSP_URL="${FACE_CABIN_RTSP_URL:-}"
 # ============================================================
 
 # Vận hành đầy đủ qua RTSP: YOLO person + tracker + SCRFD + recog + SQLite audit.
-# URL nguồn: tham số $1 > $FACE_CABIN_RTSP_URL (web local config).
+# URL nguồn: tham số $1 > $FACE_CABIN_RTSP_URL > PostgreSQL config (elevator_cameras).
 face_cabin() {
     local url="${1:-$FACE_CABIN_RTSP_URL}"
     local db="${2:-$FACE_RESIDENT_DB}"
     local thr="${3:-0.35}"
     local lat="${4:-100}"
+    # Chưa có URL tay -> tự lấy từ PostgreSQL (camera cấu hình ở web).
     if [ -z "$url" ]; then
-        echo "Chưa có RTSP URL. Truyền trực tiếp hoặc đặt biến FACE_CABIN_RTSP_URL."
-        echo "  face_cabin rtsp://admin:pass@192.168.1.100:554/stream1"
-        echo "  export FACE_CABIN_RTSP_URL='rtsp://...'   # web local config"
-        echo "(USB chỉ để dev: dùng face_usb)"
+        url="$(NODE_PATH="$FACE_PG_NODE_PATH" node "$FACE_ROOT/scripts/get_camera_url.js" "$FACE_CAMERA_SELECT" 2>/dev/null)"
+        [ -n "$url" ] && echo "[face_cabin] URL từ PostgreSQL config: ${url%%\?*}?…"
+    fi
+    if [ -z "$url" ]; then
+        echo "Chưa có RTSP URL. Cách lấy URL (theo thứ tự ưu tiên):"
+        echo "  1) truyền tay:   face_cabin rtsp://admin:pass@192.168.1.100:554/stream1"
+        echo "  2) export biến:  export FACE_CABIN_RTSP_URL='rtsp://...'"
+        echo "  3) cấu hình camera trên web (PostgreSQL) rồi chạy: face_cabin"
+        echo "     (kiểm tra: node $FACE_ROOT/scripts/get_camera_url.js)"
         return 1
     fi
     (cd "$FACE_ROOT" && ./face_recog_app "$FACE_DET_MODEL" \
