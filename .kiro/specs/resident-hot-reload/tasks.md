@@ -25,14 +25,14 @@ reader connection riêng, candidate-build-then-swap và cache invalidation có c
 
 ---
 
-- [ ] 0. Atomic enroll write (`add_person` correctness prerequisite)
-  - [ ] 0.1 Sau khi extract embeddings xong, bọc upsert resident + optional delete + toàn bộ inserts
+- [x] 0. Atomic enroll write (`add_person` correctness prerequisite)
+  - [x] 0.1 Sau khi extract embeddings xong, bọc upsert resident + optional delete + toàn bộ inserts
         trong `BEGIN IMMEDIATE`/COMMIT; mọi fail ROLLBACK bằng guard an toàn.
     - _Requirements: R3.1, R8.4_
-  - [ ] 0.2 Chỉ in JSON `ok:true` sau COMMIT; partial write/commit fail trả JSON db error và giữ catalog
+  - [x] 0.2 Chỉ in JSON `ok:true` sau COMMIT; partial write/commit fail trả JSON db error và giữ catalog
         trước nguyên vẹn.
     - _Requirements: R3.1, acceptance 10_
-  - [ ] 0.3 Tách batch SQLite thuần khỏi NPU/image extraction thành helper testable (hoặc fault-injection
+  - [x] 0.3 Tách batch SQLite thuần khỏi NPU/image extraction thành helper testable (hoặc fault-injection
         seam deterministic). Test lỗi giữa batch replace nhiều ảnh: old embeddings/metadata không mất;
         success commit một generation đầy đủ và JSON/commit contract đúng.
     - _Requirements: R3.1, acceptance 10_

@@ -556,7 +556,9 @@ bool ResidentDB::remove_resident(int64_t resident_id) {
 }
 
 // Transaction helpers for batching synchronous writes (offline tools).
-bool ResidentDB::begin()    { return db_ && exec_sql(db_, "BEGIN;"); }
+// IMMEDIATE acquires the single SQLite writer reservation up front, so an
+// enroll batch either starts before any mutation or fails cleanly.
+bool ResidentDB::begin()    { return db_ && exec_sql(db_, "BEGIN IMMEDIATE;"); }
 bool ResidentDB::commit()   { return db_ && exec_sql(db_, "COMMIT;"); }
 bool ResidentDB::rollback() { return db_ && exec_sql(db_, "ROLLBACK;"); }
 

@@ -42,7 +42,7 @@ ENROLL_SRCS_CPP  := $(SRC_DIR)/enroll_faces.cpp   $(COMMON_SRCS) \
 CAPTURE_SRCS_CPP := $(SRC_DIR)/capture_person.cpp $(COMMON_SRCS)
 ADD_SRCS_CPP     := $(SRC_DIR)/add_person.cpp     $(COMMON_SRCS) \
                     $(SRC_DIR)/face_align.cpp $(SRC_DIR)/face_recog.cpp \
-                    $(SRC_DIR)/resident_db.cpp
+                    $(SRC_DIR)/resident_db.cpp $(SRC_DIR)/resident_enroll.cpp
 
 # migrate_fdb: one-way .fdb -> SQLite importer. Needs only face_db (pure I/O)
 # + resident_db (sqlite3). NO NPU/AI SDK, NO OpenCV — builds on a dev machine.

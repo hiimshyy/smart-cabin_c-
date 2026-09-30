@@ -66,6 +66,14 @@ if [ "$SQLITE_INC" != "MISSING" ]; then
         && "$OUT/test_resident_db" "$ROOT/db/schema.sql" || fail=1
 
     echo ""
+    echo "== ResidentEnroll atomic batch =="
+    g++ -std=c++17 -Isrc $SQLITE_INC \
+        tests/test_resident_enroll.cpp src/resident_enroll.cpp src/resident_db.cpp src/log/logger.cpp \
+        $SQLITE_LIB -lpthread \
+        -o "$OUT/test_resident_enroll" \
+        && "$OUT/test_resident_enroll" "$ROOT/db/schema.sql" || fail=1
+
+    echo ""
     echo "== CabinConfig =="
     g++ -std=c++17 -Isrc $SQLITE_INC \
         tests/test_cabin_config.cpp src/cabin_config.cpp src/resident_db.cpp src/log/logger.cpp \

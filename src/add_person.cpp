@@ -37,6 +37,7 @@
 #include "face_align.h"
 #include "face_recog.h"
 #include "resident_db.h"
+#include "resident_enroll.h"
 #include "log/logger.h"
 
 namespace fs = std::filesystem;
@@ -337,55 +338,31 @@ int main(int argc, char** argv) {
         return 6;
     }
 
-    // ---- Write to SQLite (spec R6.2) -----------------------------------
-    // Ensure the resident exists. Keyed by ext_id when given (sets role +
-    // home_floor), else legacy name-keyed upsert (home_floor=0, default role).
-    int64_t resident_id;
-    if (!ext_id.empty()) {
-        std::string eff_role = role.empty() ? std::string("staff") : role;
-        resident_id = db.upsert_resident_by_ext_id(ext_id, name, home_floor, eff_role);
-    } else {
-        resident_id = db.upsert_resident(name, home_floor);
-    }
-    if (resident_id < 0) {
-        LOG_ERROR("add", "upsert_resident failed");
+    // ---- Atomic write to SQLite (resident-hot-reload prerequisite) ----
+    // Extraction is complete before BEGIN. The helper commits resident metadata,
+    // optional old-vector deletion and every new vector as one transaction, so
+    // a live catalog reader sees either the old or the full new generation.
+    ResidentEnrollRequest write_req;
+    write_req.ext_id     = ext_id;
+    write_req.name       = name;
+    write_req.home_floor = home_floor;
+    write_req.role       = role.empty() ? std::string("staff") : role;
+    write_req.source     = emb_source;
+    write_req.replace    = do_replace;
+    write_req.embeddings = std::move(new_embs);
+
+    ResidentEnrollResult write_res = write_resident_enrollment(db, write_req);
+    if (!write_res.ok) {
+        LOG_ERROR("add", "atomic enrollment failed: %s", write_res.error.c_str());
         delete recognizer;
         awnn_destroy(det_ctx);
         awnn_uninit();
         db.close();
-        if (json_out) print_json_result(false, -1, ext_id, 0, "db_upsert_failed");
+        if (json_out) print_json_result(false, -1, ext_id, 0, write_res.error.c_str());
         return 7;
     }
-
-    // --replace: drop the resident's old embeddings before adding new ones.
-    if (do_replace) {
-        if (!db.delete_embeddings(resident_id)) {
-            LOG_ERROR("add", "delete_embeddings failed for id=%lld",
-                      (long long)resident_id);
-            delete recognizer;
-            awnn_destroy(det_ctx);
-            awnn_uninit();
-            db.close();
-            if (json_out) print_json_result(false, resident_id, ext_id, 0, "db_delete_failed");
-            return 7;
-        }
-    }
-
-    // Add one row per extracted embedding — NO averaging (spec R6.2).
-    int written = 0;
-    for (const auto& e : new_embs) {
-        if (db.add_embedding(resident_id, emb_source, e)) ++written;
-        else LOG_WARN("add", "add_embedding failed (1 of %zu)", new_embs.size());
-    }
-    if (written == 0) {
-        LOG_ERROR("add", "failed to write any embedding; aborting");
-        delete recognizer;
-        awnn_destroy(det_ctx);
-        awnn_uninit();
-        db.close();
-        if (json_out) print_json_result(false, resident_id, ext_id, 0, "db_write_failed");
-        return 7;
-    }
+    const int64_t resident_id = write_res.resident_id;
+    const int written = write_res.embeddings_written;
 
     LOG_INFO("add", "resident id=%lld: wrote %d embedding(s)%s -> %s",
              (long long)resident_id, written,
