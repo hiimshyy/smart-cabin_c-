@@ -29,6 +29,9 @@ db/*.db
 db/*.db-wal
 db/*.db-shm
 
+# Sensitive resident DB backups (metadata + biometric embeddings)
+db/*.db.bak-*
+
 # Editor / OS junk
 .vscode/
 .idea/

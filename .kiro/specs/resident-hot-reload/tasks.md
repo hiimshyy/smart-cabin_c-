@@ -6,8 +6,11 @@
 
 ## 📌 TRẠNG THÁI
 
-**Chưa bắt đầu code.** Requirements/design đã chốt hướng polling SQLite 1000 ms, không đổi schema,
-reader connection riêng, candidate-build-then-swap và cache invalidation có chọn lọc.
+**Đã triển khai code (1/10/2026).** Poll SQLite 1000 ms, atomic enroll, reader snapshot,
+candidate-build-then-swap và cache reconciliation đã build/test/smoke trên Orange Pi. Full suite
+315 checks pass; controlled smoke giữ nguyên PID và reload generation 1→2 trong ~0.6 s
+(`latency_ms=0.65`). Còn hai xác nhận field được đánh dấu `[~]`: người thật đứng trước camera
+trước/sau enroll và A/B FPS trong cùng điều kiện thermal; không chặn controlled rollout.
 
 **Quyết định đã chốt:**
 - Chỉ bật trong `--resident-db`; `.fdb` giữ nguyên.
@@ -135,29 +138,33 @@ reader connection riêng, candidate-build-then-swap và cache invalidation có c
         capture không publish frame vẫn poll đúng cadence; reader busy không block ~5s.
     - _Requirements: R1.1–R1.4, R7.2, R8.2–R8.4_
 
-- [ ] 8. Smoke test Orange Pi end-to-end (một lần có kiểm soát)
-  - [ ] 8.1 Đảm bảo chỉ một `face_recog_app`; dùng `timeout -k` nếu chạy benchmark tự động để không lặp
+- [~] 8. Smoke test Orange Pi end-to-end (code path PASS; live-person field confirmation còn chờ)
+  - [x] 8.1 Đảm bảo chỉ một `face_recog_app`; dùng `timeout -k` nếu chạy benchmark tự động để không lặp
         lỗi smoke process sống sót.
     - _Requirements: R7.5_
-  - [ ] 8.2 Start app với resident A, giữ PID; concurrent enroll B (nhiều ảnh + `--replace`) bằng
+  - [x] 8.2 Start app với resident A, giữ PID; concurrent enroll B (nhiều ảnh + `--replace`) bằng
         `add_person`; xác nhận add commit atomic, PID app không đổi, log generation tăng đúng một lần
         trong ~1 giây và không có generation zero/partial embeddings.
     - _Requirements: R3.1, acceptance 1–4, 10_
-  - [ ] 8.3 Đặt B trước camera trước/sau enroll; xác nhận unknown track recognition lại ngay và match B
+  - [~] 8.3 Đặt B trước camera trước/sau enroll; xác nhận unknown track recognition lại ngay và match B
         không cần restart; A vẫn match; không duplicate confirm chỉ do reload.
+        - Automated coverage PASS: matcher mới match embedding vừa commit; unknown retry/selectivity/
+          no-duplicate-confirm PASS. Còn xác nhận trực tiếp với người đứng trước camera.
     - _Requirements: R5, acceptance 4–5_
-  - [ ] 8.4 Test audit-only không reload; inject/recover bad candidate hoặc busy; app giữ generation cũ.
+  - [x] 8.4 Test audit-only không reload; inject/recover bad candidate hoặc busy; app giữ generation cũ.
     - _Requirements: acceptance 6–7_
-  - [ ] 8.5 Benchmark catalog không đổi trước/sau; ghi nhận poll overhead và NPU contention trong thời
+  - [~] 8.5 Benchmark catalog không đổi trước/sau; ghi nhận poll overhead và NPU contention trong thời
         gian `add_person` riêng biệt.
+        - Smoke 180 frames PASS, PID giữ nguyên, generation reload 0.65 ms, counters sạch. Không chạy
+          thêm A/B NPU do thermal là biến nhiễu và yêu cầu tránh smoke lặp; fast path đã unit test.
     - _Requirements: R7, acceptance 8_
 
-- [ ] 9. Documentation và rollout
-  - [ ] 9.1 README: enroll khi app chạy → NPU có thể khựng ngắn, catalog auto reload; cách disable
+- [x] 9. Documentation và rollout
+  - [x] 9.1 README: enroll khi app chạy → NPU có thể khựng ngắn, catalog auto reload; cách disable
         `--resident-reload-ms 0`; lần deploy binary mới vẫn cần restart một lần.
-  - [ ] 9.2 DEVELOPMENT_PLAN: Phương án A từ restart-after-enroll → SQLite hot reload; UDS đợt b vẫn là
+  - [x] 9.2 DEVELOPMENT_PLAN: Phương án A từ restart-after-enroll → SQLite hot reload; UDS đợt b vẫn là
         đích dài hạn.
-  - [ ] 9.3 Ghi runbook kiểm tra generation/counters, lỗi reload và rollback; nhắc privacy/no names.
+  - [x] 9.3 Ghi runbook kiểm tra generation/counters, lỗi reload và rollback; nhắc privacy/no names.
     - _Requirements: R6, R8_
 
 ---

@@ -270,8 +270,11 @@ dùng chung NPU context với frame loop (serialize bằng mutex) — tránh xun
 > `{ok,resident_id,ext_id,embeddings[,error]}` cho Node parse). Node cập nhật `enroll_status` vào
 > Mongo + trả UI. Đây là bước trung gian **tháo bỏ được**: luồng cuối sẽ là
 > Mobile → Cloud → Edge Core → AI Core qua UDS (`edge-core-uds` đợt b, `0x2002` register request),
-> không spawn process. Hạn chế của A: mỗi enroll spawn 1 tiến trình (load NPU ~vài giây) và app
-> đang chạy chỉ thấy người mới sau khi restart (load embeddings 1 lần lúc khởi động).
+> không spawn process. Hạn chế còn lại của A: mỗi enroll spawn 1 tiến trình và cùng dùng NPU nên
+> realtime có thể khựng ngắn. **Resident hot reload đã triển khai** (`resident-hot-reload`):
+> `add_person` commit atomic, app poll SQLite mặc định 1000 ms, build/swap catalog an toàn và nhận
+> resident mới không restart. Dùng `--resident-reload-ms 0` để rollback về load-once. Camera/AI
+> config vẫn restart-to-apply; UDS đợt b sẽ loại bỏ process/NPU contention.
 
 ```
 POST   /api/v1/enroll                       multipart: name, apartment, home_floor,

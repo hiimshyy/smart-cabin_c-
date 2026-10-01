@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <sys/stat.h>
 
 #include "log/logger.h"
 
@@ -97,6 +98,10 @@ int main() {
         }
         CHECK(has_warn, "WARN line content correct");
         CHECK(has_err,  "ERROR line content correct");
+
+        struct stat st{};
+        CHECK(::stat(path.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600,
+              "runtime log file mode is owner-only 0600");
 
         Logger::instance().shutdown();
     }

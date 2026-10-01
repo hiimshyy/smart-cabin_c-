@@ -139,12 +139,12 @@ int main(int argc, char** argv) {
             CabinConfig def;   // compile-in defaults
             eff = resolve_cabin_config(cli, row, def);
             cabin_resolved = true;
-            // Effective config summary + source of the camera (R3.3, observability).
-            LOG_INFO("cfg", "cabin id=%d effective: stream=%d url=%s match_thr=%.2f "
+            // Effective config summary + source, without logging RTSP credentials.
+            LOG_INFO("cfg", "cabin id=%d effective: stream=%d camera=%s match_thr=%.2f "
                      "confirm=%d cooldown=%.0f unknown=%.0f latency=%d reconnect=%d-%d "
                      "floors=%d-%d [src: %s]",
                      cfg.cabin_id, eff.use_stream ? 1 : 0,
-                     eff.rtsp_url.empty() ? "(usb)" : eff.rtsp_url.c_str(),
+                     eff.use_stream ? "configured(redacted)" : "usb",
                      eff.match_thr, eff.confirm_streak, eff.cooldown_ms,
                      eff.unknown_after_ms, eff.gst_latency_ms,
                      eff.reconnect_min_ms, eff.reconnect_max_ms,
@@ -183,7 +183,9 @@ int main(int argc, char** argv) {
         } else {
             cam_cfg.pipeline = build_gst_pipeline(cfg.source_url, cfg.gst_latency_ms);
         }
-        LOG_INFO("cam", "GStreamer pipeline: %s", cam_cfg.pipeline.c_str());
+        LOG_INFO("cam", "GStreamer pipeline configured (redacted, custom=%d, latency_ms=%d)",
+                 cfg.custom_pipeline ? 1 : 0,
+                 cabin_resolved ? eff.gst_latency_ms : cfg.gst_latency_ms);
     }
 
     bool cam_ready = open_capture(cap, cam_cfg);

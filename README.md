@@ -63,6 +63,39 @@ camera là thao tác hiếm.
 
 Chi tiết spec: `.kiro/specs/cabin-runtime-config/`.
 
+
+## Hot-reload resident sau enroll
+
+Ở chế độ `--resident-db`, app tự kiểm tra thay đổi residents/embeddings mỗi 1000 ms. Sau khi
+`add_person`/web enroll commit SQLite, app build catalog mới rồi swap matcher + metadata tại ranh
+giới frame; **không cần restart để nhận diện người mới**. Transaction enroll là atomic nên app chỉ
+thấy toàn bộ generation cũ hoặc mới, không thấy resident có embedding dở dang.
+
+```bash
+face_cabin                                      # hot reload mặc định 1000 ms
+./face_recog_app ... --resident-reload-ms 250  # đổi interval
+./face_recog_app ... --resident-reload-ms 0    # tắt, quay về load-once
+```
+
+Trong lúc web spawn `add_person`, hai process có thể cùng dùng NPU nên FPS có thể khựng ngắn; sau
+khi enroll xong `add_person` giải phóng NPU và app tiếp tục với catalog mới. Reload DB bản thân không
+reload model/NPU. Log vận hành dùng tag `db-reload`, chỉ ghi generation/count/latency, không ghi PII.
+Hot-reload này **chỉ áp dụng resident/embedding**; đổi camera/AI config vẫn restart-to-apply.
+
+Kiểm tra vận hành/rollback:
+
+```bash
+grep 'db-reload' logs/face-cabin-$(date +%F).log
+# success: generation=N residents=... embeddings=... latency_ms=...
+# lỗi: "keeping generation=N" nghĩa là matcher cũ vẫn hoạt động và app sẽ retry
+./face_recog_app ... --resident-reload-ms 0   # rollback về load-once nếu cần
+```
+
+Các log trên chỉ chứa generation/count/latency/resident_id hoặc track_id, không chứa tên cư dân,
+tên chào, căn hộ, vector hay đường dẫn ảnh.
+
+Chi tiết spec: `.kiro/specs/resident-hot-reload/`.
+
 ## Kết quả benchmark (USB webcam)
 
 | Chỉ số | SCRFD + Recognition |

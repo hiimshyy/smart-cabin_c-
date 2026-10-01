@@ -42,6 +42,11 @@ int main(int argc,char**argv){
           "external commit reloads with no camera frame");
     CHECK(c.fingerprint.resident_count==2 && c.fingerprint.embedding_count==2,
           "no-frame reload candidate contains complete new catalog");
+    int64_t b_id=-1;
+    for(const auto& [id,resident]:c.resident_by_id) if(resident.ext_id=="B") b_id=id;
+    MatchResult b_match=c.matcher.match(unit(8,2),0.5f);
+    CHECK(b_id>=0 && b_match.resident_id==b_id,
+          "newly reloaded embedding matches without process restart");
     reload.accept(c);CHECK(reload.generation()==2,"no-frame generation accepted");
 
     // A frame already published at the deadline remains observable.

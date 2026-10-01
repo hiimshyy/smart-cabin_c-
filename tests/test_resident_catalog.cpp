@@ -94,6 +94,25 @@ int main(int argc,char**argv){
     CHECK(build_resident_catalog(rs,es,8,c2,err),"build reversed catalog");
     CHECK(c1.fingerprint==c2.fingerprint,"fingerprint independent of row order");
 
+    // Scale sanity: 1000 active residents, two normalized embeddings each.
+    std::vector<Resident> many_residents; std::vector<EmbeddingRow> many_embeddings;
+    many_residents.reserve(1000); many_embeddings.reserve(2000);
+    int64_t emb_id=1;
+    for(int i=1;i<=1000;++i){
+        Resident mr; mr.id=i; mr.ext_id="E"+std::to_string(i); mr.role="staff";
+        many_residents.push_back(std::move(mr));
+        many_embeddings.push_back(row(emb_id++,i,unit_vec(8,1.0f+i*.001f)));
+        many_embeddings.push_back(row(emb_id++,i,unit_vec(8,2.0f+i*.001f)));
+    }
+    ResidentCatalogCandidate many; auto scale_start=std::chrono::steady_clock::now();
+    CHECK(build_resident_catalog(many_residents,many_embeddings,8,many,err),
+          "build 1000-resident multi-embedding catalog");
+    auto scale_ms=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now()-scale_start).count();
+    CHECK(many.fingerprint.resident_count==1000 && many.matcher.vector_count()==2000,
+          "1000-resident catalog contains all 2000 embeddings");
+    CHECK(scale_ms<2000,"1000-resident catalog builds within bounded test time");
+
     std::map<int64_t,ResidentDigest> d_old{{1,{10,20}},{2,{30,40}}};
     std::map<int64_t,ResidentDigest> d_new{{1,{10,21}},{3,{50,60}}};
     CatalogDiff dd=diff_resident_catalogs(d_old,d_new);

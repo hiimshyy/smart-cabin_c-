@@ -9,6 +9,7 @@
 #include <string>
 
 #include <unistd.h>      // isatty, fileno
+#include <sys/stat.h>    // chmod: runtime logs are owner-only
 
 #if __has_include(<filesystem>)
 #  include <filesystem>
@@ -292,6 +293,9 @@ void Logger::vlog(LogLevel lv, const char* tag, const char* fmt, va_list ap) {
             std::string path = file_path_for(im->cfg, date);
             im->fp = std::fopen(path.c_str(), "a");
             if (im->fp) {
+                // Logs can contain operational details; force owner-only even
+                // when process umask would create/read an existing 0644 file.
+                ::chmod(path.c_str(), S_IRUSR | S_IWUSR);
                 im->cur_date = date;
                 cleanup_old(im->cfg, date);
             } else if (!im->file_warned) {
