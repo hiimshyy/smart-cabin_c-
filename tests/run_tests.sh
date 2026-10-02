@@ -9,6 +9,10 @@ OUT=/tmp/scabin_tests
 mkdir -p "$OUT"
 fail=0
 
+echo "== env.sh face_cabin redaction =="
+bash tests/test_env_face_cabin.sh || fail=1
+
+echo ""
 echo "== Logger =="
 g++ -std=c++17 -Isrc \
     tests/test_logger.cpp src/log/logger.cpp \

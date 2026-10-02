@@ -57,6 +57,11 @@ export FACE_CAMERA_SELECT="${FACE_CAMERA_SELECT:-}"
 # node_modules chứa 'pg' (dùng chung của edge_elevator) cho get_camera_url.js.
 export FACE_PG_NODE_PATH="${FACE_PG_NODE_PATH:-/home/orangepi/edge_elevator/node_modules}"
 
+# Chạy thủ công sau `source env.sh` phải ghi thẳng vào thư mục user-writable,
+# tránh warning fallback từ /var/log. Service có thể override biến này.
+export FACE_CABIN_LOG_DIR="${FACE_CABIN_LOG_DIR:-$FACE_ROOT/logs}"
+mkdir -p "$FACE_CABIN_LOG_DIR" 2>/dev/null || true
+
 # X11 display
 [ -z "$DISPLAY" ]    && export DISPLAY=:0.0
 [ -z "$XAUTHORITY" ] && export XAUTHORITY="$HOME/.Xauthority"
@@ -78,7 +83,7 @@ face_cabin() {
     # Chưa có URL tay -> tự lấy từ PostgreSQL (camera cấu hình ở web).
     if [ -z "$url" ]; then
         url="$(NODE_PATH="$FACE_PG_NODE_PATH" node "$FACE_ROOT/scripts/get_camera_url.js" "$FACE_CAMERA_SELECT" 2>/dev/null)"
-        [ -n "$url" ] && echo "[face_cabin] URL từ PostgreSQL config: ${url%%\?*}?…"
+        [ -n "$url" ] && echo "[face_cabin] Đã nạp camera URL từ PostgreSQL (credentials đã được ẩn)"
     fi
     if [ -z "$url" ]; then
         echo "Chưa có RTSP URL. Cách lấy URL (theo thứ tự ưu tiên):"
