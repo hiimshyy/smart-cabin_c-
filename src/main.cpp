@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
         def.dir     = "/var/log/face-cabin";
         Logger::instance().init(resolve_log_config(argc, argv, def));
     }
-    std::signal(SIGINT,  on_signal);
+    std::signal(SIGINT,  SIG_IGN);
     std::signal(SIGTERM, on_signal);
 
     const bool use_tracker = (cfg.person_model_path != nullptr);
