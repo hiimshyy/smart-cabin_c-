@@ -161,27 +161,40 @@ acceptance đạt.
   - [ ] 8.4 Update overlay/main consumers
     - Không raw Track pointer.
     - Cached recognition label lấy từ TrackView.
+    - `resident_id < 0` luôn vẽ `unknown`; xóa UI state `...`/untried.
 
 - [ ] 9. Resident identity và ghost migration
   - [ ] 9.1 Move authoritative resident identity into Track
-    - `resident_id`, display name, similarity, recognition timestamp.
+    - `resident_id`, display name, similarity, recognition/attempt timestamps và `identity_latched`.
     - Update `record_recognition` API.
     - _Requirements: R7.1–R7.3_
-  - [ ] 9.2 Replace name-keyed ghosts
+  - [ ] 9.2 Implement known identity latch
+    - Confirmed track chưa known hiển thị `unknown` ngay; scheduler dùng attempt timestamp riêng.
+    - Known match khóa resident/name vào person track; `needs_recognition=false` cho known.
+    - Name tiếp tục hiển thị khi không có face và qua Tracked→Lost→Tracked.
+    - Unknown/alignment/extract failure không được overwrite known identity.
+    - `--recog-retry` chỉ áp dụng greedy compatibility; unknown byte tracks retry theo timestamp.
+    - Unknown UI không bypass `unknown_after_ms` của audit/interaction.
+    - _Requirements: R7.6–R7.14_
+  - [ ] 9.3 Replace name-keyed ghosts
     - Ghost keyed bằng resident ID + TTL; enforce one active owner.
     - Same-name/different-resident không merge.
     - _Requirements: R7.4–R7.5_
-  - [ ] 9.3 Implement identity conflict confirmation
+  - [ ] 9.4 Implement identity conflict confirmation
     - Pending candidate/streak policy hoặc reuse configured recognition confirmation.
     - Numeric, rate-limited diagnostics.
-    - _Requirements: R7.6, R11.2–R11.4_
-  - [ ] 9.4 Migrate/remove external `track_resident_id`
+    - _Requirements: R7.15–R7.16, R11.2–R11.4_
+  - [ ] 9.5 Migrate/remove external `track_resident_id`
     - Update overlay, interaction subject build và reconciliation.
     - End state có một source of truth.
     - _Requirements: R7, R8_
-  - [ ] 9.5 Identity tests
+  - [ ] 9.6 Identity tests
     - Same label/different resident, re-entry, active ownership conflict, ghost expiry, privacy.
-    - _Requirements: R12.5–R12.6_
+    - Confirmed/untried person hiển thị unknown ngay; không còn label `...`.
+    - Unknown event vẫn chờ `unknown_after_ms`.
+    - Recognize một lần → quay mặt/no-face nhiều frame → person label vẫn giữ.
+    - Unknown/failure không overwrite; Lost/reactivation không yêu cầu recognition lại.
+    - _Requirements: R12.5–R12.8_
 
 - [ ] 10. Resident hot reload reconciliation
   - [ ] 10.1 Update tracker invalidation API
@@ -231,7 +244,8 @@ acceptance đạt.
     - _Requirements: R13.3–R13.4_
   - [ ] 13.2 Cabin scenarios
     - Single entry/exit, crossing, 0.5–2 s occlusion, turn away/back, multi-entry.
-    - Kiểm tra stable ID, face link, recognition cache và duplicate greeting.
+    - Sau lần match known đầu tiên, yêu cầu name giữ trên person box suốt lúc quay mặt/no-face.
+    - Kiểm tra stable ID, face link, latched recognition cache và duplicate greeting.
   - [ ] 13.3 Detector scheduling
     - `person_every=1/2/3`; predicted overlay và timeout theo ms.
   - [ ] 13.4 RTSP reconnect
@@ -300,4 +314,3 @@ acceptance đạt.
   ]
 }
 ```
-

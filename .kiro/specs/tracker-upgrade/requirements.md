@@ -24,6 +24,12 @@ Cách hiện tại đủ cho một người đứng tương đối yên, nhưng 
 - Face-to-track được xử lý độc lập từng face bằng containment; nhiều face có thể chọn cùng một track
   và face có thể gắn sai khi hai person box overlap.
 - Ghost cache khôi phục ID theo display name; hai resident có cùng tên/greeting có thể bị gộp nhầm.
+- Known track hiện bị lên lịch recognition lại sau `recog_retry_frames`; một lần face quay nghiêng,
+  chất lượng thấp hoặc match thành unknown có thể ghi đè identity đã đúng, làm tên trên person box
+  biến mất dù người đó vẫn còn trong cabin.
+- Person track chưa recognition hiện có trạng thái hiển thị riêng (`...`/untried), làm UI và state
+  machine phức tạp không cần thiết; yêu cầu vận hành là mọi người chưa có known resident đều hiển thị
+  thống nhất là `unknown`.
 
 Spec này thay tracker hiện tại bằng **ByteTrack-lite** viết bằng C++: Kalman motion prediction,
 Hungarian assignment, association hai mức confidence, lifecycle theo thời gian, face-to-track một-một
@@ -37,9 +43,13 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 4. Predict box ở mọi frame kể cả khi YOLO chạy thưa hơn video.
 5. Liên kết face–person một-một và deterministic.
 6. Dùng `resident_id` làm khóa identity; display name chỉ phục vụ UI.
-7. Giữ tương thích interaction, resident hot reload, audit event và privacy logging.
-8. Không làm giảm đáng kể FPS/latency trên Orange Pi A733.
-9. Có chế độ rollback sang tracker greedy trong giai đoạn rollout.
+7. Sau khi nhận diện thành công, latch identity vào person track và tiếp tục hiển thị khi người quay
+   mặt/không còn thấy face; known track không recognition định kỳ.
+8. Person track chưa match được resident PHẢI hiển thị `unknown` ngay; không có trạng thái UI
+   `untried`/`...`.
+9. Giữ tương thích interaction, resident hot reload, audit event và privacy logging.
+10. Không làm giảm đáng kể FPS/latency trên Orange Pi A733.
+11. Có chế độ rollback sang tracker greedy trong giai đoạn rollout.
 
 ## 3. Phạm vi
 
@@ -51,7 +61,7 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 - Lifecycle theo monotonic timestamp: tentative/tracked/lost/removed.
 - Predict ở frame không chạy YOLO.
 - Face-to-track association một-một.
-- Recognition cache và ghost keyed bằng `resident_id`.
+- Recognition identity latch và ghost keyed bằng `resident_id`.
 - Reconcile tracker với resident catalog hot reload.
 - CLI config tối thiểu, startup observability và rollback mode.
 - Unit tests, deterministic detection replay, benchmark và live smoke test.
@@ -151,16 +161,34 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 
 1. Track PHẢI lưu `resident_id` riêng với `display_name`; identity equality chỉ dùng `resident_id`.
 2. `record_recognition()` PHẢI nhận `track_id`, `resident_id`, display label, similarity và timestamp.
-3. Unknown PHẢI được biểu diễn bằng `resident_id < 0`, không dùng chuỗi name để quyết định identity.
+3. Unknown PHẢI được biểu diễn nội bộ bằng `resident_id < 0`, không dùng chuỗi name để quyết định
+   identity. Overlay PHẢI suy ra label `unknown` từ trạng thái này.
 4. Ghost PHẢI lưu `resident_id`, old track ID, removal timestamp và geometry tối thiểu; không dùng
    display name làm khóa.
 5. Ghost inheritance chỉ được phép khi resident ID trùng, ghost chưa hết TTL và không có active track
    khác đang sở hữu resident đó.
-6. Nếu recognition conflict với identity đang cache, tracker PHẢI yêu cầu đủ evidence/confirm rule
-   trước khi đổi ownership; không đổi ID chỉ từ một frame score thấp.
-7. Recognition retry interval hiện tại PHẢI được giữ tương thích, nhưng scheduling nên theo timestamp
-   để ổn định theo FPS.
-8. Log tracker/ghost KHÔNG được chứa resident name, greeting hoặc embedding.
+6. Ngay khi Tentative track chuyển Tracked mà chưa có known resident, track PHẢI có identity state
+   Unknown và overlay PHẢI vẽ `unknown` trên person box; không hiển thị `...`/untried.
+7. Unknown label tức thời chỉ là trạng thái UI/tracker. Audit/event `unknown` vẫn PHẢI tuân theo
+   `unknown_after_ms` và interaction confirmation hiện tại; không ghi event ngay lúc track xuất hiện.
+8. Unknown track chưa từng thử recognition và unknown track đã thử đều dùng cùng label; scheduler
+   PHẢI dùng `last_recognition_attempt_ms` riêng để quyết định thử ngay/retry, không suy ra từ label.
+9. Sau recognition thành công (`resident_id >= 0`), identity PHẢI được latch vào person track và
+   `needs_recognition()` PHẢI trả false cho known track trong suốt vòng đời track đó.
+10. Khi người quay mặt, SCRFD không thấy face hoặc face alignment thất bại, cached identity PHẢI tiếp
+   tục tồn tại và overlay PHẢI tiếp tục vẽ name trên person box.
+11. Identity PHẢI được giữ qua state Tracked→Lost→Tracked và qua low-confidence reactivation trong
+   `lost_timeout_ms`; không cần thấy lại face để giữ tên.
+12. Kết quả unknown, face chất lượng thấp hoặc một recognition failure KHÔNG được ghi đè known identity
+   đã latch. Nếu code vô tình gọi recognition cho known track, update unknown PHẢI bị bỏ qua.
+13. Unknown/unrecognized tracks PHẢI tiếp tục retry recognition theo timestamp; retry interval phải
+    ổn định theo FPS.
+14. Known identity chỉ được clear khi resident bị changed/removed theo catalog policy, có explicit
+    administrative invalidation, hoặc person track chuyển Removed. Removed known track có thể tạo
+    ghost để hỗ trợ re-entry nhưng không được tự gán name cho một người mới không có bằng chứng.
+15. Nếu một known result khác resident xuất hiện qua đường explicit/conflict recovery, tracker PHẢI
+    yêu cầu đủ evidence/confirm rule trước khi đổi ownership; không đổi từ một frame score thấp.
+16. Log tracker/ghost KHÔNG được chứa resident name, greeting hoặc embedding.
 
 ### R8 — Resident hot reload và interaction
 
@@ -211,8 +239,12 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 4. Face association PHẢI có test overlap, orphan, one-to-one và input-order invariance.
 5. Identity PHẢI có test hai residents trùng display name không merge và cùng resident re-entry có thể
    inherit đúng ID.
-6. Hot reload/privacy tests hiện tại PHẢI tiếp tục pass sau API migration.
-7. HỆ THỐNG PHẢI có replay fixture dạng text/JSON không chứa ảnh/PII để tái hiện crossing/occlusion.
+6. Identity latch PHẢI có test: nhận diện known một lần, nhiều frame sau không có face, person box vẫn
+   có cùng resident/name; unknown/failure không overwrite; Lost→Tracked vẫn giữ identity.
+7. Unknown display PHẢI có test: confirmed track chưa từng thấy face hiển thị `unknown`, retry chạy
+   đúng lịch và audit unknown không phát trước `unknown_after_ms`.
+8. Hot reload/privacy tests hiện tại PHẢI tiếp tục pass sau API migration.
+9. HỆ THỐNG PHẢI có replay fixture dạng text/JSON không chứa ảnh/PII để tái hiện crossing/occlusion.
 
 ### R13 — Performance và live validation
 
@@ -247,4 +279,3 @@ Spec hoàn thành khi:
 - Báo cáo A/B trên Orange Pi chứng minh latency/FPS trong giới hạn và association tốt hơn baseline.
 - Live RTSP smoke xác nhận crossing, occlusion, reconnect, recognition cache, hot reload và shutdown.
 - Tài liệu CLI/README/development plan được cập nhật.
-

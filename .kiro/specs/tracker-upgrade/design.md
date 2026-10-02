@@ -80,6 +80,8 @@ struct TrackIdentity {
     std::string display_name;
     float similarity = -1.0f;
     double last_recognition_ms = -1.0;
+    double last_recognition_attempt_ms = -1.0;
+    bool latched = false; // true after a known resident match
 };
 
 struct TrackView {
@@ -100,7 +102,6 @@ struct TrackerConfig {
     double lost_timeout_ms = 1200.0;
     double ghost_timeout_ms = 30000.0;
     double max_predict_gap_ms = 2000.0;
-    double known_retry_ms = 3000.0;   // migration from ~90 frames @30 fps
     double unknown_retry_ms = 1000.0; // migration from ~30 frames @30 fps
 };
 
@@ -278,7 +279,8 @@ NPU output; chỉ decode một lần rồi partition để giữ latency thấp.
 ## 9. Lifecycle và public visibility
 
 - Tentative không xuất hiện trong interaction/recognition; overlay DEBUG có thể vẽ nếu cần.
-- Tracked xuất hiện trong active views.
+- Tracked xuất hiện trong active views. Nếu `resident_id < 0`, overlay luôn vẽ `unknown`; không có
+  label `...`/untried.
 - Lost ngắn hạn có thể vẽ predicted box nhưng không được tạo recognition mới khi không có face.
 - Removed không xuất hiện.
 - `active_tracks()` trả Tracked và tùy policy Lost chưa hết timeout; trường `predicted_only` cho overlay.
@@ -326,12 +328,69 @@ int64_t resident_id = -1;
 std::string display_name; // UI only
 float match_similarity;
 double last_recognition_ms;
+double last_recognition_attempt_ms;
+bool identity_latched = false;
 ```
 
 Loại bỏ dần `track_resident_id` map ngoài `main.cpp`. Trong commit chuyển tiếp có thể giữ adapter,
 nhưng trạng thái cuối chỉ có một authoritative resident mapping.
 
-### 11.2 Ghost
+### 11.2 Identity latch và recognition scheduling
+
+Khi Tentative chuyển thành Tracked, identity khởi tạo:
+
+```text
+resident_id = -1
+identity_latched = false
+overlay label = "unknown"
+last_recognition_attempt_ms = -1
+```
+
+Không lưu chuỗi `unknown` làm identity key. Overlay suy ra label từ `resident_id < 0`. Trạng thái
+“chưa từng thử” chỉ tồn tại trong `last_recognition_attempt_ms` để scheduler thử ngay khi có face;
+người dùng vẫn luôn thấy `unknown` cho tới khi match known.
+
+Một lần match known thành công chuyển identity của person track sang trạng thái latched:
+
+```text
+record_recognition(track_id, resident_id>=0, label, sim)
+    → set resident_id/label/sim
+    → identity_latched=true
+    → needs_recognition(track_id)=false
+```
+
+Sau đó name được lấy từ `TrackView.identity` và vẽ trên **person box ở mọi frame**, độc lập với việc
+frame hiện tại có face hay không. SCRFD miss, người quay mặt, align/extract failure hoặc known track đi
+qua low-confidence detection không được clear identity.
+
+Scheduling:
+
+```cpp
+bool needs_recognition(track, now_ms) {
+    if (track.state != TrackState::Tracked) return false;
+    if (track.identity.resident_id >= 0 && track.identity.latched) return false;
+    return track.identity.last_recognition_attempt_ms < 0 ||
+           now_ms - track.identity.last_recognition_attempt_ms >= unknown_retry_ms;
+}
+```
+
+`record_recognition(... resident_id=-1 ...)` chỉ cập nhật unknown track. Nếu track đã latch known,
+unknown/failure update bị bỏ qua. Identity tiếp tục sống qua Tracked→Lost→Tracked trong
+`lost_timeout_ms`. Khi track Removed, live identity kết thúc; known identity có thể chuyển sang ghost.
+
+Các trigger được phép clear known identity:
+
+- Resident bị remove/deactivate hoặc thay đổi theo catalog invalidation policy.
+- Explicit administrative reset.
+- Track chuyển Removed (sau đó chỉ còn ghost TTL).
+
+Không dùng periodic known re-verification trong Byte backend. `--recog-retry` chỉ còn compatibility
+cho greedy backend trong giai đoạn rollout và phải được ghi rõ trong help/log.
+
+Việc hiển thị `unknown` ngay không gọi `InteractionManager` ngay lập tức. Unknown audit/event vẫn đi
+qua `unknown_after_ms`, confirmation/cooldown hiện tại và chỉ phát khi có subject evidence hợp lệ.
+
+### 11.3 Ghost
 
 ```cpp
 struct GhostIdentity {
@@ -353,10 +412,11 @@ Khi Removed track có known resident, tạo ghost. Khi track mới recognition t
 
 Display name không tham gia equality. Hot reload changed/removed resident purge ghost tương ứng.
 
-### 11.3 Identity conflict
+### 11.4 Identity conflict
 
 Nếu track cache resident A nhưng recognition frame mới ra B:
 
+- Bình thường đường này không xảy ra vì known track đã latch và không schedule recognition lại.
 - Không đổi ngay từ một frame.
 - Lưu pending resident + streak/similarity evidence.
 - Chỉ chuyển khi đủ confirm policy hoặc A đã invalidated bởi catalog reload.
@@ -404,7 +464,7 @@ for each face:
         tracker->record_recognition(track_id, resident_id, display_name, sim, now)
 
 build interaction subjects from stable track IDs
-draw TrackView snapshot
+draw TrackView snapshot  // latched identity stays on person box even without a face
 ```
 
 Nếu không có tracker, SCRFD-only branch giữ nguyên.
@@ -419,7 +479,7 @@ có video frame, không advance motion bằng fake frame; timestamp gap được
 - `--person-thr`: high threshold.
 - `--person-every`.
 - `--track-iou`: primary IoU gate.
-- `--recog-retry`: greedy compatibility; byte chuyển sang ms nội bộ hoặc thêm flag sau.
+- `--recog-retry`: greedy compatibility; Byte backend không re-check known tracks.
 - `--track-max-miss`: greedy compatibility.
 
 ### Thêm
@@ -523,6 +583,11 @@ Fixtures:
 - Same display name, different resident IDs.
 - Same resident re-entry within TTL.
 - Two active tracks claim same resident.
+- Confirmed person chưa từng có face hiển thị `unknown`, không hiển thị `...`.
+- Unknown UI xuất hiện ngay nhưng unknown event không phát trước `unknown_after_ms`.
+- Known face match một lần, sau đó nhiều frame không có face nhưng person box vẫn giữ label.
+- Unknown/failure update không overwrite latched known identity.
+- Tracked→Lost→Tracked giữ nguyên resident/name mà không chạy recognition lại.
 - Catalog add/change/remove.
 - Logs contain no display label.
 
@@ -581,4 +646,3 @@ Rollback không thay DB/data; chỉ đổi CLI mode và restart service.
 - ByteTrack: https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136820001.pdf
 - HOTA: https://arxiv.org/abs/2009.07736
 - DeepSORT (ngoài scope, tham khảo tương lai): https://arxiv.org/abs/1703.07402
-
