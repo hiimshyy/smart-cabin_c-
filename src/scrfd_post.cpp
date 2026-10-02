@@ -80,11 +80,10 @@ bool ScrfdDecoder::init(Awnn_Context_t* ctx, int input_size) {
         (W/32)*(W/32) * kAnchorsPerLoc * 10,
     };
 
-    printf("[scrfd] inspecting %u output tensors (input=%dx%d, na=%d)\n",
-           n, input_size, input_size, kAnchorsPerLoc);
+    // printf("[scrfd] inspecting %u output tensors (input=%dx%d, na=%d)\n", n, input_size, input_size, kAnchorsPerLoc);
     for (unsigned int i = 0; i < n; ++i) {
         const auto& p = ctx->output_params[i];
-        printf("  [%u] name='%s' elements=%u\n", i, p.name, p.elements);
+        // printf("  [%u] name='%s' elements=%u\n", i, p.name, p.elements);
     }
 
     // ---- Strategy 1: classify by tensor name ---------------------------
@@ -135,7 +134,7 @@ bool ScrfdDecoder::init(Awnn_Context_t* ctx, int input_size) {
         //   12800: {score-8, bbox-16}  → within collision, score comes
         //                                before bbox in canonical output order
         //    3200: {score-16, bbox-32} → ditto
-        printf("[scrfd] name classification failed; using element-count + order\n");
+        // printf("[scrfd] name classification failed; using element-count + order\n");
 
         for (unsigned int i = 0; i < n; ++i) {
             int e = (int)ctx->output_params[i].elements;
@@ -183,11 +182,10 @@ bool ScrfdDecoder::init(Awnn_Context_t* ctx, int input_size) {
         }
     }
 
-    printf("[scrfd] output mapping OK:\n");
-    for (int L = 0; L < 3; ++L) {
-        printf("  stride %2d  score=out[%d]  bbox=out[%d]  kps=out[%d]\n",
-               kStrides[L], score_idx_[L], bbox_idx_[L], kps_idx_[L]);
-    }
+    // printf("[scrfd] output mapping OK:\n");
+    // for (int L = 0; L < 3; ++L) {
+    //     printf("  stride %2d  score=out[%d]  bbox=out[%d]  kps=out[%d]\n", kStrides[L], score_idx_[L], bbox_idx_[L], kps_idx_[L]);
+    // }
     initialized_ = true;
     return true;
 }

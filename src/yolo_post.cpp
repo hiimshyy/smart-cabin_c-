@@ -58,13 +58,13 @@ inline float iou(const PersonDet& a, const PersonDet& b) {
 
 bool YoloDecoder::init(Awnn_Context_t* ctx, int input_size) {
     if (!ctx || input_size != 640) {
-        fprintf(stderr, "[yolo] init requires input_size=640 (got %d)\n", input_size);
+        // fprintf(stderr, "[yolo] init requires input_size=640 (got %d)\n", input_size);
         return false;
     }
     input_size_ = input_size;
 
     if (ctx->output_count != 3) {
-        fprintf(stderr, "[yolo] expected 3 outputs, got %u\n", ctx->output_count);
+        // fprintf(stderr, "[yolo] expected 3 outputs, got %u\n", ctx->output_count);
         return false;
     }
 
@@ -74,11 +74,10 @@ bool YoloDecoder::init(Awnn_Context_t* ctx, int input_size) {
         int g = input_size / kStrides[L];
         expected[L] = g * g * kAnchorsPerLoc * kChannels;
     }
-    printf("[yolo] inspecting outputs (input=%d, anchors=%d, channels=%d):\n",
-           input_size, kAnchorsPerLoc, kChannels);
+    // printf("[yolo] inspecting outputs (input=%d, anchors=%d, channels=%d):\n", input_size, kAnchorsPerLoc, kChannels);
     for (unsigned int i = 0; i < ctx->output_count; ++i) {
         const auto& p = ctx->output_params[i];
-        printf("  out[%u] '%s' elements=%u\n", i, p.name, p.elements);
+        // printf("  out[%u] '%s' elements=%u\n", i, p.name, p.elements);
     }
 
     // Match by element count: each level has unique count.
@@ -93,20 +92,20 @@ bool YoloDecoder::init(Awnn_Context_t* ctx, int input_size) {
     }
     for (int L = 0; L < 3; ++L) {
         if (level_out_idx_[L] < 0) {
-            fprintf(stderr, "[yolo] no output tensor matches level %d "
-                    "(stride %d, expected %d elements)\n",
-                    L, kStrides[L], expected[L]);
+            // fprintf(stderr, "[yolo] no output tensor matches level %d "
+            //         "(stride %d, expected %d elements)\n",
+            //         L, kStrides[L], expected[L]);
             return false;
         }
     }
 
-    printf("[yolo] output mapping:\n");
-    for (int L = 0; L < 3; ++L) {
-        printf("  stride %2d  -> out[%d]  grid %dx%d  elements=%u\n",
-               kStrides[L], level_out_idx_[L],
-               input_size / kStrides[L], input_size / kStrides[L],
-               ctx->output_params[level_out_idx_[L]].elements);
-    }
+    // printf("[yolo] output mapping:\n");
+    // for (int L = 0; L < 3; ++L) {
+    //     printf("  stride %2d  -> out[%d]  grid %dx%d  elements=%u\n",
+    //            kStrides[L], level_out_idx_[L],
+    //            input_size / kStrides[L], input_size / kStrides[L],
+    //            ctx->output_params[level_out_idx_[L]].elements);
+    // }
     initialized_ = true;
     return true;
 }
