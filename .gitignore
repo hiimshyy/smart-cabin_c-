@@ -35,6 +35,7 @@ db/*.db.bak-*
 # Editor / OS junk
 .vscode/
 .idea/
+.kiro/settings/
 .DS_Store
 *.swp
 *~
