@@ -18,7 +18,7 @@ acceptance đạt.
     - Tạo `tests/fixtures/tracker/` và parser/test helper.
     - Ground-truth ID chỉ tồn tại trong fixture.
     - Evaluator báo IDSW, fragments, created tracks và low-only creations.
-    - _Requirements: R12.7, R13.5–R13.9_
+    - _Requirements: R12.10, R13.5–R13.9_
   - [ ] 1.3 Thêm fixtures tối thiểu
     - Single constant velocity.
     - Two people crossing.
@@ -45,7 +45,7 @@ acceptance đạt.
   - [ ] 2.4 Thêm `--tracker-mode greedy|byte`
     - Parser/usage/validation/startup log.
     - Default `greedy` trong rollout.
-    - _Requirements: R9.5–R9.7, R11.1_
+    - _Requirements: R9.6–R9.8, R11.1_
   - [ ] 2.5 Checkpoint API
     - `make -j4`, relevant unit suite, `git diff --check`.
     - Manual review pointer lifetime và shutdown.
@@ -86,7 +86,8 @@ acceptance đạt.
   - [ ] 5.1 Implement internal Byte track storage/lifecycle
     - Tentative/Tracked/Lost/Removed.
     - Unique IDs, timestamps, hits, scores, Kalman state.
-    - Lifecycle driven by milliseconds.
+    - Lifecycle driven by milliseconds; tracked grace 250 ms + minimum 2 detector misses.
+    - Removed đóng appearance; không tái sử dụng track ID.
     - _Requirements: R5_
   - [ ] 5.2 Implement primary high-confidence association
     - Predict boxes → cost matrix → gate → Hungarian → correction.
@@ -104,7 +105,9 @@ acceptance đạt.
     - Deterministic policy based on state/age/hits; không merge chỉ vì một overlap.
     - _Requirements: R4.8_
   - [ ] 5.6 Core tracker tests
-    - High/low behavior, lifecycle, reactivation, duplicates, input-order invariance.
+    - High/low behavior, one-miss grace, time-based Lost/Removed, reactivation, duplicates,
+      timeout deadline khi detector chạy thưa, active-view visibility của Lost, input-order invariance
+      và no ID reuse after Removed.
     - _Requirements: R12.3_
 
 - [ ] 6. YOLO low-confidence pipeline
@@ -115,10 +118,11 @@ acceptance đạt.
   - [ ] 6.2 Add config
     - `--person-thr` = high; thêm `--person-low-thr`.
     - Validate `0 <= low < high <= 1` và invalid args rõ ràng.
-    - _Requirements: R9.1–R9.2, R9.6_
+    - _Requirements: R9.1–R9.2, R9.7_
   - [ ] 6.3 Add lifecycle timeout config
     - Thêm `--track-lost-ms`; giữ `--track-max-miss` cho greedy.
-    - Document migration/precedence.
+    - Thêm/log internal defaults `lost_grace_ms=250`, `lost_grace_min_updates=2`.
+    - Validate lost timeout > grace; document migration/precedence.
     - _Requirements: R9.3–R9.4_
   - [ ] 6.4 Decoder regression tests/static validation
     - Verify low candidates retained, NMS high wins duplicate, invalid boxes dropped.
@@ -163,7 +167,7 @@ acceptance đạt.
     - Cached recognition label lấy từ TrackView.
     - `resident_id < 0` luôn vẽ `unknown`; xóa UI state `...`/untried.
 
-- [ ] 9. Resident identity và ghost migration
+- [ ] 9. Resident identity và appearance-session migration
   - [ ] 9.1 Move authoritative resident identity into Track
     - `resident_id`, display name, similarity, recognition/attempt timestamps và `identity_latched`.
     - Update `record_recognition` API.
@@ -176,35 +180,46 @@ acceptance đạt.
     - `--recog-retry` chỉ áp dụng greedy compatibility; unknown byte tracks retry theo timestamp.
     - Unknown UI không bypass `unknown_after_ms` của audit/interaction.
     - _Requirements: R7.6–R7.14_
-  - [ ] 9.3 Replace name-keyed ghosts
-    - Ghost keyed bằng resident ID + TTL; enforce one active owner.
-    - Same-name/different-resident không merge.
+  - [ ] 9.3 Remove ghost old-ID inheritance
+    - Lost reactivation giữ current ID; Removed rồi re-entry luôn tạo ID mới.
+    - Cross-appearance cooldown/dedup dùng resident ID trong InteractionManager.
+    - Xóa name-keyed ghost logic và tests cũ.
     - _Requirements: R7.4–R7.5_
   - [ ] 9.4 Implement identity conflict confirmation
-    - Pending candidate/streak policy hoặc reuse configured recognition confirmation.
+    - Mặc định disable; catalog invalidation/admin reset dùng standard unknown→known path.
+    - Thêm admin-only `--track-conflict-recovery`; absent=false.
+    - Khi bật, probe known face tối đa mỗi 500 ms; khi tắt, known track không recognition lại.
+    - Optional path: 3 consecutive B samples, span 600 ms/window 2000 ms,
+      `sim >= max(match_thr+0.12,0.50)`, runner-up margin ≥0.08, association unambiguous.
+    - Pending conflict suppress thêm interaction event; confirmed conflict đóng A, tạo new track ID B
+      và special-promote B sang Tracked/latch ngay, không chờ `confirm_hits`.
     - Numeric, rate-limited diagnostics.
-    - _Requirements: R7.15–R7.16, R11.2–R11.4_
+    - _Requirements: R7.15–R7.19, R11.2–R11.4_
   - [ ] 9.5 Migrate/remove external `track_resident_id`
     - Update overlay, interaction subject build và reconciliation.
     - End state có một source of truth.
     - _Requirements: R7, R8_
   - [ ] 9.6 Identity tests
-    - Same label/different resident, re-entry, active ownership conflict, ghost expiry, privacy.
+    - Same label/different resident, Lost reactivation, Removed/re-entry new ID, ownership conflict,
+      privacy.
     - Confirmed/untried person hiển thị unknown ngay; không còn label `...`.
     - Unknown event vẫn chờ `unknown_after_ms`.
     - Recognize một lần → quay mặt/no-face nhiều frame → person label vẫn giữ.
     - Unknown/failure không overwrite; Lost/reactivation không yêu cầu recognition lại.
-    - _Requirements: R12.5–R12.8_
+    - Lost/tracked-grace không được face-association, track-bound recognition mới hoặc interaction.
+    - Conflict gates/reset/new-track split; B special-promoted sang Tracked; automatic conflict
+      disabled by default.
+    - _Requirements: R12.5–R12.9_
 
 - [ ] 10. Resident hot reload reconciliation
   - [ ] 10.1 Update tracker invalidation API
     - Added invalidates unknown; changed/removed clears matching resident cache.
     - Geometry/motion/lifecycle giữ nguyên.
-    - _Requirements: R8.1–R8.4_
+    - _Requirements: R8.1–R8.3_
   - [ ] 10.2 Update `resident_reconcile`
     - Reconcile affected interaction subjects ở same frame boundary.
     - Preserve unaffected cooldown/history.
-    - _Requirements: R8.5–R8.7_
+    - _Requirements: R8.4–R8.6_
   - [ ] 10.3 Regression tests
     - Existing resident catalog/reconcile/interaction tests pass.
     - Add byte-backend variants and no duplicate event test.
@@ -245,6 +260,7 @@ acceptance đạt.
   - [ ] 13.2 Cabin scenarios
     - Single entry/exit, crossing, 0.5–2 s occlusion, turn away/back, multi-entry.
     - Sau lần match known đầu tiên, yêu cầu name giữ trên person box suốt lúc quay mặt/no-face.
+    - Kiểm tra một YOLO miss không chuyển Lost; Lost reactivation giữ ID; re-entry sau Removed có ID mới.
     - Kiểm tra stable ID, face link, latched recognition cache và duplicate greeting.
   - [ ] 13.3 Detector scheduling
     - `person_every=1/2/3`; predicted overlay và timeout theo ms.
@@ -291,7 +307,7 @@ acceptance đạt.
 6. `feat(config): add ByteTrack thresholds and timeout`
 7. `feat(tracker): predict across skipped detector frames`
 8. `feat(tracker): add one-to-one face association`
-9. `fix(tracker): key recognition and ghosts by resident id`
+9. `fix(tracker): latch resident identity per appearance`
 10. `test(tracker): cover reload crossing occlusion and privacy`
 11. `docs(tracker): record A-B and live validation evidence`
 12. `feat(tracker): enable ByteTrack backend by default`

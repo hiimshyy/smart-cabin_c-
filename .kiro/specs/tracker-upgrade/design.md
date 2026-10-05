@@ -99,10 +99,19 @@ struct TrackerConfig {
     float primary_iou_gate = 0.30f;
     float secondary_iou_gate = 0.20f;
     int confirm_hits = 3;
+    int lost_grace_min_updates = 2;
+    double lost_grace_ms = 250.0;
     double lost_timeout_ms = 1200.0;
-    double ghost_timeout_ms = 30000.0;
     double max_predict_gap_ms = 2000.0;
     double unknown_retry_ms = 1000.0; // migration from ~30 frames @30 fps
+    bool automatic_conflict_recovery = false;
+    int conflict_required_samples = 3;
+    double conflict_min_span_ms = 600.0;
+    double conflict_window_ms = 2000.0;
+    double conflict_probe_interval_ms = 500.0;
+    float conflict_similarity_floor = 0.50f;
+    float conflict_threshold_delta = 0.12f;
+    float conflict_runner_up_margin = 0.08f;
 };
 
 class PersonTracker {
@@ -165,7 +174,7 @@ Nếu `dt <= 0`, dùng `dt=0` và không extrapolate. Nếu `dt > max_predict_ga
 - Zero velocity.
 - Tăng uncertainty hoặc reinitialize motion từ last measurement.
 - Không extrapolate xuyên toàn bộ outage.
-- Geometry track vẫn theo lifecycle timeout; removed track chỉ có thể quay lại qua ghost identity.
+- Geometry track vẫn theo lifecycle timeout; track Removed kết thúc appearance và không thể lấy lại ID.
 
 ### 4.4 Box sanitation
 
@@ -249,8 +258,11 @@ INPUT: all valid detections >= low threshold, predicted tracks
      remaining LOW  -> discard
 
 6. lifecycle:
-     unmatched confirmed -> Lost
-     Lost quá timeout -> Removed + optional ghost identity
+     unmatched confirmed:
+       missed_updates++
+       nếu chưa đủ grace -> giữ Tracked, predicted_only=true
+       nếu đủ grace -> Lost
+     elapsed từ last matched detection >= lost_timeout -> Removed
 
 7. duplicate resolution:
      nếu two live tracks overlap rất cao và cùng resident_id/trajectory,
@@ -259,7 +271,19 @@ INPUT: all valid detections >= low threshold, predicted tracks
 
 Thứ tự pool và exact matching threshold phải được khóa bằng tests. Lost tracks được primary match
 với high detection để reactivation; low detection chỉ cứu track vừa miss nhằm tránh resurrect stale
-track từ noise.
+track từ noise. High hoặc low match đều reset `missed_updates` và grace timer.
+
+Grace semantics:
+
+```text
+last match = t0
+miss khi missed_updates < 2 HOẶC now-t0 < 250 ms -> vẫn Tracked/predicted-only
+chuyển Lost khi missed_updates >= 2 VÀ now-t0 >= 250 ms
+chuyển Removed khi now-t0 >= 1200 ms
+```
+
+`lost_timeout_ms` là deadline tuyệt đối tính từ detection match cuối, không cộng thêm grace. Deadline
+này vẫn remove confirmed track nếu detector chạy quá thưa khiến miss counter chưa đạt 2.
 
 ## 8. YOLO decoder migration
 
@@ -279,12 +303,14 @@ NPU output; chỉ decode một lần rồi partition để giữ latency thấp.
 ## 9. Lifecycle và public visibility
 
 - Tentative không xuất hiện trong interaction/recognition; overlay DEBUG có thể vẽ nếu cần.
-- Tracked xuất hiện trong active views. Nếu `resident_id < 0`, overlay luôn vẽ `unknown`; không có
-  label `...`/untried.
+- Tracked xuất hiện trong active views, gồm tracked-grace predicted-only. Nếu `resident_id < 0`,
+  overlay luôn vẽ `unknown`; không có label `...`/untried.
 - Lost ngắn hạn có thể vẽ predicted box nhưng không được tạo recognition mới khi không có face.
 - Removed không xuất hiện.
-- `active_tracks()` trả Tracked và tùy policy Lost chưa hết timeout; trường `predicted_only` cho overlay.
-- Interaction input chỉ hình thành từ face đã association với eligible Tracked track, giữ semantics hiện tại.
+- `active_tracks()` luôn trả confirmed `Tracked` (kể cả tracked-grace) và `Lost` chưa hết timeout;
+  `TrackView.state` và `predicted_only` cho overlay phân biệt trạng thái.
+- Face association, track-bound recognition mới và interaction chỉ nhận `Tracked` với
+  `predicted_only=false`. Tracked-grace và Lost chỉ phục vụ continuity của overlay/lifecycle.
 
 Timeout theo milliseconds. `track_max_miss` được giữ trong rollout cho greedy; byte dùng
 `track_lost_ms`. Nếu cần backward migration, khi chỉ có `track_max_miss`, derive một lần từ nominal
@@ -317,7 +343,7 @@ gate.
 
 API trả vector track IDs theo face index (`-1` = orphan), tránh pointer lifetime.
 
-## 11. Recognition identity và ghost
+## 11. Recognition identity và appearance/session
 
 ### 11.1 Single source of truth
 
@@ -375,14 +401,14 @@ bool needs_recognition(track, now_ms) {
 ```
 
 `record_recognition(... resident_id=-1 ...)` chỉ cập nhật unknown track. Nếu track đã latch known,
-unknown/failure update bị bỏ qua. Identity tiếp tục sống qua Tracked→Lost→Tracked trong
-`lost_timeout_ms`. Khi track Removed, live identity kết thúc; known identity có thể chuyển sang ghost.
+unknown/failure update bị bỏ qua. Identity tiếp tục sống qua Tracked grace và Tracked→Lost→Tracked
+trong `lost_timeout_ms`. Khi track Removed, appearance và live identity kết thúc.
 
 Các trigger được phép clear known identity:
 
 - Resident bị remove/deactivate hoặc thay đổi theo catalog invalidation policy.
 - Explicit administrative reset.
-- Track chuyển Removed (sau đó chỉ còn ghost TTL).
+- Track chuyển Removed.
 
 Không dùng periodic known re-verification trong Byte backend. `--recog-retry` chỉ còn compatibility
 cho greedy backend trong giai đoạn rollout và phải được ghi rõ trong help/log.
@@ -390,37 +416,48 @@ cho greedy backend trong giai đoạn rollout và phải được ghi rõ trong 
 Việc hiển thị `unknown` ngay không gọi `InteractionManager` ngay lập tức. Unknown audit/event vẫn đi
 qua `unknown_after_ms`, confirmation/cooldown hiện tại và chỉ phát khi có subject evidence hợp lệ.
 
-### 11.3 Ghost
+### 11.3 Appearance boundary và track ID
 
-```cpp
-struct GhostIdentity {
-    int old_track_id;
-    int64_t resident_id;
-    double first_seen_ms;
-    double removed_ms;
-    Box last_box;
-};
+Track ID chỉ đại diện một continuous visual appearance:
+
+- Tracked grace và Lost reactivation trước timeout giữ cùng ID.
+- Removed đóng appearance/session vĩnh viễn.
+- Detection sau Removed luôn tạo ID mới, kể cả recognition ra cùng resident.
+- Cross-appearance cooldown/dedup dùng `resident_id` trong `InteractionManager`.
+- Byte backend không có ghost old-ID inheritance.
+
+Điều này giữ audit rõ: hai lần một resident xuất hiện trước camera là hai track IDs khác nhau nhưng
+cùng resident ID.
+
+### 11.4 Identity conflict recovery
+
+Mặc định `automatic_conflict_recovery=false`; known track không schedule recognition lại. Catalog
+invalidation/admin reset clear identity về Unknown rồi dùng standard recognition.
+
+Nếu deployment bật conflict recovery, known track được probe tối đa một lần mỗi 500 ms khi có face.
+Chỉ tạo pending candidate B khi track đang Tracked, có detection thật ở frame hiện tại
+(`predicted_only=false`) và face-to-track association unambiguous. Mỗi sample:
+
+```text
+candidate resident == B
+sim_B >= max(match_thr + 0.12, 0.50)
+sim_B - sim_runner_up >= 0.08
 ```
 
-Khi Removed track có known resident, tạo ghost. Khi track mới recognition thành cùng resident:
+Confirm khi có 3 samples B liên tiếp, span ≥600 ms và toàn bộ window ≤2000 ms. Sample A, unknown,
+resident C, association ambiguous hoặc quá window reset candidate. Để tính runner-up margin,
+MatchEngine cần API trả top-2 similarities trong conflict-only path.
 
-1. Ghost còn TTL.
-2. Không active track khác sở hữu resident.
-3. Recognition đủ threshold/confirmation.
-4. Nếu có nhiều ghost, chọn recent nhất và có geometry hợp lý nhất.
-5. Kế thừa old track ID/first seen; xóa ghost.
+Trong pending state, overlay vẫn hiển thị A nhưng interaction không phát thêm event cho track đó. Khi
+confirm B:
 
-Display name không tham gia equality. Hot reload changed/removed resident purge ghost tương ứng.
+1. Mark old track A Removed/ConflictEnded.
+2. Đóng interaction subject của old track, giữ resident cooldown history.
+3. Tạo track ID mới từ current detection/Kalman observation và công bố ngay state `Tracked`; đây là
+   special promotion có chủ đích, không chờ `confirm_hits` vì conflict evidence đã đủ rule.
+4. Latch resident B vào new track.
 
-### 11.4 Identity conflict
-
-Nếu track cache resident A nhưng recognition frame mới ra B:
-
-- Bình thường đường này không xảy ra vì known track đã latch và không schedule recognition lại.
-- Không đổi ngay từ một frame.
-- Lưu pending resident + streak/similarity evidence.
-- Chỉ chuyển khi đủ confirm policy hoặc A đã invalidated bởi catalog reload.
-- Log numeric IDs ở DEBUG/WARN rate-limited, không log labels.
+Không mutate resident A→B trên cùng track ID; audit trước conflict tiếp tục thuộc appearance A.
 
 ## 12. Resident hot reload integration
 
@@ -433,7 +470,7 @@ tracker.invalidate_catalog(diff, invalidate_unknown);
 Behavior:
 
 - `added`: clear recognition schedule của unknown tracks.
-- `changed`: clear identity/cache của tracks/ghosts mang resident đó.
+- `changed`: clear identity/cache của tracks mang resident đó.
 - `removed`: clear identity/cache và ownership; interaction affected sessions reconcile.
 - Geometry/Kalman/lifecycle giữ nguyên.
 
@@ -481,6 +518,8 @@ có video frame, không advance motion bằng fake frame; timestamp gap được
 - `--track-iou`: primary IoU gate.
 - `--recog-retry`: greedy compatibility; Byte backend không re-check known tracks.
 - `--track-max-miss`: greedy compatibility.
+- `lost_grace_ms=250` và `lost_grace_min_updates=2`: compile-in ở version đầu, log rõ; expose CLI chỉ
+  khi replay/live tuning chứng minh cần.
 
 ### Thêm
 
@@ -488,10 +527,12 @@ có video frame, không advance motion bằng fake frame; timestamp gap được
 --tracker-mode greedy|byte
 --person-low-thr F
 --track-lost-ms N
+--track-conflict-recovery
 ```
 
-Secondary gate, confirm hits, max predict gap có thể giữ compile-in ở version đầu để tránh quá nhiều
-knobs. Chỉ expose khi replay/live data chứng minh cần field tuning.
+`--track-conflict-recovery` là admin-only opt-in; absent = false. Secondary gate, confirm hits và max
+predict gap có thể giữ compile-in ở version đầu để tránh quá nhiều knobs. Chỉ expose khi replay/live
+data chứng minh cần field tuning.
 
 Parser phải validate và trả exit code config hiện hành; không silently clamp threshold đảo ngược.
 
@@ -581,13 +622,18 @@ Fixtures:
 - Face orphan.
 - One face eligible for two tracks.
 - Same display name, different resident IDs.
-- Same resident re-entry within TTL.
+- Lost reactivation giữ track ID; Removed rồi re-entry tạo track ID mới dù cùng resident.
 - Two active tracks claim same resident.
 - Confirmed person chưa từng có face hiển thị `unknown`, không hiển thị `...`.
 - Unknown UI xuất hiện ngay nhưng unknown event không phát trước `unknown_after_ms`.
 - Known face match một lần, sau đó nhiều frame không có face nhưng person box vẫn giữ label.
 - Unknown/failure update không overwrite latched known identity.
 - Tracked→Lost→Tracked giữ nguyên resident/name mà không chạy recognition lại.
+- Một YOLO miss và miss trong grace không chuyển Lost; Lost/Removed deadlines tính từ last match.
+- Lost xuất hiện trong `active_tracks()` chỉ để overlay; face association, recognition mới và
+  interaction chỉ chạy cho Tracked không `predicted_only`.
+- Conflict recovery 3 consecutive samples, time window, similarity/margin gates, new-track split và
+  special promotion của B sang Tracked không chờ `confirm_hits`.
 - Catalog add/change/remove.
 - Logs contain no display label.
 
