@@ -1,5 +1,7 @@
 #pragma once
 
+#include "tracker_types.h"
+
 // Application configuration parsed from the CLI (spec main-cpp-refactor,
 // Config_Module). Every field's default is byte-for-byte identical to the
 // Baseline main.cpp inline defaults. The const char* paths point into argv
@@ -22,6 +24,7 @@ struct AppConfig {
     int    reconnect_max_ms = 10000;    // RTSP reconnect backoff ceiling
     int    person_every     = 1;
     int    track_max_miss   = 30;
+    int    track_lost_ms    = 1200;
     int    recog_retry      = 90;
     int    resident_reload_ms = 1000; // SQLite resident/embedding hot-reload; 0=disabled
     int    cabin_id         = 1;
@@ -30,10 +33,19 @@ struct AppConfig {
     double unknown_after_ms  = 2000.0;
     float  track_iou         = 0.3f;
     float  person_thr        = 0.5f;
+    float  person_low_thr    = 0.1f;
     float  ui_scale_override = 0.0f;   // 0 = auto (scale by frame.rows / 480)
     bool   recog_rgb         = true;
     bool   fullscreen        = true;
     float  match_threshold   = 0.35f;
+    TrackerMode tracker_mode = TrackerMode::Greedy;
+    bool   track_conflict_recovery = false;
+
+    // The greedy fallback consumes only high-confidence detections. ByteTrack
+    // needs the low tier for its second association pass.
+    float person_decode_threshold() const {
+        return tracker_mode == TrackerMode::Byte ? person_low_thr : person_thr;
+    }
 
     // Which Nhóm A params the user ACTUALLY passed on the CLI (spec
     // cabin-runtime-config, R3.2). Lets main build CliOverrides so a CLI value

@@ -14,6 +14,12 @@ AI_SDK     := /home/orangepi/ai-sdk
 COMMON_SRCS := $(SRC_DIR)/detect_pre.cpp \
                $(SRC_DIR)/scrfd_post.cpp \
                $(SRC_DIR)/yolo_post.cpp \
+               $(SRC_DIR)/linear_assignment.cpp \
+               $(SRC_DIR)/kalman_box_tracker.cpp \
+               $(SRC_DIR)/byte_tracker.cpp \
+               $(SRC_DIR)/face_track_assoc.cpp \
+               $(SRC_DIR)/person_tracker.cpp \
+               $(SRC_DIR)/tracker_greedy.cpp \
                $(SRC_DIR)/tracker.cpp \
                $(SRC_DIR)/log/logger.cpp
 RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \

@@ -4,6 +4,32 @@
 #include <utility>
 
 CatalogReconcileResult reconcile_catalog_runtime(
+    const CatalogDiff& diff, PersonTracker* tracker, InteractionManager& interaction) {
+    CatalogReconcileResult out;
+    std::set<int64_t> changed_or_removed = diff.changed;
+    changed_or_removed.insert(diff.removed.begin(), diff.removed.end());
+
+    if (tracker) {
+        const bool invalidate_unknown = !diff.added.empty();
+        out.affected_subject_keys = tracker->invalidate_residents(changed_or_removed, invalidate_unknown);
+        out.invalidated_live_tracks = static_cast<int>(out.affected_subject_keys.size());
+        interaction.drop_sessions(out.affected_subject_keys);
+        return out;
+    }
+
+    // SCRFD-only mode has no persistent tracker identity.  Only a current
+    // session whose resident changed/was removed needs reconciliation.
+    for (const auto& session : interaction.sessions()) {
+        if (session.subject_key == 0 && changed_or_removed.count(session.resident_id)) {
+            out.affected_subject_keys.push_back(0);
+            break;
+        }
+    }
+    if (!out.affected_subject_keys.empty()) interaction.drop_sessions(out.affected_subject_keys);
+    return out;
+}
+
+CatalogReconcileResult reconcile_catalog_runtime(
     const CatalogDiff& diff,
     bool use_tracker,
     Tracker& tracker,

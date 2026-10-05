@@ -30,6 +30,8 @@
 #include <condition_variable>
 #include <map>
 #include <string>
+#include <optional>
+#include <utility>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -42,7 +44,8 @@
 #include "detection.h"
 #include "scrfd_post.h"
 #include "yolo_post.h"
-#include "tracker.h"
+#include "person_tracker.h"
+#include "face_track_assoc.h"
 #include "face_align.h"
 #include "face_recog.h"
 #include "face_db.h"
@@ -241,10 +244,6 @@ int main(int argc, char** argv) {
     InteractionManager  interaction;
     std::unique_ptr<EdgeClient> edge;   // nullptr unless --edge-socket given
     std::map<int64_t, Resident> resident_by_id;   // id -> metadata for overlay
-    // Maps a track_id to the resident_id last recognized on it. This is the
-    // authoritative link for cached tracker frames — resolving by name would
-    // be ambiguous when two residents share a name/greeting_name (P1-2).
-    std::map<int, int64_t> track_resident_id;
     bool                use_resident_db = false;
 
     if (cfg.recog_model_path) {
@@ -407,7 +406,7 @@ int main(int argc, char** argv) {
 
     Awnn_Context_t* yolo_ctx = nullptr;
     YoloDecoder     yolo;
-    Tracker         tracker;
+    std::unique_ptr<PersonTracker> tracker;
     if (use_tracker) {
         yolo_ctx = awnn_create(cfg.person_model_path);
         if (!yolo_ctx) {
@@ -428,11 +427,19 @@ int main(int argc, char** argv) {
             shutdown_capture();
             return 4;
         }
-        tracker.iou_thresh         = cfg.track_iou;
-        tracker.max_missed         = cfg.track_max_miss;
-        tracker.recog_retry_frames = cfg.recog_retry;
-        LOG_INFO("track", "enabled: iou=%.2f max_miss=%d recog_retry=%d person_every=%d",
-                 cfg.track_iou, cfg.track_max_miss, cfg.recog_retry, cfg.person_every);
+        TrackerConfig tracker_config;
+        tracker_config.high_threshold = cfg.person_thr;
+        tracker_config.low_threshold = cfg.person_low_thr;
+        tracker_config.primary_iou_gate = cfg.track_iou;
+        tracker_config.lost_timeout_ms = cfg.track_lost_ms;
+        tracker = make_person_tracker(cfg.tracker_mode, tracker_config,
+                                      cfg.track_max_miss, cfg.recog_retry);
+        LOG_INFO("track", "mode=%s high=%.2f low=%.2f decode=%.2f iou=%.2f grace_ms=250 grace_updates=2 "
+                 "lost_ms=%d confirm=3 conflict_recovery=%s person_every=%d",
+                 cfg.tracker_mode == TrackerMode::Byte ? "byte" : "greedy",
+                 cfg.person_thr, cfg.person_low_thr, cfg.person_decode_threshold(),
+                 cfg.track_iou, cfg.track_lost_ms,
+                 cfg.track_conflict_recovery ? "true" : "false", cfg.person_every);
     } else {
         LOG_INFO("track", "disabled (no --person-model). SCRFD-only pipeline.");
     }
@@ -489,7 +496,7 @@ int main(int argc, char** argv) {
                 match_engine = std::move(candidate.matcher);
                 resident_by_id = std::move(candidate.resident_by_id);
                 CatalogReconcileResult reconciled = reconcile_catalog_runtime(
-                    candidate.diff, use_tracker, tracker, track_resident_id, interaction);
+                    candidate.diff, tracker.get(), interaction);
                 catalog_reloader.accept(candidate);
                 LOG_INFO("db-reload", "generation=%llu residents=%zu embeddings=%zu "
                          "latency_ms=%.2f affected_subjects=%zu live_tracks=%d",
@@ -530,6 +537,9 @@ int main(int argc, char** argv) {
             ui_ready = true;
         }
 
+        FrameContext tracker_frame{frame_id, now_ms(), frame.cols, frame.rows};
+        if (tracker) tracker->predict(tracker_frame);
+
         // ---- Preprocess (letterbox 640x640, shared for YOLO + SCRFD) ----
         PreInfo pre;
         detect_preprocess(frame, npu_input.data(),
@@ -544,9 +554,9 @@ int main(int argc, char** argv) {
             awnn_set_input_buffers(yolo_ctx, ins);
             awnn_run(yolo_ctx);
             float** youts = awnn_get_output_buffers(yolo_ctx);
-            yolo.decode(youts, pre, cfg.person_thr, /*nms=*/0.45f, persons);
+            yolo.decode(youts, pre, cfg.person_decode_threshold(), /*nms=*/0.45f, persons);
             t_yolo = now_ms() - y0;
-            tracker.update(persons, frame_id);
+            tracker->update(persons, tracker_frame);
         }
         // On skipped frames, tracker still ages — advance with empty detections?
         // No: we shouldn't kill tracks just because we skipped YOLO. Skip update.
@@ -559,6 +569,13 @@ int main(int argc, char** argv) {
         float** dets_out = awnn_get_output_buffers(det_ctx);
         scrfd.decode(dets_out, pre, /*score=*/0.5f, /*nms=*/0.4f, faces);
         double t4 = now_ms();
+
+        std::vector<TrackView> track_views;
+        std::vector<int> face_track_ids(faces.size(), -1);
+        if (tracker) {
+            track_views = tracker->active_tracks();
+            face_track_ids = associate_faces_to_tracks(faces, track_views);
+        }
 
         // ---- Face → Track association + recognition scheduling ----
         // For each face:
@@ -578,23 +595,25 @@ int main(int argc, char** argv) {
             double r0 = now_ms();
             for (size_t f = 0; f < faces.size(); ++f) {
                 const auto& fd = faces[f];
-                float cx = 0.5f * (fd.x1 + fd.x2);
-                float cy = 0.5f * (fd.y1 + fd.y2);
                 float area = std::max(0.0f, (fd.x2 - fd.x1)) *
                              std::max(0.0f, (fd.y2 - fd.y1));
                 face_labels[f].area = area;
                 if (area > best_face_area) { best_face_area = area; best_face_idx = (int)f; }
 
-                Track* linked_track = nullptr;
+                std::optional<TrackView> linked_track;
                 bool   need_recog   = true;
                 if (use_tracker) {
-                    linked_track = tracker.find_track_for_face(cx, cy);
+                    if (face_track_ids[f] >= 0)
+                        linked_track = tracker->find_track(face_track_ids[f]);
                     if (linked_track) {
                         face_labels[f].track_id = linked_track->id;
-                        need_recog = tracker.needs_recog(*linked_track, frame_id);
-                        // Even if no recog this frame, propagate cached name to label
-                        face_labels[f].name = linked_track->name;
-                        face_labels[f].sim  = linked_track->match_sim;
+                        need_recog = tracker->needs_recognition(linked_track->id, tracker_frame.timestamp_ms);
+                        // The Track snapshot remains authoritative even when
+                        // SCRFD temporarily misses a face in later frames.
+                        face_labels[f].resident_id = linked_track->identity.resident_id;
+                        face_labels[f].name = linked_track->identity.resident_id >= 0
+                            ? linked_track->identity.display_name : "unknown";
+                        face_labels[f].sim  = linked_track->identity.similarity;
                         face_labels[f].stat = need_recog ? 'r' : 'c';   // r=recog now, c=cached
                     } else {
                         // Face detected but no person track around it — recog anyway
@@ -641,7 +660,7 @@ int main(int argc, char** argv) {
                 } else {
                     if (face_db.size() == 0) { face_labels[f].stat = 'D'; continue; }
                     int idx = face_db.match(emb, cfg.match_threshold, sim);
-                    if (idx >= 0) { name = face_db.all()[idx].name; stat = 'M'; }
+                    if (idx >= 0) { name = face_db.all()[idx].name; rid = idx; stat = 'M'; }
                     else          { name = "unknown";               stat = 'U'; }
                 }
 
@@ -651,15 +670,14 @@ int main(int argc, char** argv) {
                 face_labels[f].resident_id = rid;
 
                 if (linked_track) {
-                    tracker.record_recognition(linked_track->id, name, sim, frame_id);
-                    // linked_track pointer may have been invalidated by identity
-                    // inheritance (which reorders IDs), so re-lookup for logging.
                     face_labels[f].track_id = linked_track->id;
-                    // Record the authoritative track_id -> resident_id link so
-                    // cached frames (and the overlay) resolve the ID directly,
-                    // never by ambiguous name (P1-2). Only on a real match.
-                    if (use_resident_db && rid >= 0) {
-                        track_resident_id[linked_track->id] = rid;
+                    tracker->record_recognition(linked_track->id, rid, name, sim,
+                                                tracker_frame.timestamp_ms);
+                    if (auto refreshed = tracker->find_track(linked_track->id)) {
+                        face_labels[f].resident_id = refreshed->identity.resident_id;
+                        face_labels[f].name = refreshed->identity.resident_id >= 0
+                            ? refreshed->identity.display_name : "unknown";
+                        face_labels[f].sim = refreshed->identity.similarity;
                     }
                 }
             }
@@ -687,9 +705,8 @@ int main(int argc, char** argv) {
         //   - tracker on : the face's track_id (stable across frames)
         //   - tracker off: the single largest face gets key 0 (others ignored,
         //                  a cabin only greets the person in front of it)
-        // MatchResult resident_id/similarity come from face_labels; for cached
-        // tracker frames (no recog this frame) we resolve the resident_id from
-        // the track_id -> resident_id map recorded at the last real match (P1-2).
+        // MatchResult resident_id/similarity come directly from TrackView's
+        // latched identity on cached frames; there is no parallel name-keyed map.
         if (use_resident_db) {
             subjects.clear();
             for (size_t f = 0; f < faces.size(); ++f) {
@@ -706,13 +723,6 @@ int main(int argc, char** argv) {
                 MatchResult mr;
                 mr.similarity  = L.sim;
                 mr.resident_id = L.resident_id;
-                // Cached tracker frame: label carries a cached name but no
-                // resident_id. Resolve it from the track's authoritative id
-                // link (never by name — avoids duplicate-name ambiguity).
-                if (mr.resident_id < 0 && use_tracker && L.track_id >= 0) {
-                    auto it = track_resident_id.find(L.track_id);
-                    if (it != track_resident_id.end()) mr.resident_id = it->second;
-                }
                 subjects.emplace_back(subject_key, mr);
             }
 
@@ -761,7 +771,7 @@ int main(int argc, char** argv) {
         // ---- Draw overlay ----
         // Prefer drawing tracks (if enabled) over raw face bboxes for stability.
         if (use_tracker) {
-            draw_tracker_overlay(frame, tracker, faces, track_resident_id,
+            draw_tracker_overlay(frame, tracker->active_tracks(), faces,
                                  resident_by_id, ui, use_resident_db);
         } else {
             draw_scrfd_overlay(frame, faces, face_labels, resident_by_id,
@@ -776,9 +786,9 @@ int main(int argc, char** argv) {
             frames_since_report = 0;
             if (use_tracker) {
                 LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
-                          "recog=%.1f faces=%zu tracks=%d",
+                          "recog=%.1f faces=%zu tracked=%d active=%d",
                           frame_id, fps, t1-t0, t2-t1, t_yolo, t4-t3,
-                          t_recog_total, faces.size(), tracker.active_count());
+                          t_recog_total, faces.size(), tracker->tracked_count(), tracker->active_count());
             } else {
                 LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
                           "recog=%.1f faces=%zu",
@@ -789,9 +799,9 @@ int main(int argc, char** argv) {
         char hud[192];
         if (use_tracker) {
             std::snprintf(hud, sizeof(hud),
-                "FPS %.1f | cap %.1f pre %.1f yolo %.1f scrfd %.1f recog %.1f | tracks %d",
+                "FPS %.1f | cap %.1f pre %.1f yolo %.1f scrfd %.1f recog %.1f | tracked %d active %d",
                 fps, t1-t0, t2-t1, t_yolo, t4-t3, t_recog_total,
-                tracker.active_count());
+                tracker->tracked_count(), tracker->active_count());
         } else {
             std::snprintf(hud, sizeof(hud),
                 "FPS %.1f | cap %.1f pre %.1f npu %.1f recog %.1f | faces %zu",

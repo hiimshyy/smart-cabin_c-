@@ -6,7 +6,7 @@
 #include <opencv2/core.hpp>
 
 #include "detection.h"     // Detection
-#include "tracker.h"       // Track, Tracker
+#include "tracker_types.h" // TrackView
 #include "resident_db.h"   // Resident
 #include "face_label.h"    // FaceLabel
 
@@ -34,9 +34,8 @@ struct UiScale {
 };
 
 // Tracker-mode overlay: person track rectangles + labels, then face bboxes.
-void draw_tracker_overlay(cv::Mat& frame, Tracker& tracker,
+void draw_tracker_overlay(cv::Mat& frame, const std::vector<TrackView>& tracks,
                           const std::vector<Detection>& faces,
-                          const std::map<int, int64_t>& track_resident_id,
                           const std::map<int64_t, Resident>& resident_by_id,
                           const UiScale& ui, bool use_resident_db);
 

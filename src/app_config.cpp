@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <climits>
-
+#include <cmath>
 // Moved verbatim from main.cpp (spec main-cpp-refactor). Usage text is
 // byte-for-byte identical to the Baseline and emitted to stderr.
 void print_usage(const char* prog) {
@@ -30,10 +30,14 @@ void print_usage(const char* prog) {
         "    --unknown-after-ms N  Present-but-unmatched timeout to log unknown (default 2000)\n"
         "    --match-thr F         Cosine similarity threshold (default 0.35)\n"
         "    --person-model PATH   Enable YOLO person detection + tracker\n"
-        "    --person-thr F        Person score threshold (default 0.5)\n"
+        "    --person-thr F        High person score threshold (default 0.5)\n"
+        "    --person-low-thr F    Low ByteTrack score threshold (default 0.1)\n"
         "    --person-every N      Only run YOLO every N frames (default 1)\n"
         "    --track-iou F         Min IoU for track association (default 0.3)\n"
         "    --track-max-miss N    Kill track after N missed frames (default 30)\n"
+        "    --track-lost-ms N     ByteTrack removal timeout (default 1200)\n"
+        "    --tracker-mode MODE   greedy|byte (default greedy during rollout)\n"
+        "    --track-conflict-recovery  Enable admin-only known-identity probes\n"
         "    --recog-retry N       Re-verify recognition every N frames (default 90)\n"
         "    --ui-scale F          Overlay text/box scale. 0=auto(frame.h/480), 2.0=fix 2x\n"
         "    --source URL          RTSP/HTTP/file source (GStreamer)\n"
@@ -94,9 +98,21 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         else if (sv("--match-thr"))      { cfg.match_threshold = (float)std::atof(argv[++i]); cfg.passed.match_thr = true; }
         else if (sv("--person-model"))   cfg.person_model_path = argv[++i];
         else if (sv("--person-thr"))     cfg.person_thr = (float)std::atof(argv[++i]);
+        else if (sv("--person-low-thr")) cfg.person_low_thr = (float)std::atof(argv[++i]);
         else if (sv("--person-every"))   cfg.person_every = std::max(1, std::atoi(argv[++i]));
         else if (sv("--track-iou"))      cfg.track_iou = (float)std::atof(argv[++i]);
         else if (sv("--track-max-miss")) cfg.track_max_miss = std::atoi(argv[++i]);
+        else if (sv("--track-lost-ms"))  cfg.track_lost_ms = std::atoi(argv[++i]);
+        else if (sv("--tracker-mode")) {
+            const char* mode = argv[++i];
+            if (std::strcmp(mode, "greedy") == 0) cfg.tracker_mode = TrackerMode::Greedy;
+            else if (std::strcmp(mode, "byte") == 0) cfg.tracker_mode = TrackerMode::Byte;
+            else {
+                std::fprintf(stderr, "invalid --tracker-mode: %s (expected greedy|byte)\n", mode);
+                res.invalid_args = true; return res;
+            }
+        }
+        else if (std::strcmp(a, "--track-conflict-recovery") == 0) cfg.track_conflict_recovery = true;
         else if (sv("--recog-retry"))    cfg.recog_retry = std::atoi(argv[++i]);
         else if (sv("--ui-scale"))       cfg.ui_scale_override = (float)std::atof(argv[++i]);
         else if (sv("--source"))         { cfg.source_url = argv[++i]; cfg.passed.source = true; }
@@ -112,6 +128,17 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
             res.help_requested = true;
             return res;
         }
+    }
+    if (!std::isfinite(cfg.person_low_thr) || !std::isfinite(cfg.person_thr) ||
+        cfg.person_low_thr < 0.0f || cfg.person_low_thr >= cfg.person_thr || cfg.person_thr > 1.0f) {
+        std::fprintf(stderr, "invalid person thresholds: require 0 <= --person-low-thr < --person-thr <= 1\n");
+        res.invalid_args = true;
+    } else if (!std::isfinite(cfg.track_iou) || cfg.track_iou < 0.0f || cfg.track_iou > 1.0f) {
+        std::fprintf(stderr, "invalid --track-iou: require 0 <= value <= 1\n");
+        res.invalid_args = true;
+    } else if (cfg.track_lost_ms <= 250) {
+        std::fprintf(stderr, "invalid --track-lost-ms: must exceed lost grace 250ms\n");
+        res.invalid_args = true;
     }
     return res;
 }

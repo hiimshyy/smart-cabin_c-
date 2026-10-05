@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "interaction.h"
+#include "person_tracker.h"
 #include "resident_catalog.h"
 #include "tracker.h"
 
@@ -22,4 +23,11 @@ CatalogReconcileResult reconcile_catalog_runtime(
     bool use_tracker,
     Tracker& tracker,
     std::map<int, int64_t>& track_resident_id,
+    InteractionManager& interaction);
+
+// Snapshot-based tracker path.  Identity lives inside PersonTracker, so no
+// external track->resident map can drift from the tracker at reload time.
+CatalogReconcileResult reconcile_catalog_runtime(
+    const CatalogDiff& diff,
+    PersonTracker* tracker,
     InteractionManager& interaction);

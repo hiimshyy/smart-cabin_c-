@@ -33,11 +33,48 @@ g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
     -o "$OUT/test_video_wait" && "$OUT/test_video_wait" || fail=1
 
 echo ""
+echo "== Person-triggered video recorder =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_event_video_recorder.cpp src/event_video_recorder.cpp src/log/logger.cpp \
+    $(pkg-config --libs opencv4) -lpthread \
+    -o "$OUT/test_event_video_recorder" && "$OUT/test_event_video_recorder" || fail=1
+
+echo ""
 echo "== MatchEngine =="
 g++ -std=c++17 -Isrc \
     tests/test_match_engine.cpp src/match_engine.cpp src/log/logger.cpp \
     -lpthread \
     -o "$OUT/test_match_engine" && "$OUT/test_match_engine" || fail=1
+
+echo ""
+echo "== Linear assignment =="
+g++ -std=c++17 -Isrc \
+    tests/test_linear_assignment.cpp src/linear_assignment.cpp \
+    -o "$OUT/test_linear_assignment" && "$OUT/test_linear_assignment" || fail=1
+
+echo ""
+echo "== Kalman box tracker =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_kalman_box_tracker.cpp src/kalman_box_tracker.cpp \
+    $(pkg-config --libs opencv4) -o "$OUT/test_kalman_box_tracker" && "$OUT/test_kalman_box_tracker" || fail=1
+
+echo ""
+echo "== Greedy fallback threshold =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_greedy_adapter.cpp src/tracker_greedy.cpp src/tracker.cpp src/log/logger.cpp \
+    -lpthread -o "$OUT/test_greedy_adapter" && "$OUT/test_greedy_adapter" || fail=1
+
+echo ""
+echo "== ByteTrack core =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_byte_tracker.cpp src/byte_tracker.cpp src/kalman_box_tracker.cpp src/linear_assignment.cpp \
+    $(pkg-config --libs opencv4) -o "$OUT/test_byte_tracker" && "$OUT/test_byte_tracker" || fail=1
+
+echo ""
+echo "== Face-to-track association =="
+g++ -std=c++17 -Isrc \
+    tests/test_face_track_assoc.cpp src/face_track_assoc.cpp src/linear_assignment.cpp \
+    -o "$OUT/test_face_track_assoc" && "$OUT/test_face_track_assoc" || fail=1
 
 echo ""
 echo "== Tracker catalog invalidation =="

@@ -24,6 +24,11 @@ struct MatchResult {
     int     emb_index   = -1;   // which stored vector won (debug / future use)
 };
 
+struct MatchTop2 {
+    MatchResult best;
+    MatchResult runner_up;  // best distinct resident; resident_id=-1 if absent
+};
+
 class MatchEngine {
 public:
     MatchEngine() = default;
@@ -44,6 +49,7 @@ public:
     // below `threshold`, resident_id stays -1 (unknown) but similarity still
     // reports the best score seen (useful for logging).
     MatchResult match(const std::vector<float>& query, float threshold) const;
+    MatchTop2 match_top2(const std::vector<float>& query, float threshold) const;
 
     int    dim()          const { return dim_; }
     size_t vector_count() const { return owner_.size(); }

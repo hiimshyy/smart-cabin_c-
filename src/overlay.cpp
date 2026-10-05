@@ -29,21 +29,20 @@ UiScale UiScale::compute(int frame_h, float override_val) {
     return u;
 }
 
-void draw_tracker_overlay(cv::Mat& frame, Tracker& tracker,
+void draw_tracker_overlay(cv::Mat& frame, const std::vector<TrackView>& tracks,
                           const std::vector<Detection>& faces,
-                          const std::map<int, int64_t>& track_resident_id,
                           const std::map<int64_t, Resident>& resident_by_id,
                           const UiScale& ui, bool use_resident_db) {
-    for (Track* t : tracker.active_tracks()) {
-        bool known    = !t->name.empty() && t->name != "unknown";
-        bool unknown_tried = t->name == "unknown";
-        cv::Scalar color = known ? cv::Scalar(0, 255, 0)     // green
-                         : unknown_tried ? cv::Scalar(0, 0, 255)   // red
-                         : cv::Scalar(200, 200, 0);          // yellow (untried)
+    for (const TrackView& t : tracks) {
+        const bool known = t.identity.resident_id >= 0 && t.identity.latched;
+        cv::Scalar color = t.state == ByteTrackState::Lost
+                         ? cv::Scalar(140, 140, 140)         // stale predicted box
+                         : known ? cv::Scalar(0, 255, 0)    // green
+                                 : cv::Scalar(0, 0, 255);   // red = unknown
 
         cv::rectangle(frame,
-                      cv::Point(cvRound(t->x1), cvRound(t->y1)),
-                      cv::Point(cvRound(t->x2), cvRound(t->y2)),
+                      cv::Point(cvRound(t.box.x1), cvRound(t.box.y1)),
+                      cv::Point(cvRound(t.box.x2), cvRound(t.box.y2)),
                       color, ui.line_thick);
         char lbl[128];
         if (known) {
@@ -51,30 +50,25 @@ void draw_tracker_overlay(cv::Mat& frame, Tracker& tracker,
             // when unregistered) so the operator sees the destination.
             if (use_resident_db) {
                 int hf = -999;
-                auto nit = track_resident_id.find(t->id);
-                if (nit != track_resident_id.end()) {
-                    auto rit = resident_by_id.find(nit->second);
-                    if (rit != resident_by_id.end()) hf = rit->second.home_floor;
-                }
+                auto rit = resident_by_id.find(t.identity.resident_id);
+                if (rit != resident_by_id.end()) hf = rit->second.home_floor;
                 if (hf > HOME_FLOOR_UNSET) {
                     std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f F%d",
-                                  t->id, t->name.c_str(), t->match_sim, hf);
+                                  t.id, t.identity.display_name.c_str(), t.identity.similarity, hf);
                 } else {
                     std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f F?",
-                                  t->id, t->name.c_str(), t->match_sim);
+                                  t.id, t.identity.display_name.c_str(), t.identity.similarity);
                 }
             } else {
                 std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f",
-                              t->id, t->name.c_str(), t->match_sim);
+                              t.id, t.identity.display_name.c_str(), t.identity.similarity);
             }
-        } else if (unknown_tried) {
-            std::snprintf(lbl, sizeof(lbl), "#%d unknown", t->id);
         } else {
-            std::snprintf(lbl, sizeof(lbl), "#%d ...", t->id);
+            std::snprintf(lbl, sizeof(lbl), "#%d unknown", t.id);
         }
         cv::putText(frame, lbl,
-                    cv::Point(cvRound(t->x1),
-                              cvRound(t->y1) - std::max(4, (int)(6 * ui.scale))),
+                    cv::Point(cvRound(t.box.x1),
+                              cvRound(t.box.y1) - std::max(4, (int)(6 * ui.scale))),
                     cv::FONT_HERSHEY_SIMPLEX, ui.font_label,
                     color, ui.text_thick);
     }
