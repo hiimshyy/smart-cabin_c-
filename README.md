@@ -168,6 +168,29 @@ face_bench_rtsp URL 200            # bench trên RTSP
 face_ls                            # liệt kê DB + folders enroll
 ```
 
+`face_cabin` tự ghi video raw khi tracker xác nhận có người vào `recordings/`.
+Mỗi clip gồm 1 giây trước lúc xác nhận và dừng sau khi cabin trống liên tục 3 giây.
+File đang ghi có hậu tố `.partial.avi`; khi đóng thành công sẽ đổi thành `.avi`.
+
+```bash
+# Đổi nơi lưu/thời gian giữ phần cabin trống rồi source lại:
+export FACE_RECORD_DIR=/mnt/data/cabin-clips
+export FACE_RECORD_PRE_MS=1000
+export FACE_RECORD_EMPTY_MS=5000
+export FACE_RECORD_FPS=15
+export FACE_RECORD_WIDTH=960
+source env.sh
+
+# Tắt record tự động:
+export FACE_RECORD_DIR=""
+source env.sh
+```
+
+Khi chạy binary trực tiếp, dùng `--record-dir DIR`; tùy chọn đi kèm là
+`--record-pre-ms`, `--record-empty-ms`, `--record-fps` và `--record-width`.
+Recorder cần `--person-model`, ghi frame trước overlay để dataset không chứa
+box/HUD, và encode trên worker riêng để không chặn inference loop.
+
 Áp vĩnh viễn:
 ```bash
 echo "source $(pwd)/env.sh" >> ~/.bashrc

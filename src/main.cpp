@@ -58,6 +58,7 @@
 
 #include "app_config.h"
 #include "video_io.h"
+#include "event_video_recorder.h"
 #include "overlay.h"
 #include "benchmark.h"
 #include "face_label.h"
@@ -212,8 +213,17 @@ int main(int argc, char** argv) {
                  is_stream ? "GStreamer" : "V4L2 MJPG");
     }
 
+    EventVideoRecorderConfig recorder_config;
+    recorder_config.output_dir = cfg.record_dir ? cfg.record_dir : "";
+    recorder_config.fps = cfg.record_fps;
+    recorder_config.pre_roll_ms = cfg.record_pre_ms;
+    recorder_config.empty_stop_ms = cfg.record_empty_ms;
+    recorder_config.output_width = cfg.record_width;
+    recorder_config.cabin_id = cfg.cabin_id;
+    EventVideoRecorder event_recorder(std::move(recorder_config));
+
     FrameSlot   slot;
-    std::thread cap_th(capture_worker, &cap, &slot, cam_cfg);
+    std::thread cap_th(capture_worker, &cap, &slot, cam_cfg, &event_recorder);
     LOG_INFO("cam", "capture thread started (reconnect backoff %d-%d ms)",
              cfg.reconnect_min_ms, cfg.reconnect_max_ms);
 
@@ -562,6 +572,11 @@ int main(int argc, char** argv) {
         // No: we shouldn't kill tracks just because we skipped YOLO. Skip update.
         double t3 = now_ms();
 
+        // Capture thread supplies every raw camera frame to the recorder.
+        // Inference only updates the stable presence trigger.
+        event_recorder.set_person_present(tracker && tracker->tracked_count() > 0,
+                                          tracker_frame.timestamp_ms);
+
         // ---- SCRFD face detect ----
         void* det_inputs[] = { npu_input.data() };
         awnn_set_input_buffers(det_ctx, det_inputs);
@@ -830,6 +845,8 @@ int main(int argc, char** argv) {
         if (g_stop.load()) break;
         if (cfg.max_frames > 0 && frame_id >= cfg.max_frames) break;
     }
+
+    event_recorder.close();
 
     // ---- Summary (benchmark report — user-facing table) ------------------
     double run_secs = (now_ms() - run_start) / 1000.0;

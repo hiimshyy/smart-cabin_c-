@@ -1,5 +1,10 @@
 # Design — AI Core ↔ Edge Core qua Unix Domain Socket (edge-core-uds)
 
+> **Legacy design — 2026-10-06:** thiết kế này khớp implementation UDS đang chạy nhưng đã bị thay
+> thế cho hướng phát triển mới bởi Socket.IO v4. Không tái sử dụng header 8 byte hay tag `0x100x`
+> bên trong WebSocket. Thiết kế migration và các quyết định còn thiếu nằm tại
+> [websocket-migration-review.md](websocket-migration-review.md).
+
 **Spec ID**: `edge-core-uds`
 
 ## 1. Kiến trúc tổng thể

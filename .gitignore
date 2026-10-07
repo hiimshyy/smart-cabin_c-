@@ -19,6 +19,7 @@ tests/*.out
 
 # Runtime data (mỗi user có dataset riêng)
 faces/
+recordings/
 db/*.fdb
 
 # Log output (fallback ./logs + any local log dir)

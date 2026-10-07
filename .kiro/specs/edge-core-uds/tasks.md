@@ -1,5 +1,9 @@
 # Tasks — AI Core ↔ Edge Core qua Unix Domain Socket (edge-core-uds)
 
+> **Migration note — 2026-10-06:** các task `[x]` bên dưới là lịch sử implementation UDS hiện tại,
+> không phải trạng thái của transport WebSocket mới. Không mở rộng thêm UDS; thực hiện backlog
+> migration ở cuối file và theo [websocket-migration-review.md](websocket-migration-review.md).
+
 **Spec ID**: `edge-core-uds`
 
 ---
@@ -115,3 +119,41 @@ buộc "blocked-pending-Linux".
 
 Task 1–2 và test 6.2–6.3 làm được **độc lập, không cần Orange Pi** (chỉ g++). Task 3–5 cần verify
 link đầy đủ trên Orange Pi.
+
+---
+
+## Backlog migration sang Socket.IO v4
+
+- [ ] W0. Chốt contract nghiệp vụ còn thiếu
+  - [x] W0.1 AI Core chỉ emit `FACE_RECOGNIZED`/`FACE_UNKNOWN`; service nhận event quyết định tầng.
+    AI Core không subscribe register và không gửi `Client/command`.
+  - [ ] W0.2 Chốt URL service, authentication và service-side ownership của endpoint.
+  - [ ] W0.3 Chốt ack success/error schema, timeout, retry và idempotency.
+  - [ ] W0.4 Chốt `ws://` hay `wss://`, authentication header/query và certificate policy.
+
+- [ ] W1. Tách protocol codec khỏi `socket_test.cpp`
+  - [ ] W1.1 RFC 6455 handshake/frame codec với client masking, fragmentation, ping/pong/close,
+    payload limit và validate `Sec-WebSocket-Accept`.
+  - [ ] W1.2 Engine.IO 4 state machine: open `0`, namespace connect `40`, ping `2` → pong `3`.
+  - [ ] W1.3 Socket.IO event/ack codec, ack id tăng đơn điệu và pending-request map.
+  - [ ] W1.4 JSON parser có cấu trúc; không đưa regex/parser phẳng trong sample vào production.
+
+- [ ] W2. Implement `FaceEventSocketClient`, non-blocking
+  - [ ] W2.1 TCP connect + WebSocket/Socket.IO handshake + namespace + reconnect/backoff/jitter.
+  - [ ] W2.2 Bounded outbound face-event queue; overflow phải reject/coalesce có metric, không
+    drop-oldest âm thầm.
+  - [ ] W2.3 Emit `FACE_RECOGNIZED`/`FACE_UNKNOWN` theo schema, timestamp Unix epoch ms.
+  - [ ] W2.4 Ack correlation + eventId dedupe + timeout/retry theo at-least-once delivery.
+
+- [ ] W3. Config và main integration
+  - [ ] W3.1 Thay `--edge-socket` bằng config endpoint WebSocket có migration/rollback rõ ràng.
+  - [ ] W3.2 Nối confirmed outcome → `FACE_RECOGNIZED`, unknown outcome → `FACE_UNKNOWN`; không có
+    đường gọi `Client/command` trong AI Core.
+  - [ ] W3.3 Giữ transport UDS sau feature flag trong một release để rollback; không chạy đồng thời
+    hai transport gửi cùng một hành động.
+
+- [ ] W4. Verification
+  - [ ] W4.1 Unit tests WebSocket frame/fragment/control/masking và handshake validation.
+  - [ ] W4.2 Engine.IO/Socket.IO transcript tests từ sample, gồm packet bị chia/dính.
+  - [ ] W4.3 Fake server nhận face event, trả ack/error/timeout và test reconnect/dedupe.
+  - [ ] W4.4 Live test với service nhận face event; xác nhận AI Core không phát lệnh gọi tầng.
