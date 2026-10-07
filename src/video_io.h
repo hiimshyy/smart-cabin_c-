@@ -8,6 +8,8 @@
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
 
+class EventVideoRecorder;
+
 // Threaded video capture + display (spec main-cpp-refactor, Video_IO_Module).
 // All structs and functions are moved verbatim from main.cpp; the
 // synchronization fields (mutex/condition_variable/seq/stop) are unchanged so
@@ -63,7 +65,8 @@ bool        open_capture(cv::VideoCapture& cap, const CamConfig& cfg);
 
 // Capture thread. Reads frames into the latest-frame slot; reconnects with
 // exponential backoff when the source drops.
-void        capture_worker(cv::VideoCapture* cap, FrameSlot* slot, CamConfig cfg);
+void        capture_worker(cv::VideoCapture* cap, FrameSlot* slot, CamConfig cfg,
+                           EventVideoRecorder* recorder);
 
 // Display thread. imshow loop + q/ESC handling. stop_flag stays owned by main.
 void        display_worker(const char* win_name, DisplaySlot* slot,

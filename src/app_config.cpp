@@ -6,6 +6,34 @@
 #include <cerrno>
 #include <climits>
 #include <cmath>
+
+namespace {
+
+bool parse_int_in_range(const char* value, int minimum, int maximum, int& result) {
+    if (!value) return false;
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(value, &end, 10);
+    if (errno || end == value || *end != '\0' || parsed < minimum || parsed > maximum)
+        return false;
+    result = static_cast<int>(parsed);
+    return true;
+}
+
+bool parse_double_in_range(const char* value, double minimum, double maximum, double& result) {
+    if (!value) return false;
+    char* end = nullptr;
+    errno = 0;
+    const double parsed = std::strtod(value, &end);
+    if (errno || end == value || *end != '\0' || !std::isfinite(parsed) ||
+        parsed < minimum || parsed > maximum)
+        return false;
+    result = parsed;
+    return true;
+}
+
+}  // namespace
+
 // Moved verbatim from main.cpp (spec main-cpp-refactor). Usage text is
 // byte-for-byte identical to the Baseline and emitted to stderr.
 void print_usage(const char* prog) {
@@ -38,6 +66,11 @@ void print_usage(const char* prog) {
         "    --track-lost-ms N     ByteTrack removal timeout (default 1200)\n"
         "    --tracker-mode MODE   greedy|byte (default greedy during rollout)\n"
         "    --track-conflict-recovery  Enable admin-only known-identity probes\n"
+        "    --record-dir DIR      Record raw person-presence clips (disabled by default)\n"
+        "    --record-pre-ms N     Include N ms before person confirmation (default 1000)\n"
+        "    --record-empty-ms N   Stop after N ms without a tracked person (default 3000)\n"
+        "    --record-fps F        MJPEG/AVI output FPS (default 15)\n"
+        "    --record-width N      Output width; 0 keeps source width (default 960)\n"
         "    --recog-retry N       Re-verify recognition every N frames (default 90)\n"
         "    --ui-scale F          Overlay text/box scale. 0=auto(frame.h/480), 2.0=fix 2x\n"
         "    --source URL          RTSP/HTTP/file source (GStreamer)\n"
@@ -113,6 +146,41 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
             }
         }
         else if (std::strcmp(a, "--track-conflict-recovery") == 0) cfg.track_conflict_recovery = true;
+        else if (std::strcmp(a, "--record-dir") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '\0' || argv[i + 1][0] == '-') {
+                std::fprintf(stderr, "--record-dir requires a non-empty directory\n");
+                res.invalid_args = true; return res;
+            }
+            cfg.record_dir = argv[++i];
+        }
+        else if (std::strcmp(a, "--record-pre-ms") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 0, INT_MAX, cfg.record_pre_ms)) {
+                std::fprintf(stderr, "--record-pre-ms requires a non-negative integer\n");
+                res.invalid_args = true; return res;
+            }
+            ++i;
+        }
+        else if (std::strcmp(a, "--record-empty-ms") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 1, INT_MAX, cfg.record_empty_ms)) {
+                std::fprintf(stderr, "--record-empty-ms requires a positive integer\n");
+                res.invalid_args = true; return res;
+            }
+            ++i;
+        }
+        else if (std::strcmp(a, "--record-fps") == 0) {
+            if (i + 1 >= argc || !parse_double_in_range(argv[i + 1], 1.0, 120.0, cfg.record_fps)) {
+                std::fprintf(stderr, "--record-fps requires a number in [1, 120]\n");
+                res.invalid_args = true; return res;
+            }
+            ++i;
+        }
+        else if (std::strcmp(a, "--record-width") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 0, 7680, cfg.record_width)) {
+                std::fprintf(stderr, "--record-width requires an integer in [0, 7680]\n");
+                res.invalid_args = true; return res;
+            }
+            ++i;
+        }
         else if (sv("--recog-retry"))    cfg.recog_retry = std::atoi(argv[++i]);
         else if (sv("--ui-scale"))       cfg.ui_scale_override = (float)std::atof(argv[++i]);
         else if (sv("--source"))         { cfg.source_url = argv[++i]; cfg.passed.source = true; }
@@ -138,6 +206,9 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         res.invalid_args = true;
     } else if (cfg.track_lost_ms <= 250) {
         std::fprintf(stderr, "invalid --track-lost-ms: must exceed lost grace 250ms\n");
+        res.invalid_args = true;
+    } else if (cfg.record_dir && !cfg.person_model_path) {
+        std::fprintf(stderr, "--record-dir requires --person-model for person presence detection\n");
         res.invalid_args = true;
     }
     return res;

@@ -41,6 +41,7 @@ DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
 # by face_recog_app — do NOT add to COMMON_SRCS (other tools don't need them).
 APP_ONLY_SRCS := $(SRC_DIR)/app_config.cpp \
                  $(SRC_DIR)/video_io.cpp \
+                 $(SRC_DIR)/event_video_recorder.cpp \
                  $(SRC_DIR)/overlay.cpp \
                  $(SRC_DIR)/benchmark.cpp \
                  $(SRC_DIR)/resident_reconcile.cpp

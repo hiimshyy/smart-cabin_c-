@@ -6,6 +6,7 @@
 
 #include <opencv2/highgui.hpp>
 
+#include "event_video_recorder.h"
 #include "log/logger.h"
 
 // All six functions moved verbatim from main.cpp (spec main-cpp-refactor).
@@ -58,7 +59,7 @@ FrameWaitResult wait_for_frame_or_deadline(FrameSlot* slot,
 // down and reopens it with exponential backoff instead of spinning forever on
 // a dead handle (DEVELOPMENT_PLAN: RTSP reconnect).
 void capture_worker(cv::VideoCapture* cap, FrameSlot* slot,
-                    CamConfig cfg) {
+                    CamConfig cfg, EventVideoRecorder* recorder) {
     cv::Mat local;
     int  consecutive_fails = 0;
     int  backoff_ms        = cfg.backoff_min_ms;
@@ -75,6 +76,11 @@ void capture_worker(cv::VideoCapture* cap, FrameSlot* slot,
             // Healthy frame: reset failure tracking and publish it.
             consecutive_fails = 0;
             backoff_ms        = cfg.backoff_min_ms;
+            if (recorder) {
+                const double timestamp_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                recorder->push_frame(local, timestamp_ms);
+            }
             {
                 std::lock_guard<std::mutex> lk(slot->mtx);
                 if (slot->stop) return;

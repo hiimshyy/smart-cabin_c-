@@ -40,6 +40,25 @@ int main(){
     CHECK(bad_thr.result.invalid_args,"inverted person thresholds rejected");
     auto bad_mode=parse({"app","--tracker-mode","sort"});
     CHECK(bad_mode.result.invalid_args,"invalid tracker mode rejected");
+    auto record=parse({"app","--person-model","person.nb","--record-dir","clips",
+                       "--record-pre-ms","1500","--record-empty-ms","5000",
+                       "--record-fps","12.5","--record-width","1280"});
+    CHECK(!record.result.invalid_args && record.cfg.record_dir &&
+          std::string(record.cfg.record_dir)=="clips" && record.cfg.record_pre_ms==1500 &&
+          record.cfg.record_empty_ms==5000 && record.cfg.record_fps==12.5 &&
+          record.cfg.record_width==1280,
+          "person-triggered recording options parsed");
+    auto record_no_person=parse({"app","--record-dir","clips"});
+    CHECK(record_no_person.result.invalid_args,"recording requires person detector");
+    auto record_bad_empty=parse({"app","--person-model","person.nb","--record-dir","clips",
+                                 "--record-empty-ms","0"});
+    CHECK(record_bad_empty.result.invalid_args,"record empty timeout must be positive");
+    auto record_bad_fps=parse({"app","--person-model","person.nb","--record-dir","clips",
+                               "--record-fps","fast"});
+    CHECK(record_bad_fps.result.invalid_args,"record fps must be numeric");
+    auto record_bad_width=parse({"app","--person-model","person.nb","--record-dir","clips",
+                                 "--record-width","-1"});
+    CHECK(record_bad_width.result.invalid_args,"record width must be zero or positive");
     std::printf("\n[test_app_config] %d checks, %d failed\n",checks,failed);
     return failed?1:0;
 }

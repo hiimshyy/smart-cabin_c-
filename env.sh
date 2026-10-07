@@ -37,6 +37,10 @@ export FACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FACE_DET_MODEL="$FACE_ROOT/model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb"
 export FACE_RECOG_MODEL="$FACE_ROOT/model/face_recog/w600k_mbf_uint8_a733.nb"
 export FACE_PERSON_MODEL="$FACE_ROOT/model/person_det/yolov5s_rt_uint8_a733.nb"
+export FACE_TRACKER_MODE="${FACE_TRACKER_MODE:-byte}"
+export FACE_PERSON_THR="${FACE_PERSON_THR:-0.5}"
+export FACE_PERSON_LOW_THR="${FACE_PERSON_LOW_THR:-0.1}"
+export FACE_TRACK_LOST_MS="${FACE_TRACK_LOST_MS:-1200}"
 export FACE_DB_DIR="$FACE_ROOT/db"
 export FACE_RESIDENT_DB="$FACE_DB_DIR/residents.db"
 export FACE_SCHEMA="$FACE_DB_DIR/schema.sql"
@@ -62,6 +66,14 @@ export FACE_PG_NODE_PATH="${FACE_PG_NODE_PATH:-/home/orangepi/edge_elevator/node
 export FACE_CABIN_LOG_DIR="${FACE_CABIN_LOG_DIR:-$FACE_ROOT/logs}"
 mkdir -p "$FACE_CABIN_LOG_DIR" 2>/dev/null || true
 
+# Thu clip raw theo phiên có người để làm dataset. Đặt FACE_RECORD_DIR="" trước
+# khi source env.sh để tắt. Video có 1s pre-roll và đóng sau 3s cabin trống.
+export FACE_RECORD_DIR="${FACE_RECORD_DIR-$FACE_ROOT/recordings}"
+export FACE_RECORD_PRE_MS="${FACE_RECORD_PRE_MS:-1000}"
+export FACE_RECORD_EMPTY_MS="${FACE_RECORD_EMPTY_MS:-3000}"
+export FACE_RECORD_FPS="${FACE_RECORD_FPS:-15}"
+export FACE_RECORD_WIDTH="${FACE_RECORD_WIDTH:-960}"
+
 # X11 display
 [ -z "$DISPLAY" ]    && export DISPLAY=:0.0
 [ -z "$XAUTHORITY" ] && export XAUTHORITY="$HOME/.Xauthority"
@@ -80,6 +92,14 @@ face_cabin() {
     local db="${2:-$FACE_RESIDENT_DB}"
     local thr="${3:-0.35}"
     local lat="${4:-100}"
+    local record_args=()
+    if [ -n "${FACE_RECORD_DIR:-}" ]; then
+        record_args=(--record-dir "$FACE_RECORD_DIR"
+                     --record-pre-ms "$FACE_RECORD_PRE_MS"
+                     --record-empty-ms "$FACE_RECORD_EMPTY_MS"
+                     --record-fps "$FACE_RECORD_FPS"
+                     --record-width "$FACE_RECORD_WIDTH")
+    fi
     # Chưa có URL tay -> tự lấy từ PostgreSQL (camera cấu hình ở web).
     if [ -z "$url" ]; then
         url="$(NODE_PATH="$FACE_PG_NODE_PATH" node "$FACE_ROOT/scripts/get_camera_url.js" "$FACE_CAMERA_SELECT" 2>/dev/null)"
@@ -99,7 +119,12 @@ face_cabin() {
         --resident-db "$db" --cabin-id "${FACE_CABIN_ID:-1}" \
         --match-thr "$thr" \
         --person-model "$FACE_PERSON_MODEL" \
-        --source "$url" --gst-latency "$lat")
+        --tracker-mode "$FACE_TRACKER_MODE" \
+        --person-thr "$FACE_PERSON_THR" \
+        --person-low-thr "$FACE_PERSON_LOW_THR" \
+        --track-lost-ms "$FACE_TRACK_LOST_MS" \
+        --source "$url" --gst-latency "$lat" \
+        "${record_args[@]}")
 }
 
 # Liệt kê residents trong SQLite (id, tên, tầng, tên chào, số lần match).
@@ -387,6 +412,10 @@ face_help() {
    hoặc truyền trực tiếp: face_cabin rtsp://admin:pass@ip:554/stream1
    home_floor=0 = "chưa đăng ký tầng": vẫn chào tên, overlay hiện F?.
    Đặt FACE_CABIN_ID=N để đổi cabin id (default 1).
+   FACE_TRACKER_MODE=byte|greedy (default byte), cùng các biến FACE_PERSON_THR,
+   FACE_PERSON_LOW_THR và FACE_TRACK_LOST_MS để tinh chỉnh tracker.
+   Auto-record raw vào $FACE_RECORD_DIR khi có người; mặc định recordings/.
+   Đặt FACE_RECORD_DIR="" rồi source lại để tắt. PRE_MS=1000, EMPTY_MS=3000.
 
  ── Quản lý dữ liệu (enroll → SQLite residents.db) ──
    face_capture NAME [N] [MIN]    Chụp N frames của 1 người (ra folder)

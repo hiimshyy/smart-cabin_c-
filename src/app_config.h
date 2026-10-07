@@ -15,6 +15,7 @@ struct AppConfig {
     const char* source_url        = nullptr;
     const char* custom_pipeline   = nullptr;
     const char* edge_socket       = nullptr;   // UDS path to Edge Core ("" / null = disabled)
+    const char* record_dir        = nullptr;   // Person-triggered raw video; null = disabled
 
     int    cam_id           = 0;
     int    max_frames       = 0;
@@ -25,12 +26,16 @@ struct AppConfig {
     int    person_every     = 1;
     int    track_max_miss   = 30;
     int    track_lost_ms    = 1200;
+    int    record_pre_ms    = 1000;
+    int    record_empty_ms  = 3000;
+    int    record_width     = 960;
     int    recog_retry      = 90;
     int    resident_reload_ms = 1000; // SQLite resident/embedding hot-reload; 0=disabled
     int    cabin_id         = 1;
     int    confirm_streak   = 5;
     double cooldown_ms       = 3000.0;
     double unknown_after_ms  = 2000.0;
+    double record_fps        = 15.0;
     float  track_iou         = 0.3f;
     float  person_thr        = 0.5f;
     float  person_low_thr    = 0.1f;

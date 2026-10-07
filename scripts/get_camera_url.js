@@ -23,7 +23,7 @@ const pool = new Pool({
   host: process.env.PG_HOST || '127.0.0.1',
   port: parseInt(process.env.PG_PORT, 10) || 5432,
   user: process.env.PG_USER || 'embody_master',
-  password: process.env.PG_PASSWORD || 'embodyy\u03006',
+  password: process.env.PG_PASSWORD || 'embody2026',
   database: process.env.PG_DATABASE || 'elevator_db',
   connectionTimeoutMillis: 4000,   // đừng treo mãi nếu PG không phản hồi
 });
