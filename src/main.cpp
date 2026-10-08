@@ -64,6 +64,8 @@
 #include "face_label.h"
 #include "cabin_config.h"
 #include "edge_client.h"
+#include "floor_call_coordinator.h"
+#include "socketio_client.h"
 #include <memory>
 
 static constexpr int NPU_INPUT_W = 640;
@@ -253,6 +255,8 @@ int main(int argc, char** argv) {
     MatchEngine         match_engine;
     InteractionManager  interaction;
     std::unique_ptr<EdgeClient> edge;   // nullptr unless --edge-socket given
+    std::unique_ptr<SocketIoClient> iot_socket; // async direct floor command client
+    std::shared_ptr<FloorCallCoordinator> floor_calls;
     std::map<int64_t, Resident> resident_by_id;   // id -> metadata for overlay
     bool                use_resident_db = false;
 
@@ -382,6 +386,64 @@ int main(int argc, char** argv) {
                              cfg.edge_socket, cfg.cabin_id);
                 }
             }
+
+            // Direct floor-call channel. Socket I/O and ack handling stay off the
+            // inference thread; confirmed outcomes only enqueue a home_floor value.
+            if (cfg.iot_ws && cfg.iot_ws[0]) {
+                SocketIoConfig sc;
+                sc.endpoint = cfg.iot_ws;
+                sc.device_code = cfg.iot_device_code;
+                sc.floor_address = cfg.iot_floor_address;
+                sc.request_id = cfg.iot_request_id;
+                sc.reconnect_min_ms = eff.reconnect_min_ms;
+                sc.reconnect_max_ms = eff.reconnect_max_ms;
+                sc.command_max_age_ms = cfg.floor_command_ttl_ms;
+                sc.ack_timeout_ms = cfg.floor_ack_timeout_ms;
+                iot_socket = std::make_unique<SocketIoClient>(std::move(sc));
+                if (!iot_socket->start()) {
+                    LOG_WARN("socketio", "invalid Socket.IO floor-call configuration; client disabled");
+                    iot_socket.reset();
+                } else {
+                    FloorCallConfig fc;
+                    fc.cabin_id = cfg.cabin_id;
+                    fc.floors_min = eff.floors_min;
+                    fc.floors_max = eff.floors_max;
+                    fc.session_empty_ms = cfg.floor_session_empty_ms;
+                    fc.max_commands_per_visit = cfg.floor_max_commands_per_visit;
+                    fc.request_id_prefix = cfg.iot_request_id;
+                    floor_calls = std::make_shared<FloorCallCoordinator>(
+                        fc, [&socket = iot_socket](const FloorCallCommand& command) {
+                            return socket && socket->enqueue_floor(
+                                SocketIoFloorCommand{command.request_id, command.floor, command.value});
+                        });
+                    floor_calls->set_decision_callback([](const FloorCallDecision& d) {
+                        LOG_INFO("floor-call", "visit_id=%llu request_id=%s resident_id=%lld floor=%d "
+                                 "state=%s reason=%s",
+                                 (unsigned long long)d.visit_id, d.request_id.c_str(),
+                                 (long long)d.resident_id, d.floor, floor_call_state_name(d.state),
+                                 d.reason.empty() ? "-" : d.reason.c_str());
+                    });
+                    std::weak_ptr<FloorCallCoordinator> floor_calls_weak = floor_calls;
+                    iot_socket->set_status_callback([floor_calls_weak](const SocketIoCommandResult& result) {
+                        if (const auto calls = floor_calls_weak.lock()) {
+                            FloorCallState state = FloorCallState::AckedError;
+                            switch (result.state) {
+                                case SocketIoCommandState::Sent:           state = FloorCallState::Sent; break;
+                                case SocketIoCommandState::AckedSuccess:   state = FloorCallState::AckedSuccess; break;
+                                case SocketIoCommandState::AckedDuplicate: state = FloorCallState::AckedDuplicate; break;
+                                case SocketIoCommandState::AckedError:     state = FloorCallState::AckedError; break;
+                                case SocketIoCommandState::Expired:        state = FloorCallState::Expired; break;
+                                case SocketIoCommandState::Ambiguous:      state = FloorCallState::Ambiguous; break;
+                            }
+                            const std::string reason = result.code.empty()
+                                ? result.message : result.code + ":" + result.message;
+                            calls->on_transport_state(result.request_id, state, reason);
+                        }
+                    });
+                    LOG_INFO("socketio", "direct floor-call client enabled address=%s",
+                             cfg.iot_floor_address);
+                }
+            }
         } else if (cfg.face_db_path && face_db.load(cfg.face_db_path)) {
             LOG_INFO("recog", "loaded .fdb %s: %zu identities, dim=%d",
                      cfg.face_db_path, face_db.size(), face_db.dim());
@@ -458,8 +520,14 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> npu_input(NPU_INPUT_W * NPU_INPUT_H * 3);
 
     DisplaySlot   disp_slot;
-    std::thread   disp_th(display_worker, "Face Recog A733", &disp_slot, &g_stop, &slot, cfg.fullscreen);
-    LOG_INFO("cam", "display thread started");
+    std::thread   disp_th;
+    if (cfg.preview) {
+        disp_th = std::thread(display_worker, "Face Recog A733", &disp_slot,
+                              &g_stop, &slot, cfg.fullscreen);
+        LOG_INFO("cam", "display thread started");
+    } else {
+        LOG_INFO("cam", "preview disabled (headless mode)");
+    }
 
     std::vector<Detection> faces;
     std::vector<PersonDet> persons;
@@ -722,7 +790,21 @@ int main(int argc, char** argv) {
         //                  a cabin only greets the person in front of it)
         // MatchResult resident_id/similarity come directly from TrackView's
         // latched identity on cached frames; there is no parallel name-keyed map.
+        bool metrics_event = false;
         if (use_resident_db) {
+            if (floor_calls) {
+                std::vector<int> present_subjects;
+                if (tracker) {
+                    present_subjects.reserve(track_views.size());
+                    for (const TrackView& track : track_views) {
+                        if (track.state == ByteTrackState::Tracked || track.state == ByteTrackState::Lost)
+                            present_subjects.push_back(track.id);
+                    }
+                } else if (!faces.empty()) {
+                    present_subjects.push_back(0);
+                }
+                floor_calls->on_presence(present_subjects, tracker_frame.timestamp_ms);
+            }
             subjects.clear();
             for (size_t f = 0; f < faces.size(); ++f) {
                 const FaceLabel& L = face_labels[f];
@@ -748,18 +830,25 @@ int main(int argc, char** argv) {
                 ev.similarity  = oc.similarity;
                 ev.latency_ms  = (int)std::lround(t_recog_total);
                 if (oc.confirmed) {
+                    metrics_event = true;
                     ev.resident_id    = oc.resident_id;
                     ev.action         = "matched";
-                    // floor_selected left 0 (none): auto floor-call is Proposal 2.
-                    ev.floor_selected = 0;
-                    resident_db.log_event(ev);
-                    resident_db.touch_resident(oc.resident_id);
                     auto it = resident_by_id.find(oc.resident_id);
                     int hf = (it != resident_by_id.end()) ? it->second.home_floor : 0;
+                    // A queue admission is not evidence that the board accepted a
+                    // floor.  FloorCallCoordinator emits the later transport state.
+                    ev.floor_selected = 0;
+                    if (floor_calls) {
+                        floor_calls->on_confirmed(oc.subject_key, oc.resident_id, hf,
+                                                  oc.similarity, tracker_frame.timestamp_ms);
+                    }
+                    resident_db.log_event(ev);
+                    resident_db.touch_resident(oc.resident_id);
                     // No PII (R7): log resident_id + floor only, never the name.
-                    LOG_INFO("event", "CONFIRMED resident_id=%lld sim=%.2f home_floor=%d%s",
+                    LOG_INFO("event", "CONFIRMED resident_id=%lld sim=%.2f home_floor=%d%s%s",
                              (long long)oc.resident_id, oc.similarity, hf,
-                             hf <= HOME_FLOOR_UNSET ? " [no floor -> greet only]" : "");
+                             hf <= HOME_FLOOR_UNSET ? " [no floor -> greet only]" : "",
+                             floor_calls ? " [floor decision delegated]" : "");
                     // Notify Edge Core (spec edge-core-uds, 0x1001). 20002 = ext_id,
                     // fallback to_string(resident_id) (R7.3). name goes on the socket
                     // (business), never into the log above (PII stays out of logs).
@@ -772,6 +861,7 @@ int main(int argc, char** argv) {
                         edge->send_recog(id_str, name, hf, oc.similarity, (int64_t)now_ms());
                     }
                 } else if (oc.unknown) {
+                    metrics_event = true;
                     ev.resident_id = -1;   // NULL
                     ev.action      = "unknown";
                     resident_db.log_event(ev);
@@ -783,54 +873,71 @@ int main(int argc, char** argv) {
         }
         double t5 = now_ms();
 
-        // ---- Draw overlay ----
-        // Prefer drawing tracks (if enabled) over raw face bboxes for stability.
-        if (use_tracker) {
-            draw_tracker_overlay(frame, tracker->active_tracks(), faces,
-                                 resident_by_id, ui, use_resident_db);
-        } else {
-            draw_scrfd_overlay(frame, faces, face_labels, resident_by_id,
-                               ui, recog_enabled, use_resident_db);
-        }
-
         ++frames_since_report;
         double now = now_ms();
-        if (now - last_report > 500.0) {
+        const double metrics_interval_ms = cfg.preview ? 500.0 : 30000.0;
+        if (metrics_event || now - last_report > metrics_interval_ms) {
             fps = frames_since_report * 1000.0 / (now - last_report);
             last_report = now;
             frames_since_report = 0;
             if (use_tracker) {
-                LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
-                          "recog=%.1f faces=%zu tracked=%d active=%d",
-                          frame_id, fps, t1-t0, t2-t1, t_yolo, t4-t3,
-                          t_recog_total, faces.size(), tracker->tracked_count(), tracker->active_count());
+                if (cfg.preview) {
+                    LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
+                              "recog=%.1f faces=%zu tracked=%d active=%d",
+                              frame_id, fps, t1-t0, t2-t1, t_yolo, t4-t3,
+                              t_recog_total, faces.size(), tracker->tracked_count(), tracker->active_count());
+                } else {
+                    LOG_INFO("metrics", "frame=%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
+                             "recog=%.1f faces=%zu tracked=%d active=%d",
+                             frame_id, fps, t1-t0, t2-t1, t_yolo, t4-t3,
+                             t_recog_total, faces.size(), tracker->tracked_count(), tracker->active_count());
+                }
             } else {
-                LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
-                          "recog=%.1f faces=%zu",
-                          frame_id, fps, t1-t0, t2-t1, t4-t3, 0.0,
-                          t_recog_total, faces.size());
+                if (cfg.preview) {
+                    LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
+                              "recog=%.1f faces=%zu",
+                              frame_id, fps, t1-t0, t2-t1, t4-t3, 0.0,
+                              t_recog_total, faces.size());
+                } else {
+                    LOG_INFO("metrics", "frame=%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
+                             "recog=%.1f faces=%zu",
+                             frame_id, fps, t1-t0, t2-t1, t4-t3, 0.0,
+                             t_recog_total, faces.size());
+                }
             }
         }
-        char hud[192];
-        if (use_tracker) {
-            std::snprintf(hud, sizeof(hud),
-                "FPS %.1f | cap %.1f pre %.1f yolo %.1f scrfd %.1f recog %.1f | tracked %d active %d",
-                fps, t1-t0, t2-t1, t_yolo, t4-t3, t_recog_total,
-                tracker->tracked_count(), tracker->active_count());
-        } else {
-            std::snprintf(hud, sizeof(hud),
-                "FPS %.1f | cap %.1f pre %.1f npu %.1f recog %.1f | faces %zu",
-                fps, t1-t0, t2-t1, t4-t3, t_recog_total, faces.size());
-        }
-        draw_hud(frame, hud, ui);
-
-        {
-            std::lock_guard<std::mutex> lk(disp_slot.mtx);
-            frame.copyTo(disp_slot.latest);
-            disp_slot.seq++;
-        }
-        disp_slot.cv_new.notify_one();
         double t6 = now_ms();
+        if (cfg.preview) {
+            // Prefer drawing tracks (if enabled) over raw face bboxes for stability.
+            if (use_tracker) {
+                draw_tracker_overlay(frame, tracker->active_tracks(), faces,
+                                     resident_by_id, ui, use_resident_db);
+            } else {
+                draw_scrfd_overlay(frame, faces, face_labels, resident_by_id,
+                                   ui, recog_enabled, use_resident_db);
+            }
+
+            char hud[192];
+            if (use_tracker) {
+                std::snprintf(hud, sizeof(hud),
+                    "FPS %.1f | cap %.1f pre %.1f yolo %.1f scrfd %.1f recog %.1f | tracked %d active %d",
+                    fps, t1-t0, t2-t1, t_yolo, t4-t3, t_recog_total,
+                    tracker->tracked_count(), tracker->active_count());
+            } else {
+                std::snprintf(hud, sizeof(hud),
+                    "FPS %.1f | cap %.1f pre %.1f npu %.1f recog %.1f | faces %zu",
+                    fps, t1-t0, t2-t1, t4-t3, t_recog_total, faces.size());
+            }
+            draw_hud(frame, hud, ui);
+
+            {
+                std::lock_guard<std::mutex> lk(disp_slot.mtx);
+                frame.copyTo(disp_slot.latest);
+                disp_slot.seq++;
+            }
+            disp_slot.cv_new.notify_one();
+            t6 = now_ms();
+        }
 
         if (frame_id >= 3) {
             s_cap.add  (t1 - t0);
@@ -856,18 +963,28 @@ int main(int argc, char** argv) {
     LOG_INFO("main", "stopping capture thread");
     shutdown_capture();
 
-    LOG_INFO("main", "stopping display thread");
-    {
-        std::lock_guard<std::mutex> lk(disp_slot.mtx);
-        disp_slot.stop = true;
+    if (cfg.preview) {
+        LOG_INFO("main", "stopping display thread");
+        {
+            std::lock_guard<std::mutex> lk(disp_slot.mtx);
+            disp_slot.stop = true;
+        }
+        disp_slot.cv_new.notify_all();
+        if (disp_th.joinable()) disp_th.join();
     }
-    disp_slot.cv_new.notify_all();
-    if (disp_th.joinable()) disp_th.join();
 
     if (edge) {
         LOG_INFO("edge", "closing EdgeClient (sent=%llu dropped=%llu)",
                  (unsigned long long)edge->sent(), (unsigned long long)edge->dropped());
         edge->close();
+    }
+    if (iot_socket) {
+        iot_socket->close();
+        LOG_INFO("socketio", "closed floor-call client sent=%llu acked=%llu failed=%llu dropped=%llu",
+                 (unsigned long long)iot_socket->sent(),
+                 (unsigned long long)iot_socket->acked(),
+                 (unsigned long long)iot_socket->failed(),
+                 (unsigned long long)iot_socket->dropped());
     }
 
     if (use_resident_db) {

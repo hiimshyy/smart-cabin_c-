@@ -24,7 +24,7 @@ const pool = new Pool({
   port: parseInt(process.env.PG_PORT, 10) || 5432,
   user: process.env.PG_USER || 'embody_master',
   password: process.env.PG_PASSWORD || 'embody2026',
-  database: process.env.PG_DATABASE || 'elevator_db',
+  database: process.env.PG_DATABASE || 'embody_devices',   // 08/10: camera chuyen tu elevator_db (da xoa) sang embody_devices
   connectionTimeoutMillis: 4000,   // đừng treo mãi nếu PG không phản hồi
 });
 

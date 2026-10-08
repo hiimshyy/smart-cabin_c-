@@ -41,6 +41,15 @@ export FACE_TRACKER_MODE="${FACE_TRACKER_MODE:-byte}"
 export FACE_PERSON_THR="${FACE_PERSON_THR:-0.5}"
 export FACE_PERSON_LOW_THR="${FACE_PERSON_LOW_THR:-0.1}"
 export FACE_TRACK_LOST_MS="${FACE_TRACK_LOST_MS:-1200}"
+# Optional direct floor-call channel. Empty keeps Socket.IO disabled.
+# FACE_EVENT_WS remains a compatibility fallback for earlier local setup.
+export FACE_IOT_WS="${FACE_IOT_WS-${FACE_EVENT_WS:-}}"
+export FACE_IOT_DEVICE_CODE="${FACE_IOT_DEVICE_CODE:-2026010900100098}"
+# Elevator/slave 2. Also migrate the previous default retained by an already-sourced shell.
+if [ -z "${FACE_IOT_FLOOR_ADDRESS:-}" ] || [ "$FACE_IOT_FLOOR_ADDRESS" = "8193-1" ]; then
+    export FACE_IOT_FLOOR_ADDRESS="8193-2"
+fi
+export FACE_IOT_REQUEST_ID="${FACE_IOT_REQUEST_ID:-ai-core}"
 export FACE_DB_DIR="$FACE_ROOT/db"
 export FACE_RESIDENT_DB="$FACE_DB_DIR/residents.db"
 export FACE_SCHEMA="$FACE_DB_DIR/schema.sql"
@@ -58,8 +67,11 @@ export FACE_CABIN_RTSP_URL="${FACE_CABIN_RTSP_URL:-}"
 # Chọn camera nào từ PostgreSQL: rỗng = camera 'connected' đầu tiên;
 # hoặc đặt camera_id (vd '{SN}_{slaveId}') hoặc '#<dbId>' (vd '#6').
 export FACE_CAMERA_SELECT="${FACE_CAMERA_SELECT:-}"
-# node_modules chứa 'pg' (dùng chung của edge_elevator) cho get_camera_url.js.
-export FACE_PG_NODE_PATH="${FACE_PG_NODE_PATH:-/home/orangepi/edge_elevator/node_modules}"
+# node_modules chứa 'pg' cho get_camera_url.js — của face_core (edge_elevator đã gỡ 06/10).
+# Thay luôn giá trị cũ đang còn trong shell nếu thư mục/module đó không còn tồn tại.
+if [ -z "${FACE_PG_NODE_PATH:-}" ] || [ ! -f "$FACE_PG_NODE_PATH/pg/package.json" ]; then
+    export FACE_PG_NODE_PATH="/edge/face_core/node_modules"
+fi
 
 # Chạy thủ công sau `source env.sh` phải ghi thẳng vào thư mục user-writable,
 # tránh warning fallback từ /var/log. Service có thể override biến này.
@@ -93,6 +105,11 @@ face_cabin() {
     local thr="${3:-0.35}"
     local lat="${4:-100}"
     local record_args=()
+    local socketio_args=()
+    local preview_args=()
+    if [ "${FACE_CABIN_NO_PREVIEW:-0}" = "1" ]; then
+        preview_args=(--no-preview)
+    fi
     if [ -n "${FACE_RECORD_DIR:-}" ]; then
         record_args=(--record-dir "$FACE_RECORD_DIR"
                      --record-pre-ms "$FACE_RECORD_PRE_MS"
@@ -100,9 +117,15 @@ face_cabin() {
                      --record-fps "$FACE_RECORD_FPS"
                      --record-width "$FACE_RECORD_WIDTH")
     fi
+    if [ -n "${FACE_IOT_WS:-}" ]; then
+        socketio_args=(--iot-ws "$FACE_IOT_WS"
+                       --iot-device-code "$FACE_IOT_DEVICE_CODE"
+                       --iot-floor-address "$FACE_IOT_FLOOR_ADDRESS"
+                       --iot-request-id "$FACE_IOT_REQUEST_ID")
+    fi
     # Chưa có URL tay -> tự lấy từ PostgreSQL (camera cấu hình ở web).
     if [ -z "$url" ]; then
-        url="$(NODE_PATH="$FACE_PG_NODE_PATH" node "$FACE_ROOT/scripts/get_camera_url.js" "$FACE_CAMERA_SELECT" 2>/dev/null)"
+        url="$(NODE_PATH="$FACE_PG_NODE_PATH" node "$FACE_ROOT/scripts/get_camera_url.js" "$FACE_CAMERA_SELECT")"
         [ -n "$url" ] && echo "[face_cabin] Đã nạp camera URL từ PostgreSQL (credentials đã được ẩn)"
     fi
     if [ -z "$url" ]; then
@@ -124,6 +147,8 @@ face_cabin() {
         --person-low-thr "$FACE_PERSON_LOW_THR" \
         --track-lost-ms "$FACE_TRACK_LOST_MS" \
         --source "$url" --gst-latency "$lat" \
+        "${preview_args[@]}" \
+        "${socketio_args[@]}" \
         "${record_args[@]}")
 }
 

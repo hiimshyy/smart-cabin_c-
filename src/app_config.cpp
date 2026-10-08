@@ -80,6 +80,15 @@ void print_usage(const char* prog) {
         "    --reconnect-max-ms N  Reconnect backoff ceiling (default 10000)\n"
         "    --edge-socket PATH    UDS path to Edge Core (e.g. /run/elev_edge_core.sock or\n"
         "                          @elev_edge_core.sock). Empty = disabled (default).\n"
+        "    --iot-ws URL          IoT Core Socket.IO endpoint (ws://...; disabled by default)\n"
+        "    --iot-device-code ID  IoT deviceCode (default 2026010900100098)\n"
+        "    --iot-floor-address A Floor-write address (default 8193-2, elevator/slave 2)\n"
+        "    --iot-request-id ID   Client/command requestId (default ai-core)\n"
+        "    --floor-session-empty-ms N  End cabin visit after N ms empty (default 5000)\n"
+        "    --floor-command-ttl-ms N    Drop unsent floor call after N ms (default 5000)\n"
+        "    --floor-ack-timeout-ms N    Wait N ms for IoT command ACK (default 3000)\n"
+        "    --floor-max-per-visit N     Maximum distinct floor calls per visit (default 16)\n"
+        "    --no-preview          Disable OpenCV preview window (headless mode)\n"
         "    --windowed / --fullscreen\n"
         "    --log-level L         trace|debug|info|warn|error (default info)\n"
         "    --log-dir DIR         log file directory (default /var/log/face-cabin)\n",
@@ -183,9 +192,47 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         }
         else if (sv("--recog-retry"))    cfg.recog_retry = std::atoi(argv[++i]);
         else if (sv("--ui-scale"))       cfg.ui_scale_override = (float)std::atof(argv[++i]);
+        else if (std::strcmp(a, "--no-preview") == 0) cfg.preview = false;
         else if (sv("--source"))         { cfg.source_url = argv[++i]; cfg.passed.source = true; }
         else if (sv("--gst-pipeline"))   cfg.custom_pipeline = argv[++i];
         else if (sv("--edge-socket"))    cfg.edge_socket = argv[++i];
+        else if (sv("--iot-ws"))         cfg.iot_ws = argv[++i];
+        else if (sv("--face-event-ws"))  cfg.iot_ws = argv[++i]; // migration alias
+        else if (sv("--iot-device-code")) cfg.iot_device_code = argv[++i];
+        else if (sv("--iot-floor-address")) cfg.iot_floor_address = argv[++i];
+        else if (sv("--iot-request-id")) cfg.iot_request_id = argv[++i];
+        else if (std::strcmp(a, "--floor-session-empty-ms") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 1, INT_MAX,
+                                                       cfg.floor_session_empty_ms)) {
+                std::fprintf(stderr, "--floor-session-empty-ms requires a positive integer\n");
+                res.invalid_args = true; return res;
+            }
+            ++i;
+        }
+        else if (std::strcmp(a, "--floor-command-ttl-ms") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 1, INT_MAX,
+                                                       cfg.floor_command_ttl_ms)) {
+                std::fprintf(stderr, "--floor-command-ttl-ms requires a positive integer\n");
+                res.invalid_args = true; return res;
+            }
+            ++i;
+        }
+        else if (std::strcmp(a, "--floor-ack-timeout-ms") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 1, INT_MAX,
+                                                       cfg.floor_ack_timeout_ms)) {
+                std::fprintf(stderr, "--floor-ack-timeout-ms requires a positive integer\n");
+                res.invalid_args = true; return res;
+            }
+            ++i;
+        }
+        else if (std::strcmp(a, "--floor-max-per-visit") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 1, INT_MAX,
+                                                       cfg.floor_max_commands_per_visit)) {
+                std::fprintf(stderr, "--floor-max-per-visit requires a positive integer\n");
+                res.invalid_args = true; return res;
+            }
+            ++i;
+        }
         else if (sv("--gst-latency"))    { cfg.gst_latency_ms = std::atoi(argv[++i]); cfg.passed.gst_latency = true; }
         else if (sv("--reconnect-min-ms")) { cfg.reconnect_min_ms = std::atoi(argv[++i]); cfg.passed.reconnect_min = true; }
         else if (sv("--reconnect-max-ms")) { cfg.reconnect_max_ms = std::atoi(argv[++i]); cfg.passed.reconnect_max = true; }
@@ -207,8 +254,14 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
     } else if (cfg.track_lost_ms <= 250) {
         std::fprintf(stderr, "invalid --track-lost-ms: must exceed lost grace 250ms\n");
         res.invalid_args = true;
+    } else if (cfg.floor_session_empty_ms < cfg.track_lost_ms) {
+        std::fprintf(stderr, "invalid --floor-session-empty-ms: must be >= --track-lost-ms\n");
+        res.invalid_args = true;
     } else if (cfg.record_dir && !cfg.person_model_path) {
         std::fprintf(stderr, "--record-dir requires --person-model for person presence detection\n");
+        res.invalid_args = true;
+    } else if (cfg.edge_socket && cfg.iot_ws) {
+        std::fprintf(stderr, "--edge-socket and --iot-ws cannot be enabled together\n");
         res.invalid_args = true;
     }
     return res;

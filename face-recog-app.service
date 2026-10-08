@@ -1,0 +1,27 @@
+[Unit]
+Description=Face Recognition Cabin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+WorkingDirectory=/home/orangepi/face_recog_app
+
+Environment=HOME=/home/orangepi
+Environment=DISPLAY=:0.0
+Environment=XAUTHORITY=/home/orangepi/.Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=FACE_CABIN_NO_PREVIEW=1
+EnvironmentFile=-/etc/face-recog-app.env
+
+ExecStart=/bin/bash -c 'source /home/orangepi/face_recog_app/env.sh && face_cabin'
+
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

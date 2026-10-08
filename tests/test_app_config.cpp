@@ -40,6 +40,28 @@ int main(){
     CHECK(bad_thr.result.invalid_args,"inverted person thresholds rejected");
     auto bad_mode=parse({"app","--tracker-mode","sort"});
     CHECK(bad_mode.result.invalid_args,"invalid tracker mode rejected");
+    auto socketio=parse({"app","--iot-ws","ws://127.0.0.1:3000/socket.io/?EIO=4&transport=websocket",
+                         "--iot-device-code","2026010900100098","--iot-floor-address","8193-2",
+                         "--iot-request-id","ai-core"});
+    CHECK(!socketio.result.invalid_args && socketio.cfg.iot_ws &&
+          std::string(socketio.cfg.iot_device_code)=="2026010900100098" &&
+          std::string(socketio.cfg.iot_floor_address)=="8193-2" &&
+          std::string(socketio.cfg.iot_request_id)=="ai-core",
+          "Socket.IO floor-command configuration parsed");
+    auto floor_policy=parse({"app","--track-lost-ms","1000","--floor-session-empty-ms","6000",
+                             "--floor-command-ttl-ms","7000","--floor-ack-timeout-ms","4000",
+                             "--floor-max-per-visit","12"});
+    CHECK(!floor_policy.result.invalid_args && floor_policy.cfg.floor_session_empty_ms==6000 &&
+          floor_policy.cfg.floor_command_ttl_ms==7000 && floor_policy.cfg.floor_ack_timeout_ms==4000 &&
+          floor_policy.cfg.floor_max_commands_per_visit==12,
+          "floor-call policy options parsed");
+    auto floor_too_short=parse({"app","--track-lost-ms","1200","--floor-session-empty-ms","1000"});
+    CHECK(floor_too_short.result.invalid_args,
+          "floor session cannot end before tracker lost timeout");
+    auto duplicate_transport=parse({"app","--edge-socket","/tmp/edge.sock","--iot-ws",
+                                    "ws://127.0.0.1:3000/socket.io/?EIO=4&transport=websocket"});
+    CHECK(duplicate_transport.result.invalid_args,
+          "legacy UDS and direct Socket.IO floor call are mutually exclusive");
     auto record=parse({"app","--person-model","person.nb","--record-dir","clips",
                        "--record-pre-ms","1500","--record-empty-ms","5000",
                        "--record-fps","12.5","--record-width","1280"});

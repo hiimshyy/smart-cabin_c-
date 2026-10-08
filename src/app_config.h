@@ -15,6 +15,10 @@ struct AppConfig {
     const char* source_url        = nullptr;
     const char* custom_pipeline   = nullptr;
     const char* edge_socket       = nullptr;   // UDS path to Edge Core ("" / null = disabled)
+    const char* iot_ws            = nullptr;   // IoT Core Socket.IO endpoint; null = disabled
+    const char* iot_device_code   = "2026010900100098";
+    const char* iot_floor_address = "8193-2";
+    const char* iot_request_id    = "ai-core";
     const char* record_dir        = nullptr;   // Person-triggered raw video; null = disabled
 
     int    cam_id           = 0;
@@ -29,6 +33,10 @@ struct AppConfig {
     int    record_pre_ms    = 1000;
     int    record_empty_ms  = 3000;
     int    record_width     = 960;
+    int    floor_session_empty_ms = 5000;
+    int    floor_command_ttl_ms = 5000;
+    int    floor_ack_timeout_ms = 3000;
+    int    floor_max_commands_per_visit = 16;
     int    recog_retry      = 90;
     int    resident_reload_ms = 1000; // SQLite resident/embedding hot-reload; 0=disabled
     int    cabin_id         = 1;
@@ -41,6 +49,7 @@ struct AppConfig {
     float  person_low_thr    = 0.1f;
     float  ui_scale_override = 0.0f;   // 0 = auto (scale by frame.rows / 480)
     bool   recog_rgb         = true;
+    bool   preview           = true;
     bool   fullscreen        = true;
     float  match_threshold   = 0.35f;
     TrackerMode tracker_mode = TrackerMode::Greedy;

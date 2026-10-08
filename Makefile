@@ -35,7 +35,9 @@ DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
                $(SRC_DIR)/interaction.cpp \
                $(SRC_DIR)/cabin_config.cpp \
                $(SRC_DIR)/edge_client.cpp \
-               $(SRC_DIR)/edge_json.cpp
+               $(SRC_DIR)/edge_json.cpp \
+               $(SRC_DIR)/floor_call_coordinator.cpp \
+               $(SRC_DIR)/socketio_client.cpp
 
 # App-only modules extracted from main.cpp (spec main-cpp-refactor). Used ONLY
 # by face_recog_app — do NOT add to COMMON_SRCS (other tools don't need them).

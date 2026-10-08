@@ -111,6 +111,18 @@ g++ -std=c++17 -Isrc \
     -lpthread \
     -o "$OUT/test_edge_frame" && "$OUT/test_edge_frame" || fail=1
 
+echo ""
+echo "== Socket.IO floor command =="
+g++ -std=c++17 -Isrc \
+    tests/test_socketio_client.cpp src/socketio_client.cpp src/log/logger.cpp \
+    -lpthread -o "$OUT/test_socketio_client" && "$OUT/test_socketio_client" || fail=1
+
+echo ""
+echo "== Floor-call coordinator =="
+g++ -std=c++17 -Isrc \
+    tests/test_floor_call_coordinator.cpp src/floor_call_coordinator.cpp \
+    -lpthread -o "$OUT/test_floor_call_coordinator" && "$OUT/test_floor_call_coordinator" || fail=1
+
 # ResidentDB test needs sqlite3.h + libsqlite3.
 # Prefer a system install; else fall back to a no-sudo local extract at
 # /tmp/sqlite_local (see tests/_setup_sqlite_local.sh).
