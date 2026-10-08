@@ -3,8 +3,9 @@
 > **Trạng thái migration — 2026-10-06:** hợp đồng UDS trong tài liệu này là **legacy contract** và
 > vẫn mô tả đúng code `EdgeClient` hiện tại. Hướng tích hợp mới dùng TCP WebSocket RFC 6455 +
 > Engine.IO 4 + Socket.IO 4 theo `socket_test.cpp`; không được tiếp tục mở rộng framing UDS cho tính
-> năng mới. Xem [websocket-migration-review.md](websocket-migration-review.md). Đã chốt AI Core chỉ
-> phát face event qua Socket.IO; service nhận event mới có quyền quyết định/gửi lệnh gọi tầng.
+> năng mới. Xem [websocket-migration-review.md](websocket-migration-review.md). Quyết định mới ngày
+> 2026-10-08: sau khi nhận diện thành công, AI Core trực tiếp gửi Socket.IO `Client/command` với
+> `value = 2^home_floor`; service IoT thực hiện lệnh và trả ack.
 
 **Spec ID**: `edge-core-uds` · **Đề xuất số**: 5 (giao tiếp nội bộ Edge)
 **Phụ thuộc**: `resident-db-layer` (ResidentDB, `Resident`, `MatchEvent`), `main.cpp` (vòng lặp

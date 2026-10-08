@@ -191,6 +191,29 @@ Khi chạy binary trực tiếp, dùng `--record-dir DIR`; tùy chọn đi kèm 
 Recorder cần `--person-model`, ghi frame trước overlay để dataset không chứa
 box/HUD, và encode trên worker riêng để không chặn inference loop.
 
+Để AI Core trực tiếp gọi tầng qua IoT Core Socket.IO sau khi nhận diện thành công:
+
+```bash
+export FACE_IOT_WS='ws://127.0.0.1:3000/socket.io/?EIO=4&transport=websocket'
+export FACE_IOT_DEVICE_CODE='2026010900100098'
+export FACE_IOT_FLOOR_ADDRESS='8193-2' # thang máy/slave số 2
+export FACE_IOT_REQUEST_ID='ai-core'
+source env.sh
+face_cabin
+```
+
+Lệnh gửi là `Client/command` với `value = 2^home_floor`; ví dụ `home_floor=5` tạo `value=32`.
+Trong một phiên cabin, mỗi resident chỉ được xét một lần và nhiều resident cùng tầng chỉ tạo một
+lệnh. Phiên kết thúc khi không còn person track trong 5 giây; có thể chỉnh bằng
+`--floor-session-empty-ms` (giá trị này phải không nhỏ hơn `--track-lost-ms`). Các lệnh khác tầng
+được gửi FIFO, chờ ACK từng lệnh. Mỗi command có `requestId` riêng dạng
+`ai-core:<cabin>:<visit>:<sequence>`.
+
+ACK cần chứa `requestId` và `success`; terminal sẽ log trạng thái `QUEUED`, `SENT`,
+`ACKED_SUCCESS`, `ACKED_ERROR` hoặc `AMBIGUOUS`. Unknown hoặc resident có `home_floor <= 0` không gọi tầng. Để tắt kênh gọi tầng, đặt
+`FACE_IOT_WS=""` trước khi
+`source env.sh`.
+
 Áp vĩnh viễn:
 ```bash
 echo "source $(pwd)/env.sh" >> ~/.bashrc

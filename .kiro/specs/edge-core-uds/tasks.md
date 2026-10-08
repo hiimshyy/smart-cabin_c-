@@ -125,8 +125,8 @@ link đầy đủ trên Orange Pi.
 ## Backlog migration sang Socket.IO v4
 
 - [ ] W0. Chốt contract nghiệp vụ còn thiếu
-  - [x] W0.1 AI Core chỉ emit `FACE_RECOGNIZED`/`FACE_UNKNOWN`; service nhận event quyết định tầng.
-    AI Core không subscribe register và không gửi `Client/command`.
+  - [x] W0.1 AI Core trực tiếp gửi `Client/command` sau confirmed recognition; unknown không gọi tầng.
+    `value = 2^Resident.home_floor`; tầng 5 tạo giá trị 32.
   - [ ] W0.2 Chốt URL service, authentication và service-side ownership của endpoint.
   - [ ] W0.3 Chốt ack success/error schema, timeout, retry và idempotency.
   - [ ] W0.4 Chốt `ws://` hay `wss://`, authentication header/query và certificate policy.
@@ -134,26 +134,29 @@ link đầy đủ trên Orange Pi.
 - [ ] W1. Tách protocol codec khỏi `socket_test.cpp`
   - [ ] W1.1 RFC 6455 handshake/frame codec với client masking, fragmentation, ping/pong/close,
     payload limit và validate `Sec-WebSocket-Accept`.
-  - [ ] W1.2 Engine.IO 4 state machine: open `0`, namespace connect `40`, ping `2` → pong `3`.
-  - [ ] W1.3 Socket.IO event/ack codec, ack id tăng đơn điệu và pending-request map.
+  - [x] W1.2 Engine.IO 4 state machine: open `0`, namespace connect `40`, ping `2` → pong `3`.
+  - [x] W1.3 Socket.IO event/ack codec, ack id tăng đơn điệu và một command in-flight.
   - [ ] W1.4 JSON parser có cấu trúc; không đưa regex/parser phẳng trong sample vào production.
 
-- [ ] W2. Implement `FaceEventSocketClient`, non-blocking
+- [ ] W2. Implement `SocketIoClient`, non-blocking
   - [ ] W2.1 TCP connect + WebSocket/Socket.IO handshake + namespace + reconnect/backoff/jitter.
-  - [ ] W2.2 Bounded outbound face-event queue; overflow phải reject/coalesce có metric, không
+  - [x] W2.2 Bounded outbound floor-command queue; overflow phải reject có metric, không
     drop-oldest âm thầm.
-  - [ ] W2.3 Emit `FACE_RECOGNIZED`/`FACE_UNKNOWN` theo schema, timestamp Unix epoch ms.
-  - [ ] W2.4 Ack correlation + eventId dedupe + timeout/retry theo at-least-once delivery.
+  - [x] W2.3 Emit `Client/command` với `action=write`, configured `deviceCode`, address `8193-2`,
+    `value=2^home_floor`, `requestId=ai-core`.
+  - [x] W2.4 Ack id tăng đơn điệu + timeout; không tự resend lệnh đã gửi nhưng mất ack khi chưa có
+    idempotency key duy nhất cho từng lệnh.
 
 - [ ] W3. Config và main integration
-  - [ ] W3.1 Thay `--edge-socket` bằng config endpoint WebSocket có migration/rollback rõ ràng.
-  - [ ] W3.2 Nối confirmed outcome → `FACE_RECOGNIZED`, unknown outcome → `FACE_UNKNOWN`; không có
-    đường gọi `Client/command` trong AI Core.
-  - [ ] W3.3 Giữ transport UDS sau feature flag trong một release để rollback; không chạy đồng thời
+  - [x] W3.1 Thêm `--iot-ws`, deviceCode/address/requestId và giữ `--edge-socket` để rollback.
+  - [x] W3.2 Nối confirmed outcome có `home_floor > 0` → enqueue `Client/command`; unknown hoặc
+    `home_floor <= 0` không gửi lệnh.
+  - [x] W3.3 Giữ transport UDS sau feature flag trong một release để rollback; không chạy đồng thời
     hai transport gửi cùng một hành động.
 
 - [ ] W4. Verification
   - [ ] W4.1 Unit tests WebSocket frame/fragment/control/masking và handshake validation.
   - [ ] W4.2 Engine.IO/Socket.IO transcript tests từ sample, gồm packet bị chia/dính.
-  - [ ] W4.3 Fake server nhận face event, trả ack/error/timeout và test reconnect/dedupe.
-  - [ ] W4.4 Live test với service nhận face event; xác nhận AI Core không phát lệnh gọi tầng.
+  - [ ] W4.3 Fake server nhận floor command, trả ack/error/timeout và test reconnect.
+  - [ ] W4.4 Live test `home_floor=5` tạo đúng lệnh ghi `8193-2` giá trị `32`, chỉ một lần cho mỗi
+    confirmed outcome.

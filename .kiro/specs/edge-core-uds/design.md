@@ -3,7 +3,8 @@
 > **Legacy design — 2026-10-06:** thiết kế này khớp implementation UDS đang chạy nhưng đã bị thay
 > thế cho hướng phát triển mới bởi Socket.IO v4. Không tái sử dụng header 8 byte hay tag `0x100x`
 > bên trong WebSocket. Thiết kế migration và các quyết định còn thiếu nằm tại
-> [websocket-migration-review.md](websocket-migration-review.md).
+> [websocket-migration-review.md](websocket-migration-review.md). Từ 2026-10-08, AI Core trực tiếp
+> gửi `Client/command` gọi tầng sau confirmed recognition, với register `value = 2^home_floor`.
 
 **Spec ID**: `edge-core-uds`
 

@@ -355,30 +355,29 @@ ElevCore (đội IoT) là cổng giao tiếp cloud/app AIoT.
 
 ### 3.6 Phân tách trách nhiệm AI Core vs Edge Core (gọi tầng)
 
-`face_recog_app` = **AI Core**. Sau khi nhận diện, nó **báo cáo sự kiện cá nhân** cho **Edge Core**
-qua Unix Domain Socket (AI Core = client, Edge Core = server tại `/run/elev_edge_core.sock` hoặc
-`@elev_edge_core.sock`) — đã implement chiều AI→Edge (spec `edge-core-uds`, đợt a).
+`face_recog_app` = **AI Core**. Quyết định ngày 2026-10-08 thay luồng face-event-only: sau confirmed
+recognition, AI Core lấy `Resident.home_floor` và trực tiếp gửi `Client/command` tới IoT Core qua
+Socket.IO. Unknown hoặc `home_floor <= 0` không gọi tầng.
 
-**Nguyên tắc trung tâm** (trả lời "một người đổi tầng bằng tay không được ảnh hưởng gọi tầng tự
-động của người khác"):
+```text
+420["Client/command",{
+  "action":"write",
+  "deviceCode":"2026010900100098",
+  "address":"8193-2",
+  "value":32,
+  "requestId":"ai-core"
+}]
+```
 
-- **AI Core** chỉ phát sự kiện *"người X (tầng mặc định Y) vừa được nhận diện lúc T tại cabin C"* —
-  mỗi sự kiện gắn định danh cá nhân + tầng mặc định của chính người đó + timestamp + cabin.
-  AI Core **không giữ trạng thái "tầng cabin" toàn cục**, nên **không có gì để bị ghi đè**. Nhiều
-  người trong cabin ⇒ nhiều sự kiện độc lập.
-- **Edge Core** (đội IoT, ngoài scope repo này) nhận các sự kiện đó, **cộng dồn** đích đến của thang
-  theo từng người (không thay thế), và tương quan với nút bấm tay (đến từ board tầng qua Modbus →
-  COMM Core). "Bấm tay" chỉ tác động phần đóng góp của chính người bấm.
+`value` là bitmask `2^home_floor`; ví dụ trên có `home_floor=5`, nên `value=32` và gọi tầng 5.
+Socket I/O, reconnect và ack chạy trên worker riêng để không block inference. Mỗi confirmed outcome
+enqueue tối đa một command. AI
+Core hiện không subscribe register/`CONN_DATA`; nút bấm tay và trạng thái board vẫn do IoT Core quản
+lý. UDS `EdgeClient` được giữ tạm trong một release để rollback và không được bật đồng thời với
+Socket.IO cho cùng luồng gọi tầng.
 
-**Thông điệp AI→Edge** (framing header 8 byte + JSON tag-số, dải tag v2):
-`0x1001` nhận diện được (`20000` ts, `20001` cabin, `20002` mã NV/ext_id, `20003` tên, `20005` tầng
-mặc định, `20008` độ tương đồng), `0x1002` người lạ (`20003="UNKNOWN_FACE"`, `20008`), `0x1003`
-heartbeat. Gửi non-blocking qua thread nền + bounded queue, reconnect bền bỉ. Bật bằng
-`--edge-socket`; không truyền ⇒ tắt hẳn (không hồi quy). AI Core **không** gửi `20007` (tầng bấm
-tay) — trường đó thuộc Edge Core.
-
-Chiều Edge→AI (`0x2001` kết quả gọi tầng, `0x2002` yêu cầu đăng ký khuôn mặt) để **đợt b**.
-Chi tiết spec: `.kiro/specs/edge-core-uds/`.
+Chi tiết migration, ack và các điểm còn phải chốt:
+`.kiro/specs/edge-core-uds/websocket-migration-review.md`.
 
 ---
 
