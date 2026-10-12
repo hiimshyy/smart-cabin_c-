@@ -21,7 +21,8 @@ ExecStart=/bin/bash -c 'source /home/orangepi/face_recog_app/env.sh && face_cabi
 Restart=always
 RestartSec=5
 KillSignal=SIGINT
-TimeoutStopSec=15
+KillMode=control-group
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

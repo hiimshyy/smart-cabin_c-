@@ -265,15 +265,22 @@ void EventVideoRecorder::set_person_present(bool person_present, double timestam
 
 void EventVideoRecorder::close() {
     if (!enabled()) return;
+
+    // Do not call stop_session() while holding state_mutex_. stop_session()
+    // takes the same mutex after enqueueing the final Stop item; doing so
+    // deadlocks when shutdown happens during an active recording session.
+    double timestamp_ms = -1.0;
     {
         std::lock_guard<std::mutex> state_lock(state_mutex_);
         if (closed_) return;
         closed_ = true;
-        stop_session("shutdown", last_timestamp_ms_);
+        timestamp_ms = last_timestamp_ms_;
     }
+
+    stop_session("shutdown", timestamp_ms);
     WorkItem shutdown;
     shutdown.type = WorkType::Shutdown;
-    shutdown.timestamp_ms = last_timestamp_ms_;
+    shutdown.timestamp_ms = timestamp_ms;
     enqueue(std::move(shutdown));
     if (worker_.joinable()) worker_.join();
     pre_roll_.clear();
