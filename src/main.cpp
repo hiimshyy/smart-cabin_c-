@@ -66,6 +66,7 @@
 #include "edge_client.h"
 #include "floor_call_coordinator.h"
 #include "socketio_client.h"
+#include "system_metrics.h"
 #include <memory>
 
 static constexpr int NPU_INPUT_W = 640;
@@ -516,6 +517,9 @@ int main(int argc, char** argv) {
         LOG_INFO("track", "disabled (no --person-model). SCRFD-only pipeline.");
     }
 
+    SystemMetrics system_metrics("/home/orangepi/face_recog_app", 30000);
+    system_metrics.start();
+
     // ---- 3) Buffers + display --------------------------------------------
     std::vector<uint8_t> npu_input(NPU_INPUT_W * NPU_INPUT_H * 3);
 
@@ -954,6 +958,7 @@ int main(int argc, char** argv) {
     }
 
     event_recorder.close();
+    system_metrics.stop();
 
     // ---- Summary (benchmark report — user-facing table) ------------------
     double run_secs = (now_ms() - run_start) / 1000.0;

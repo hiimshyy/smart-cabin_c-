@@ -46,7 +46,8 @@ APP_ONLY_SRCS := $(SRC_DIR)/app_config.cpp \
                  $(SRC_DIR)/event_video_recorder.cpp \
                  $(SRC_DIR)/overlay.cpp \
                  $(SRC_DIR)/benchmark.cpp \
-                 $(SRC_DIR)/resident_reconcile.cpp
+                 $(SRC_DIR)/resident_reconcile.cpp \
+                 $(SRC_DIR)/system_metrics.cpp
 
 APP_SRCS_CPP     := $(SRC_DIR)/main.cpp           $(COMMON_SRCS) $(RECOG_SRCS) $(DB_SRCS) $(APP_ONLY_SRCS)
 ENROLL_SRCS_CPP  := $(SRC_DIR)/enroll_faces.cpp   $(COMMON_SRCS) \
