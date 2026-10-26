@@ -50,6 +50,7 @@ if [ -z "${FACE_IOT_FLOOR_ADDRESS:-}" ] || [ "$FACE_IOT_FLOOR_ADDRESS" = "8193-1
     export FACE_IOT_FLOOR_ADDRESS="8193-2"
 fi
 export FACE_IOT_REQUEST_ID="${FACE_IOT_REQUEST_ID:-ai-core}"
+export FACE_ADAPTIVE_INFERENCE="${FACE_ADAPTIVE_INFERENCE:-1}"
 export FACE_DB_DIR="$FACE_ROOT/db"
 export FACE_RESIDENT_DB="$FACE_DB_DIR/residents.db"
 export FACE_SCHEMA="$FACE_DB_DIR/schema.sql"
@@ -106,6 +107,7 @@ face_cabin() {
     local lat="${4:-100}"
     local record_args=()
     local socketio_args=()
+    local inference_args=()
     local preview_args=()
     if [ "${FACE_CABIN_NO_PREVIEW:-0}" = "1" ]; then
         preview_args=(--no-preview)
@@ -122,6 +124,9 @@ face_cabin() {
                        --iot-device-code "$FACE_IOT_DEVICE_CODE"
                        --iot-floor-address "$FACE_IOT_FLOOR_ADDRESS"
                        --iot-request-id "$FACE_IOT_REQUEST_ID")
+    fi
+    if [ "${FACE_ADAPTIVE_INFERENCE:-1}" = "0" ]; then
+        inference_args=(--no-adaptive-inference)
     fi
     # Chưa có URL tay -> tự lấy từ PostgreSQL (camera cấu hình ở web).
     if [ -z "$url" ]; then
@@ -149,6 +154,7 @@ face_cabin() {
         --source "$url" --gst-latency "$lat" \
         "${preview_args[@]}" \
         "${socketio_args[@]}" \
+        "${inference_args[@]}" \
         "${record_args[@]}")
 }
 

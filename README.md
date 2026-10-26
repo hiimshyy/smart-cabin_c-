@@ -202,6 +202,14 @@ source env.sh
 face_cabin
 ```
 
+Khi có `--iot-ws` và `--person-model`, AI Core cũng subscribe `CONN_DATA` cho thiết bị này.
+Giá trị thô `8472-2` dùng bit 5 để bắt đầu YOLO lúc cửa mở, bit 6 để nhận biết cửa đóng.
+SCRFD chỉ chạy sau khi YOLO xác nhận người; recognition vẫn theo từng track. Khi cửa đóng và
+không còn người sau grace, các model ngừng inference nhưng vẫn giữ context đã load. Nếu dữ liệu
+cửa bị cũ/mất kết nối, YOLO quét dự phòng thưa. Log `[scheduler]` cho biết state và số lần
+thực thi từng model. Để quay về lịch inference cũ, đặt `FACE_ADAPTIVE_INFERENCE=0` rồi gọi
+`face_cabin` (hoặc dùng `--no-adaptive-inference` khi chạy binary trực tiếp).
+
 Lệnh gửi là `Client/command` với `value = 2^home_floor`; ví dụ `home_floor=5` tạo `value=32`.
 Trong một phiên cabin, mỗi resident chỉ được xét một lần và nhiều resident cùng tầng chỉ tạo một
 lệnh. Phiên kết thúc khi không còn person track trong 5 giây; có thể chỉnh bằng

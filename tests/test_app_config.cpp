@@ -16,6 +16,10 @@ int main(){
     CHECK(d.cfg.resident_reload_ms==1000 && !d.result.invalid_args,"default reload interval 1000ms");
     CHECK(d.cfg.person_decode_threshold()==d.cfg.person_thr,
           "greedy fallback retains the original high-confidence YOLO threshold");
+    CHECK(d.cfg.adaptive_inference, "door scheduler is enabled by default when transport is configured");
+    auto legacy = parse({"app", "--no-adaptive-inference"});
+    CHECK(!legacy.result.invalid_args && !legacy.cfg.adaptive_inference,
+          "baseline rollback flag parsed");
     auto off=parse({"app","--resident-reload-ms","0"});
     CHECK(off.cfg.resident_reload_ms==0 && !off.result.invalid_args,"zero disables reload");
     auto custom=parse({"app","--resident-reload-ms","250"});

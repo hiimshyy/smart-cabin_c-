@@ -28,6 +28,30 @@ int main() {
     CHECK(static_cast<unsigned char>(pong[0]) == 0x8A, "WebSocket pong opcode");
 
     SocketIoConfig config;
+    CHECK(socketio_subscribe_packet(config) ==
+          "42[\"CONN_SUBSCRIBE\",{\"sn\":\"2026010900100098\","
+          "\"level\":\"2026010900100098\"}]", "door subscription packet");
+    DoorRegisterSample door;
+    CHECK(parse_socketio_door_data(
+          "42[\"CONN_DATA\",{\"sn\":\"2026010900100098\","
+          "\"level\":\"2026010900100098\",\"data\":{\"8472-2\":32,\"ADDR\":2}}]",
+          config, door) && door.has_value && door.value == 32, "parse open bit from slave 2");
+    CHECK(parse_socketio_door_data(
+          "42[\"CONN_DATA\",{\"sn\":\"2026010900100098\","
+          "\"level\":\"2026010900100098\",\"data\":{\"8480-2\":5}}]",
+          config, door) && !door.has_value, "partial update retains previous door value");
+    CHECK(parse_socketio_door_data(
+          "42[\"CONN_DATA\",{\"sn\":\"2026010900100098\","
+          "\"level\":\"2026010900100098\",\"data\":{\"8472-2\":\"64\"}}]",
+          config, door) && door.has_value && door.value == 64, "numeric string register accepted");
+    CHECK(!parse_socketio_door_data(
+          "42[\"CONN_DATA\",{\"sn\":\"2026010900100098\","
+          "\"level\":\"2026010900100098\",\"data\":{\"8472-2\":70000}}]",
+          config, door), "invalid register value rejected");
+    CHECK(!parse_socketio_door_data(
+          "42[\"CONN_DATA\",{\"sn\":\"wrong\","
+          "\"level\":\"2026010900100098\",\"data\":{\"8472-2\":64}}]",
+          config, door), "wrong device rejected");
     std::int64_t value = 0;
     CHECK(floor_to_register_value(5, value) && value == 32,
           "floor 5 maps to register value 2^5 = 32");

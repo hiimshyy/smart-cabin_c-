@@ -16,6 +16,8 @@ struct SocketIoConfig {
     std::string device_code = "2026010900100098";
     std::string floor_address = "8193-2";
     std::string request_id = "ai-core";
+    bool subscribe_door = false;
+    std::string door_register = "8472-2";
     int reconnect_min_ms = 500;
     int reconnect_max_ms = 10000;
     int connect_timeout_ms = 5000;
@@ -73,9 +75,19 @@ struct SocketIoCommandResult {
 // The command acknowledgement contract requires requestId and success.
 bool parse_socketio_command_ack(const std::string& message, SocketIoCommandResult& out);
 
+// CONN_DATA may be partial: has_value=false keeps the last known door register.
+struct DoorRegisterSample {
+    bool has_value = false;
+    std::uint16_t value = 0;
+};
+std::string socketio_subscribe_packet(const SocketIoConfig& config);
+bool parse_socketio_door_data(const std::string& message, const SocketIoConfig& config,
+                              DoorRegisterSample& out);
+
 class SocketIoClient {
 public:
     using StatusCallback = std::function<void(const SocketIoCommandResult&)>;
+    using DoorCallback = std::function<void(const DoorRegisterSample&)>;
     explicit SocketIoClient(SocketIoConfig config);
     ~SocketIoClient();
     SocketIoClient(const SocketIoClient&) = delete;
@@ -88,7 +100,9 @@ public:
     bool send_floor(int floor);
     bool enqueue_floor(const SocketIoFloorCommand& command);
     void set_status_callback(StatusCallback callback);
+    void set_door_callback(DoorCallback callback);
     bool connected() const { return connected_.load(); }
+    uint64_t session() const { return session_.load(); }
     uint64_t sent() const { return sent_.load(); }
     uint64_t acked() const { return acked_.load(); }
     uint64_t failed() const { return failed_.load(); }
@@ -109,8 +123,10 @@ private:
     std::deque<Command> queue_;
     std::mutex callback_mutex_;
     StatusCallback status_callback_;
+    DoorCallback door_callback_;
     std::atomic<bool> stop_{false};
     std::atomic<bool> connected_{false};
+    std::atomic<uint64_t> session_{0};
     std::atomic<uint64_t> sent_{0};
     std::atomic<uint64_t> acked_{0};
     std::atomic<uint64_t> failed_{0};

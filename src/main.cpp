@@ -66,6 +66,7 @@
 #include "edge_client.h"
 #include "floor_call_coordinator.h"
 #include "socketio_client.h"
+#include "door_inference.h"
 #include "system_metrics.h"
 #include <memory>
 
@@ -81,6 +82,20 @@ static double now_ms() {
 
 static std::atomic<bool> g_stop{false};
 static void on_signal(int) { g_stop.store(true); }
+
+static DoorTrackSummary summarize_door_tracks(const std::vector<TrackView>& tracks,
+                                               const std::set<int>& confirmed_track_ids,
+                                               bool operational) {
+    DoorTrackSummary summary;
+    for (const auto& track : tracks) {
+        if (track.state != ByteTrackState::Tracked && track.state != ByteTrackState::Lost) continue;
+        ++summary.active;
+        if (!track.identity.latched || track.identity.resident_id < 0 ||
+            (operational && !confirmed_track_ids.count(track.id))) ++summary.unresolved;
+        if (track.state == ByteTrackState::Tracked && !track.predicted_only) ++summary.tracked;
+    }
+    return summary;
+}
 
 int main(int argc, char** argv) {
     // ---- Parse CLI --------------------------------------------------------
@@ -258,6 +273,9 @@ int main(int argc, char** argv) {
     std::unique_ptr<EdgeClient> edge;   // nullptr unless --edge-socket given
     std::unique_ptr<SocketIoClient> iot_socket; // async direct floor command client
     std::shared_ptr<FloorCallCoordinator> floor_calls;
+    std::atomic<std::uint16_t> door_register{0};
+    std::atomic<double> door_received_ms{-1.0};
+    std::atomic<std::uint64_t> door_session{0};
     std::map<int64_t, Resident> resident_by_id;   // id -> metadata for overlay
     bool                use_resident_db = false;
 
@@ -400,7 +418,19 @@ int main(int argc, char** argv) {
                 sc.reconnect_max_ms = eff.reconnect_max_ms;
                 sc.command_max_age_ms = cfg.floor_command_ttl_ms;
                 sc.ack_timeout_ms = cfg.floor_ack_timeout_ms;
+                sc.subscribe_door = cfg.adaptive_inference && use_tracker;
                 iot_socket = std::make_unique<SocketIoClient>(std::move(sc));
+                if (cfg.adaptive_inference && use_tracker) {
+                    iot_socket->set_door_callback([&](const DoorRegisterSample& sample) {
+                        const auto current_session = iot_socket->session();
+                        if (sample.has_value) {
+                            door_register.store(sample.value);
+                            door_session.store(current_session);
+                        }
+                        if (door_session.load() == current_session && current_session != 0)
+                            door_received_ms.store(now_ms());
+                    });
+                }
                 if (!iot_socket->start()) {
                     LOG_WARN("socketio", "invalid Socket.IO floor-call configuration; client disabled");
                     iot_socket.reset();
@@ -552,6 +582,15 @@ int main(int argc, char** argv) {
     UiScale ui;                       // computed lazily on first frame
     bool    ui_ready = false;
     double  last_reload_error_log_ms = -1e12;
+    std::set<int> confirmed_track_ids;
+    const bool adaptive = cfg.adaptive_inference && use_resident_db && use_tracker &&
+                          cfg.iot_ws && cfg.iot_ws[0];
+    DoorInferenceScheduler door_scheduler;
+    DoorInferenceState previous_door_state = DoorInferenceState::Degraded;
+    bool door_state_logged = false;
+    std::uint64_t yolo_runs = 0, face_runs = 0, recog_runs = 0;
+    LOG_INFO("scheduler", "door-gated inference=%s register=8472-2 bits=open:5,close:6",
+             adaptive ? "enabled" : "disabled");
 
     while (true) {
         double t0 = now_ms();
@@ -579,11 +618,30 @@ int main(int argc, char** argv) {
                 resident_by_id = std::move(candidate.resident_by_id);
                 CatalogReconcileResult reconciled = reconcile_catalog_runtime(
                     candidate.diff, tracker.get(), interaction);
+                for (int id : reconciled.affected_subject_keys) confirmed_track_ids.erase(id);
                 catalog_reloader.accept(candidate);
+                const auto format_catalog_ids = [&](const std::set<int64_t>& ids) {
+                    std::string formatted;
+                    for (const int64_t id : ids) {
+                        if (!formatted.empty()) formatted += ',';
+                        const auto resident_it = candidate.resident_by_id.find(id);
+                        if (resident_it != candidate.resident_by_id.end() &&
+                            !resident_it->second.ext_id.empty()) {
+                            formatted += resident_it->second.ext_id;
+                        } else {
+                            formatted += std::to_string(id);
+                        }
+                    }
+                    return formatted.empty() ? std::string("-") : formatted;
+                };
                 LOG_INFO("db-reload", "generation=%llu residents=%zu embeddings=%zu "
-                         "latency_ms=%.2f affected_subjects=%zu live_tracks=%d",
+                         "latency_ms=%.2f added=%s changed=%s removed=%s "
+                         "affected_subjects=%zu live_tracks=%d",
                          (unsigned long long)catalog_reloader.generation(),
                          resident_count, embedding_count, now_ms() - reload_start,
+                         format_catalog_ids(candidate.diff.added).c_str(),
+                         format_catalog_ids(candidate.diff.changed).c_str(),
+                         format_catalog_ids(candidate.diff.removed).c_str(),
                          reconciled.affected_subject_keys.size(),
                          reconciled.invalidated_live_tracks);
                 if (match_engine.empty())
@@ -621,20 +679,52 @@ int main(int argc, char** argv) {
 
         FrameContext tracker_frame{frame_id, now_ms(), frame.cols, frame.rows};
         if (tracker) tracker->predict(tracker_frame);
+        if (adaptive && tracker) {
+            std::set<int> live_ids;
+            for (const auto& track : tracker->active_tracks()) live_ids.insert(track.id);
+            for (auto it = confirmed_track_ids.begin(); it != confirmed_track_ids.end();) {
+                if (!live_ids.count(*it)) it = confirmed_track_ids.erase(it);
+                else ++it;
+            }
+        }
+
+        bool run_person = use_tracker && (frame_id % cfg.person_every == 0);
+        bool run_face = true;
+        if (adaptive) {
+            const double seen_ms = door_received_ms.load();
+            const bool fresh = iot_socket && iot_socket->connected() &&
+                door_session.load() == iot_socket->session() && seen_ms >= 0.0 &&
+                tracker_frame.timestamp_ms - seen_ms <= 5000.0;
+            const DoorSignal signal = decode_door_register(door_register.load(), fresh);
+            const auto before = summarize_door_tracks(tracker->active_tracks(), confirmed_track_ids,
+                                                      use_resident_db);
+            const DoorRunPlan plan = door_scheduler.plan(tracker_frame.timestamp_ms, signal, before);
+            run_person = plan.run_person;
+            run_face = plan.run_face;
+            if (!door_state_logged || plan.state != previous_door_state) {
+                LOG_INFO("scheduler", "state=%s door_fresh=%d tracks=%d unresolved=%d",
+                         door_inference_state_name(plan.state), signal.fresh ? 1 : 0,
+                         before.active, before.unresolved);
+                previous_door_state = plan.state;
+                door_state_logged = true;
+            }
+        }
 
         // ---- Preprocess (letterbox 640x640, shared for YOLO + SCRFD) ----
         PreInfo pre;
-        detect_preprocess(frame, npu_input.data(),
-                          NPU_INPUT_W, NPU_INPUT_H, pre);
+        if (run_person || run_face)
+            detect_preprocess(frame, npu_input.data(), NPU_INPUT_W, NPU_INPUT_H, pre);
         double t2 = now_ms();
 
         // ---- YOLO person detect (optional, skipped some frames) ----
         double t_yolo = 0.0;
-        if (use_tracker && (frame_id % cfg.person_every == 0)) {
+        persons.clear();
+        if (run_person) {
             void* ins[] = { npu_input.data() };
             double y0 = now_ms();
             awnn_set_input_buffers(yolo_ctx, ins);
             awnn_run(yolo_ctx);
+            ++yolo_runs;
             float** youts = awnn_get_output_buffers(yolo_ctx);
             yolo.decode(youts, pre, cfg.person_decode_threshold(), /*nms=*/0.45f, persons);
             t_yolo = now_ms() - y0;
@@ -649,12 +739,22 @@ int main(int argc, char** argv) {
         event_recorder.set_person_present(tracker && tracker->tracked_count() > 0,
                                           tracker_frame.timestamp_ms);
 
+        if (adaptive && !run_face) {
+            const auto after = summarize_door_tracks(tracker->active_tracks(), confirmed_track_ids,
+                                                     use_resident_db);
+            run_face = door_scheduler.face_after_person(tracker_frame.timestamp_ms, after);
+        }
+
         // ---- SCRFD face detect ----
-        void* det_inputs[] = { npu_input.data() };
-        awnn_set_input_buffers(det_ctx, det_inputs);
-        awnn_run(det_ctx);
-        float** dets_out = awnn_get_output_buffers(det_ctx);
-        scrfd.decode(dets_out, pre, /*score=*/0.5f, /*nms=*/0.4f, faces);
+        faces.clear();
+        if (run_face) {
+            void* det_inputs[] = { npu_input.data() };
+            awnn_set_input_buffers(det_ctx, det_inputs);
+            awnn_run(det_ctx);
+            ++face_runs;
+            float** dets_out = awnn_get_output_buffers(det_ctx);
+            scrfd.decode(dets_out, pre, /*score=*/0.5f, /*nms=*/0.4f, faces);
+        }
         double t4 = now_ms();
 
         std::vector<TrackView> track_views;
@@ -709,10 +809,13 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                if (adaptive && !linked_track) continue;
+
                 if (!need_recog) continue;
 
                 align_face_112(frame, fd.landmarks, aligned);
                 if (aligned.empty()) { face_labels[f].stat = 'A'; continue; }
+                ++recog_runs;
                 if (!recognizer->extract(aligned, emb)) { face_labels[f].stat = 'E'; continue; }
 
                 // ---- Matching: resident-db (MatchEngine) or legacy (.fdb) ----
@@ -835,6 +938,7 @@ int main(int argc, char** argv) {
                 ev.latency_ms  = (int)std::lround(t_recog_total);
                 if (oc.confirmed) {
                     metrics_event = true;
+                    if (adaptive && tracker) confirmed_track_ids.insert(oc.subject_key);
                     ev.resident_id    = oc.resident_id;
                     ev.action         = "matched";
                     auto it = resident_by_id.find(oc.resident_id);
@@ -881,6 +985,7 @@ int main(int argc, char** argv) {
         double now = now_ms();
         const double metrics_interval_ms = cfg.preview ? 500.0 : 30000.0;
         if (metrics_event || now - last_report > metrics_interval_ms) {
+            const int window_frames = frames_since_report;
             fps = frames_since_report * 1000.0 / (now - last_report);
             last_report = now;
             frames_since_report = 0;
@@ -909,6 +1014,14 @@ int main(int argc, char** argv) {
                              t_recog_total, faces.size());
                 }
             }
+            if (adaptive && !cfg.preview) {
+                LOG_INFO("scheduler", "window_frames=%d yolo_runs=%llu scrfd_runs=%llu recog_runs=%llu state=%s",
+                         window_frames,
+                         (unsigned long long)yolo_runs, (unsigned long long)face_runs,
+                         (unsigned long long)recog_runs,
+                         door_inference_state_name(previous_door_state));
+            }
+            yolo_runs = face_runs = recog_runs = 0;
         }
         double t6 = now_ms();
         if (cfg.preview) {
@@ -947,7 +1060,7 @@ int main(int argc, char** argv) {
             s_cap.add  (t1 - t0);
             s_pre.add  (t2 - t1);
             if (use_tracker && t_yolo > 0) s_yolo.add(t_yolo);
-            s_scrfd.add(t4 - t3);
+            if (run_face) s_scrfd.add(t4 - t3);
             s_recog.add(t_recog_total);
             s_draw.add (t6 - t5);
             s_e2e.add  (t6 - t0);

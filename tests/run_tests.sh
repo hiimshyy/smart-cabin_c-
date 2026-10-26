@@ -26,6 +26,12 @@ g++ -std=c++17 -Isrc \
     -o "$OUT/test_app_config" && "$OUT/test_app_config" || fail=1
 
 echo ""
+echo "== Door inference scheduler =="
+g++ -std=c++17 -Isrc \
+    tests/test_door_inference.cpp src/door_inference.cpp \
+    -o "$OUT/test_door_inference" && "$OUT/test_door_inference" || fail=1
+
+echo ""
 echo "== Video frame/deadline wait =="
 g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
     tests/test_video_wait.cpp src/video_io.cpp src/event_video_recorder.cpp src/log/logger.cpp \

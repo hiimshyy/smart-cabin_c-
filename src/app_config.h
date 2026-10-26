@@ -54,6 +54,7 @@ struct AppConfig {
     float  match_threshold   = 0.35f;
     TrackerMode tracker_mode = TrackerMode::Greedy;
     bool   track_conflict_recovery = false;
+    bool   adaptive_inference = true; // automatic door gating when --iot-ws and YOLO are configured
 
     // The greedy fallback consumes only high-confidence detections. ByteTrack
     // needs the low tier for its second association pass.

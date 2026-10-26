@@ -81,6 +81,7 @@ void print_usage(const char* prog) {
         "    --edge-socket PATH    UDS path to Edge Core (e.g. /run/elev_edge_core.sock or\n"
         "                          @elev_edge_core.sock). Empty = disabled (default).\n"
         "    --iot-ws URL          IoT Core Socket.IO endpoint (ws://...; disabled by default)\n"
+        "    --no-adaptive-inference  Use baseline inference schedule (rollback)\n"
         "    --iot-device-code ID  IoT deviceCode (default 2026010900100098)\n"
         "    --iot-floor-address A Floor-write address (default 8193-2, elevator/slave 2)\n"
         "    --iot-request-id ID   Client/command requestId (default ai-core)\n"
@@ -197,6 +198,7 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         else if (sv("--gst-pipeline"))   cfg.custom_pipeline = argv[++i];
         else if (sv("--edge-socket"))    cfg.edge_socket = argv[++i];
         else if (sv("--iot-ws"))         cfg.iot_ws = argv[++i];
+        else if (std::strcmp(a, "--no-adaptive-inference") == 0) cfg.adaptive_inference = false;
         else if (sv("--face-event-ws"))  cfg.iot_ws = argv[++i]; // migration alias
         else if (sv("--iot-device-code")) cfg.iot_device_code = argv[++i];
         else if (sv("--iot-floor-address")) cfg.iot_floor_address = argv[++i];

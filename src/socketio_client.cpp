@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <random>
 #include <sstream>
@@ -102,6 +103,59 @@ bool json_bool_field(const std::string& json, const char* key, bool& out) {
     if (json.compare(pos, 4, "true") == 0) { out = true; return true; }
     if (json.compare(pos, 5, "false") == 0) { out = false; return true; }
     return false;
+}
+
+bool json_object_field(const std::string& json, const char* key, std::string& out) {
+    const std::string needle = std::string("\"") + key + "\"";
+    const size_t key_pos = json.find(needle);
+    if (key_pos == std::string::npos) return false;
+    size_t pos = json.find(':', key_pos + needle.size());
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+    if (pos >= json.size() || json[pos] != '{') return false;
+    const size_t start = pos;
+    int depth = 0;
+    bool in_string = false, escaped = false;
+    for (; pos < json.size(); ++pos) {
+        const char c = json[pos];
+        if (in_string) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') in_string = false;
+        } else if (c == '"') in_string = true;
+        else if (c == '{') ++depth;
+        else if (c == '}' && --depth == 0) {
+            out = json.substr(start, pos - start + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool json_uint16_field(const std::string& json, const std::string& key, std::uint16_t& out) {
+    const std::string needle = "\"" + key + "\"";
+    const size_t key_pos = json.find(needle);
+    if (key_pos == std::string::npos) return false;
+    size_t pos = json.find(':', key_pos + needle.size());
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+    const bool quoted = pos < json.size() && json[pos] == '"';
+    if (quoted) ++pos;
+    const size_t begin = pos;
+    unsigned long value = 0;
+    while (pos < json.size() && std::isdigit(static_cast<unsigned char>(json[pos]))) {
+        value = value * 10 + static_cast<unsigned>(json[pos] - '0');
+        if (value > 65535) return false;
+        ++pos;
+    }
+    if (pos == begin) return false;
+    if (quoted) { if (pos >= json.size() || json[pos] != '"') return false; ++pos; }
+    else if (pos < json.size() && json[pos] != ',' && json[pos] != '}' &&
+             !std::isspace(static_cast<unsigned char>(json[pos]))) return false;
+    out = static_cast<std::uint16_t>(value);
+    return true;
 }
 
 std::string base64(const unsigned char* data, size_t n) {
@@ -338,6 +392,26 @@ bool parse_socketio_command_ack(const std::string& message, SocketIoCommandResul
     return true;
 }
 
+std::string socketio_subscribe_packet(const SocketIoConfig& config) {
+    return "42[\"CONN_SUBSCRIBE\",{\"sn\":\"" +
+        json_escape_string(config.device_code) + "\",\"level\":\"" +
+        json_escape_string(config.device_code) + "\"}]";
+}
+
+bool parse_socketio_door_data(const std::string& message, const SocketIoConfig& config,
+                              DoorRegisterSample& out) {
+    out = {};
+    if (message.rfind("42[\"CONN_DATA\",", 0) != 0) return false;
+    std::string sn, level, data;
+    if (!json_string_field(message, "sn", sn) || sn != config.device_code ||
+        !json_string_field(message, "level", level) || level != config.device_code ||
+        !json_object_field(message, "data", data)) return false;
+    if (data.find("\"" + config.door_register + "\"") != std::string::npos &&
+        !json_uint16_field(data, config.door_register, out.value)) return false;
+    out.has_value = json_uint16_field(data, config.door_register, out.value);
+    return true;
+}
+
 SocketIoClient::SocketIoClient(SocketIoConfig config):config_(std::move(config)){}
 SocketIoClient::~SocketIoClient(){close();}
 bool SocketIoClient::start(){
@@ -353,6 +427,11 @@ void SocketIoClient::close(){stop_=true;if(worker_.joinable())worker_.join();con
 void SocketIoClient::set_status_callback(StatusCallback callback) {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     status_callback_ = std::move(callback);
+}
+
+void SocketIoClient::set_door_callback(DoorCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    door_callback_ = std::move(callback);
 }
 
 void SocketIoClient::report(SocketIoCommandResult result) {
@@ -408,8 +487,33 @@ void SocketIoClient::worker_loop() {
                 if(!msg.empty()) {
                     if(msg[0]=='0'&&!namespace_sent){std::array<unsigned char,4> m{};std::random_device rd;for(auto& x:m)x=static_cast<unsigned char>(rd());alive=send_all(fd,websocket_client_text_frame("40",m.data()),config_.connect_timeout_ms);namespace_sent=true;}
                     else if(msg=="2"){std::array<unsigned char,4> m{};std::random_device rd;for(auto& x:m)x=static_cast<unsigned char>(rd());alive=send_all(fd,websocket_client_text_frame("3",m.data()),config_.connect_timeout_ms);}
-                    else if(msg.rfind("40",0)==0){namespace_ready=true;connected_=true;LOG_INFO("socketio","Socket.IO namespace '/' connected");}
+                    else if(msg.rfind("40",0)==0){
+                        namespace_ready=true;++session_;connected_=true;
+                        LOG_INFO("socketio","Socket.IO namespace '/' connected");
+                        if (config_.subscribe_door) {
+                            std::array<unsigned char,4> mask{}; std::random_device rd;
+                            for (auto& x:mask) x=static_cast<unsigned char>(rd());
+                            alive=send_all(fd,websocket_client_text_frame(
+                                socketio_subscribe_packet(config_),mask.data()),config_.connect_timeout_ms);
+                        }
+                    }
                     else {
+                        if (config_.subscribe_door) {
+                            if (msg.rfind("42[\"CONN_SUBSCRIBE_RESULT\",",0)==0) {
+                                std::string status;
+                                if (json_string_field(msg,"status",status) && status != "true")
+                                    LOG_WARN("socketio","door register subscription rejected");
+                            }
+                            DoorRegisterSample sample;
+                            if (parse_socketio_door_data(msg,config_,sample)) {
+                                DoorCallback callback;
+                                {
+                                    std::lock_guard<std::mutex> lock(callback_mutex_);
+                                    callback=door_callback_;
+                                }
+                                if(callback) callback(sample);
+                            }
+                        }
                         int ack_id = -1;
                         if (socketio_ack_id(msg, ack_id) && in_flight && ack_id == in_flight_ack) {
                             SocketIoCommandResult result;
