@@ -103,7 +103,7 @@ DEPS     := $(ALL_OBJS:.o=.d)
 -include $(DEPS)
 
 # ---- Rules ----
-.PHONY: all clean run
+.PHONY: all clean run format format-check lint
 
 all: $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb
 
@@ -142,6 +142,19 @@ $(BUILD_DIR)/sdk_%.o: $(AI_SDK)/%.c | $(BUILD_DIR)
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
+
+# ---- Developer tooling (never part of `all`) ----
+# src/log/log.h is the NPU SDK shim and must not be reformatted.
+FORMAT_FILES := $(filter-out $(SRC_DIR)/log/log.h,$(shell git ls-files '*.cpp' '*.h'))
+
+format:
+	clang-format -i $(FORMAT_FILES)
+
+format-check:
+	clang-format --dry-run --Werror $(FORMAT_FILES)
+
+lint:
+	clang-tidy $(APP_SRCS_CPP) -- $(CXXFLAGS) $(INCLUDES)
 
 clean:
 	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb

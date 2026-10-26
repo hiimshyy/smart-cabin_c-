@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *.cpp) [ -f \"$f\" ] && g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) -I/home/orangepi/ai-sdk -I/home/orangepi/ai-sdk/examples/libawnn_viplite -fsyntax-only \"$f\" ;; esac; } || true",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
