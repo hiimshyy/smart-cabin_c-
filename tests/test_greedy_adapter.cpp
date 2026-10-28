@@ -4,7 +4,14 @@
 
 static int checks = 0;
 static int failed = 0;
-#define CHECK(c, m) do { ++checks; if (!(c)) { ++failed; std::printf("  FAIL: %s (line %d)\n", m, __LINE__); } } while (0)
+#define CHECK(c, m)                                                                                \
+    do {                                                                                           \
+        ++checks;                                                                                  \
+        if (!(c)) {                                                                                \
+            ++failed;                                                                              \
+            std::printf("  FAIL: %s (line %d)\n", m, __LINE__);                                    \
+        }                                                                                          \
+    } while (0)
 
 static PersonDet person(float x, float score) {
     return {x, 10.0f, x + 80.0f, 210.0f, score};
@@ -27,12 +34,25 @@ int main() {
     tracker.update({person(10.0f, 0.9f), person(250.0f, 0.2f)}, {6, 198.0, 640, 480});
     CHECK(tracker.active_count() == 1,
           "a simultaneous low confidence false positive cannot add a greedy track");
+    CHECK(!tracker.active_tracks().front().predicted_only,
+          "matched greedy track is observed in the current frame");
+
+    tracker.predict({7, 231.0, 640, 480});
+    CHECK(tracker.active_tracks().front().predicted_only,
+          "detector-skipped greedy frame is prediction-only");
+    tracker.update({}, {8, 264.0, 640, 480});
+    CHECK(tracker.active_tracks().front().state == ByteTrackState::Tracked &&
+              tracker.active_tracks().front().predicted_only,
+          "unmatched confirmed greedy track is prediction-only before LOST");
+    tracker.update({person(10.0f, 0.9f)}, {9, 297.0, 640, 480});
+    CHECK(!tracker.active_tracks().front().predicted_only,
+          "new greedy observation clears prediction-only state");
 
     GreedyIouTracker cabin(config, 30, 90);
     for (int frame = 0; frame < 3; ++frame) {
-        cabin.update({person(10.0f, 0.9f), person(130.0f, 0.85f),
-                      person(250.0f, 0.8f), person(370.0f, 0.25f),
-                      person(490.0f, 0.15f)}, {frame, frame * 33.0, 640, 480});
+        cabin.update({person(10.0f, 0.9f), person(130.0f, 0.85f), person(250.0f, 0.8f),
+                      person(370.0f, 0.25f), person(490.0f, 0.15f)},
+                     {frame, frame * 33.0, 640, 480});
     }
     CHECK(cabin.tracked_count() == 3 && cabin.active_count() == 3,
           "three high detections and two low false positives produce three greedy tracks");

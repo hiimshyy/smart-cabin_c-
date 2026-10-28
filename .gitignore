@@ -29,6 +29,7 @@ logs/
 db/*.db
 db/*.db-wal
 db/*.db-shm
+db/occupancy_state_cam*.json
 
 # Sensitive resident DB backups (metadata + biometric embeddings)
 db/*.db.bak-*
@@ -42,6 +43,7 @@ db/*.db.bak-*
 *~
 
 # Kiro CLI resume markers / session junk
+.agents
 chat
 legacy/bug
 legacy/camera

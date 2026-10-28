@@ -26,6 +26,41 @@ g++ -std=c++17 -Isrc \
     -o "$OUT/test_app_config" && "$OUT/test_app_config" || fail=1
 
 echo ""
+echo "== Occupancy config =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_occupancy_config.cpp src/occupancy_config.cpp \
+    $(pkg-config --libs opencv4) -o "$OUT/test_occupancy_config" \
+    && "$OUT/test_occupancy_config" || fail=1
+
+echo ""
+echo "== Occupancy state =="
+g++ -std=c++17 -Isrc \
+    tests/test_occupancy_state.cpp src/occupancy_state.cpp src/log/logger.cpp \
+    -lpthread -o "$OUT/test_occupancy_state" \
+    && "$OUT/test_occupancy_state" || fail=1
+
+echo ""
+echo "== Occupancy counter =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_occupancy_counter.cpp src/occupancy_counter.cpp \
+    $(pkg-config --libs opencv4) -o "$OUT/test_occupancy_counter" \
+    && "$OUT/test_occupancy_counter" || fail=1
+
+echo ""
+echo "== Occupancy overlay and disabled HUD =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_overlay.cpp src/overlay.cpp src/occupancy_config.cpp \
+    $(pkg-config --libs opencv4) -o "$OUT/test_overlay" \
+    && "$OUT/test_overlay" || fail=1
+
+echo ""
+echo "== Occupancy system metrics gating =="
+g++ -std=c++17 -Isrc \
+    tests/test_system_metrics.cpp src/system_metrics.cpp src/log/logger.cpp \
+    -lpthread -o "$OUT/test_system_metrics" \
+    && "$OUT/test_system_metrics" || fail=1
+
+echo ""
 echo "== Door inference scheduler =="
 g++ -std=c++17 -Isrc \
     tests/test_door_inference.cpp src/door_inference.cpp \
@@ -34,7 +69,8 @@ g++ -std=c++17 -Isrc \
 echo ""
 echo "== Video frame/deadline wait =="
 g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
-    tests/test_video_wait.cpp src/video_io.cpp src/event_video_recorder.cpp src/log/logger.cpp \
+    tests/test_video_wait.cpp src/video_io.cpp src/event_video_recorder.cpp \
+    src/occupancy_counter.cpp src/log/logger.cpp \
     $(pkg-config --libs opencv4) -lpthread \
     -o "$OUT/test_video_wait" && "$OUT/test_video_wait" || fail=1
 
@@ -65,7 +101,7 @@ g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
     $(pkg-config --libs opencv4) -o "$OUT/test_kalman_box_tracker" && "$OUT/test_kalman_box_tracker" || fail=1
 
 echo ""
-echo "== Greedy fallback threshold =="
+echo "== Greedy fallback threshold and observation reliability =="
 g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
     tests/test_greedy_adapter.cpp src/tracker_greedy.cpp src/tracker.cpp src/log/logger.cpp \
     -lpthread -o "$OUT/test_greedy_adapter" && "$OUT/test_greedy_adapter" || fail=1

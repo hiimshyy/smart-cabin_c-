@@ -41,7 +41,11 @@ export FACE_TRACKER_MODE="${FACE_TRACKER_MODE:-byte}"
 export FACE_PERSON_THR="${FACE_PERSON_THR:-0.5}"
 export FACE_PERSON_LOW_THR="${FACE_PERSON_LOW_THR:-0.1}"
 export FACE_TRACK_LOST_MS="${FACE_TRACK_LOST_MS:-1200}"
-# Optional direct floor-call channel. Empty keeps Socket.IO disabled.
+# This installation serves physical cabin/elevator 2.
+export FACE_CABIN_ID="${FACE_CABIN_ID:-2}"
+# Direct floor-call Socket.IO is opt-in. Keep it disabled for occupancy-only
+# operation even if an endpoint remains configured in the service environment.
+export FACE_CABIN_SOCKETIO="${FACE_CABIN_SOCKETIO:-0}"
 # FACE_EVENT_WS remains a compatibility fallback for earlier local setup.
 export FACE_IOT_WS="${FACE_IOT_WS-${FACE_EVENT_WS:-}}"
 export FACE_IOT_DEVICE_CODE="${FACE_IOT_DEVICE_CODE:-2026010900100098}"
@@ -65,9 +69,9 @@ export FACE_FACES_DIR="$FACE_ROOT/faces"
 #         'face_cabin' không tham số là tự nạp.
 export FACE_CABIN_RTSP_URL="${FACE_CABIN_RTSP_URL:-}"
 
-# Chọn camera nào từ PostgreSQL: rỗng = camera 'connected' đầu tiên;
-# hoặc đặt camera_id (vd '{SN}_{slaveId}') hoặc '#<dbId>' (vd '#6').
-export FACE_CAMERA_SELECT="${FACE_CAMERA_SELECT:-}"
+# This installation uses PostgreSQL camera row #6 (slave/elevator 2).
+# Override with another camera_id or #<dbId> only for an explicit test.
+export FACE_CAMERA_SELECT="${FACE_CAMERA_SELECT:-#6}"
 # node_modules chứa 'pg' cho get_camera_url.js — của face_core (edge_elevator đã gỡ 06/10).
 # Thay luôn giá trị cũ đang còn trong shell nếu thư mục/module đó không còn tồn tại.
 if [ -z "${FACE_PG_NODE_PATH:-}" ] || [ ! -f "$FACE_PG_NODE_PATH/pg/package.json" ]; then
@@ -79,17 +83,24 @@ fi
 export FACE_CABIN_LOG_DIR="${FACE_CABIN_LOG_DIR:-$FACE_ROOT/logs}"
 mkdir -p "$FACE_CABIN_LOG_DIR" 2>/dev/null || true
 
-# Thu clip raw theo phiên có người để làm dataset. Đặt FACE_RECORD_DIR="" trước
-# khi source env.sh để tắt. Video có 1s pre-roll và đóng sau 3s cabin trống.
-export FACE_RECORD_DIR="${FACE_RECORD_DIR-$FACE_ROOT/recordings}"
+# Recording is disabled by default to match the production service. Set
+# FACE_RECORD_DIR to a writable path before sourcing env.sh to enable it.
+export FACE_RECORD_DIR="${FACE_RECORD_DIR-}"
 export FACE_RECORD_PRE_MS="${FACE_RECORD_PRE_MS:-1000}"
 export FACE_RECORD_EMPTY_MS="${FACE_RECORD_EMPTY_MS:-3000}"
 export FACE_RECORD_FPS="${FACE_RECORD_FPS:-15}"
 export FACE_RECORD_WIDTH="${FACE_RECORD_WIDTH:-960}"
 
-# X11 display
-[ -z "$DISPLAY" ]    && export DISPLAY=:0.0
+# Counting-zone config (per camera) + persistent occupancy state.
+export FACE_OCCUPANCY_CONFIG_DIR="${FACE_OCCUPANCY_CONFIG_DIR:-$FACE_ROOT/config}"
+export FACE_OCCUPANCY_STATE_DIR="${FACE_OCCUPANCY_STATE_DIR:-$FACE_ROOT/db}"
+mkdir -p "$FACE_OCCUPANCY_CONFIG_DIR" 2>/dev/null || true
+
+# X11 display. Disable MIT-SHM because forwarded displays such as MobaXterm
+# cannot share local X11 memory segments with the application process.
+[ -z "$DISPLAY" ] && export DISPLAY=:0.0
 [ -z "$XAUTHORITY" ] && export XAUTHORITY="$HOME/.Xauthority"
+export QT_X11_NO_MITSHM="${QT_X11_NO_MITSHM:-1}"
 
 # Silence benign OpenCV/GStreamer warnings on RTSP
 [ -z "$OPENCV_LOG_LEVEL" ] && export OPENCV_LOG_LEVEL=ERROR
@@ -108,6 +119,7 @@ face_cabin() {
     local record_args=()
     local socketio_args=()
     local inference_args=()
+    local occupancy_args=()
     local preview_args=()
     if [ "${FACE_CABIN_NO_PREVIEW:-0}" = "1" ]; then
         preview_args=(--no-preview)
@@ -119,7 +131,7 @@ face_cabin() {
                      --record-fps "$FACE_RECORD_FPS"
                      --record-width "$FACE_RECORD_WIDTH")
     fi
-    if [ -n "${FACE_IOT_WS:-}" ]; then
+    if [ "${FACE_CABIN_SOCKETIO:-0}" = "1" ] && [ -n "${FACE_IOT_WS:-}" ]; then
         socketio_args=(--iot-ws "$FACE_IOT_WS"
                        --iot-device-code "$FACE_IOT_DEVICE_CODE"
                        --iot-floor-address "$FACE_IOT_FLOOR_ADDRESS"
@@ -127,6 +139,11 @@ face_cabin() {
     fi
     if [ "${FACE_ADAPTIVE_INFERENCE:-1}" = "0" ]; then
         inference_args=(--no-adaptive-inference)
+    fi
+    local occ_config="$FACE_OCCUPANCY_CONFIG_DIR/occupancy_cam$FACE_CABIN_ID.json"
+    local occ_state="$FACE_OCCUPANCY_STATE_DIR/occupancy_state_cam$FACE_CABIN_ID.json"
+    if [ -f "$occ_config" ]; then
+        occupancy_args=(--occupancy-config "$occ_config" --occupancy-state "$occ_state")
     fi
     # Chưa có URL tay -> tự lấy từ PostgreSQL (camera cấu hình ở web).
     if [ -z "$url" ]; then
@@ -144,7 +161,7 @@ face_cabin() {
     (cd "$FACE_ROOT" && ./face_recog_app "$FACE_DET_MODEL" \
         --recog-model "$FACE_RECOG_MODEL" \
         --recog-dim 512 --recog-bgr \
-        --resident-db "$db" --cabin-id "${FACE_CABIN_ID:-1}" \
+        --resident-db "$db" --cabin-id "$FACE_CABIN_ID" \
         --match-thr "$thr" \
         --person-model "$FACE_PERSON_MODEL" \
         --tracker-mode "$FACE_TRACKER_MODE" \
@@ -155,6 +172,7 @@ face_cabin() {
         "${preview_args[@]}" \
         "${socketio_args[@]}" \
         "${inference_args[@]}" \
+        "${occupancy_args[@]}" \
         "${record_args[@]}")
 }
 
@@ -323,7 +341,7 @@ face_usb() {
     (cd "$FACE_ROOT" && ./face_recog_app "$FACE_DET_MODEL" \
         --recog-model "$FACE_RECOG_MODEL" \
         --recog-dim 512 --recog-bgr \
-        --resident-db "$db" --cabin-id "${FACE_CABIN_ID:-1}" \
+        --resident-db "$db" --cabin-id "$FACE_CABIN_ID" \
         --match-thr "$thr" \
         --person-model "$FACE_PERSON_MODEL")
 }
@@ -442,7 +460,7 @@ face_help() {
    Đặt URL: export FACE_CABIN_RTSP_URL='rtsp://...' (web local ghi biến này),
    hoặc truyền trực tiếp: face_cabin rtsp://admin:pass@ip:554/stream1
    home_floor=0 = "chưa đăng ký tầng": vẫn chào tên, overlay hiện F?.
-   Đặt FACE_CABIN_ID=N để đổi cabin id (default 1).
+   FACE_CABIN_ID mặc định là 2 trên thiết bị này; đặt giá trị khác chỉ khi test cabin khác.
    FACE_TRACKER_MODE=byte|greedy (default byte), cùng các biến FACE_PERSON_THR,
    FACE_PERSON_LOW_THR và FACE_TRACK_LOST_MS để tinh chỉnh tracker.
    Auto-record raw vào $FACE_RECORD_DIR khi có người; mặc định recordings/.

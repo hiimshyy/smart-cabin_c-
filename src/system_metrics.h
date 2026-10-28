@@ -1,32 +1,43 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <atomic>
+
+struct SystemOccupancySnapshot {
+    bool enabled   = false;
+    int  count     = 0;
+    bool uncertain = false;
+};
 
 // Periodically samples host/process health without touching the realtime
 // inference loop. Records are emitted through the application's normal logger.
 class SystemMetrics {
 public:
     explicit SystemMetrics(std::string storage_path = "/home/orangepi/face_recog_app",
-                           int interval_ms = 30000);
+                           int         interval_ms  = 30000);
     ~SystemMetrics();
 
-    SystemMetrics(const SystemMetrics&) = delete;
+    SystemMetrics(const SystemMetrics&)            = delete;
     SystemMetrics& operator=(const SystemMetrics&) = delete;
 
     void start();
     void stop();
 
+    void                    set_occupancy(int count, bool uncertain);
+    SystemOccupancySnapshot occupancy_snapshot() const;
+
 private:
     void worker_loop();
 
-    std::string storage_path_;
-    int interval_ms_;
-    std::atomic<bool> stop_requested_{false};
-    std::mutex mutex_;
+    std::string             storage_path_;
+    int                     interval_ms_;
+    std::atomic<bool>       stop_requested_{false};
+    std::atomic<uint64_t>   occupancy_snapshot_{0};
+    std::mutex              mutex_;
     std::condition_variable cv_;
-    std::thread worker_;
+    std::thread             worker_;
 };

@@ -5,10 +5,10 @@
 
 GreedyIouTracker::GreedyIouTracker(const TrackerConfig& config, int max_missed,
                                    int recognition_retry_frames) {
-    high_threshold_ = config.high_threshold;
-    legacy_.iou_thresh = config.primary_iou_gate;
-    legacy_.max_missed = max_missed;
-    legacy_.confirm_hits = config.confirm_hits;
+    high_threshold_            = config.high_threshold;
+    legacy_.iou_thresh         = config.primary_iou_gate;
+    legacy_.max_missed         = max_missed;
+    legacy_.confirm_hits       = config.confirm_hits;
     legacy_.recog_retry_frames = recognition_retry_frames;
 }
 
@@ -27,26 +27,30 @@ void GreedyIouTracker::update(const std::vector<PersonDet>& detections, const Fr
     }
     legacy_.update(high_detections, frame.frame_id);
     std::set<int> live;
-    for (Track* track : legacy_.active_tracks()) live.insert(track->id);
+    for (Track* track : legacy_.active_tracks())
+        live.insert(track->id);
     for (auto it = resident_ids_.begin(); it != resident_ids_.end();) {
-        if (!live.count(it->first)) it = resident_ids_.erase(it); else ++it;
+        if (!live.count(it->first))
+            it = resident_ids_.erase(it);
+        else
+            ++it;
     }
 }
 
 TrackView GreedyIouTracker::view_of(const Track& track) const {
     TrackView view;
-    view.id = track.id;
+    view.id    = track.id;
     view.state = track.state == TrackState::LOST ? ByteTrackState::Lost : ByteTrackState::Tracked;
-    view.box = {track.x1, track.y1, track.x2, track.y2};
-    view.detection_score = track.conf;
-    view.predicted_only = track.state == TrackState::LOST;
+    view.box   = {track.x1, track.y1, track.x2, track.y2};
+    view.detection_score      = track.conf;
+    view.predicted_only       = track.last_seen_frame != last_frame_id_;
     view.identity.resident_id = -1;
-    auto resident = resident_ids_.find(track.id);
+    auto resident             = resident_ids_.find(track.id);
     if (resident != resident_ids_.end()) view.identity.resident_id = resident->second;
     if (!track.name.empty() && track.name != "unknown") {
         view.identity.display_name = track.name;
-        view.identity.similarity = track.match_sim;
-        view.identity.latched = true;
+        view.identity.similarity   = track.match_sim;
+        view.identity.latched      = true;
     }
     return view;
 }
@@ -55,7 +59,8 @@ std::vector<TrackView> GreedyIouTracker::active_tracks() const {
     std::vector<TrackView> views;
     // Legacy API is non-const because it returns mutable pointers.  The adapter
     // immediately copies data into immutable views and never exposes them.
-    for (Track* track : const_cast<Tracker&>(legacy_).active_tracks()) views.push_back(view_of(*track));
+    for (Track* track : const_cast<Tracker&>(legacy_).active_tracks())
+        views.push_back(view_of(*track));
     return views;
 }
 
@@ -89,11 +94,14 @@ std::vector<int> GreedyIouTracker::invalidate_residents(const std::set<int64_t>&
             selected.insert(view.id);
     }
     std::vector<int> invalidated = legacy_.invalidate_catalog_cache(selected, invalidate_unknown);
-    for (int id : invalidated) resident_ids_.erase(id);
+    for (int id : invalidated)
+        resident_ids_.erase(id);
     return invalidated;
 }
 
-int GreedyIouTracker::active_count() const { return legacy_.active_count(); }
+int GreedyIouTracker::active_count() const {
+    return legacy_.active_count();
+}
 
 int GreedyIouTracker::tracked_count() const {
     int count = 0;

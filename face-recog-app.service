@@ -13,14 +13,18 @@ Environment=HOME=/home/orangepi
 Environment=DISPLAY=:0.0
 Environment=XAUTHORITY=/home/orangepi/.Xauthority
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=FACE_CABIN_NO_PREVIEW=1
 EnvironmentFile=-/etc/face-recog-app.env
+Environment=FACE_CABIN_ID=2
+Environment="FACE_CAMERA_SELECT=#6"
+Environment=FACE_CABIN_SOCKETIO=0
+Environment=FACE_IOT_WS=
+Environment=FACE_CABIN_NO_PREVIEW=1
 
 ExecStart=/bin/bash -c 'source /home/orangepi/face_recog_app/env.sh && face_cabin'
 
 Restart=always
 RestartSec=5
-KillSignal=SIGINT
+KillSignal=SIGTERM
 KillMode=control-group
 TimeoutStopSec=30
 

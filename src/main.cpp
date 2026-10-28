@@ -16,58 +16,61 @@
 // overlay/HUD drawing (overlay), and the benchmark summary (benchmark) live in
 // their own modules (spec main-cpp-refactor).
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cmath>
-#include <chrono>
-#include <vector>
-#include <csignal>
-#include <atomic>
-#include <algorithm>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
 #include <map>
-#include <string>
+#include <mutex>
 #include <optional>
+#include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
 #include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 
 #include <awnn_lib.h>
 
 #include "detect_pre.h"
 #include "detection.h"
-#include "scrfd_post.h"
-#include "yolo_post.h"
-#include "person_tracker.h"
-#include "face_track_assoc.h"
 #include "face_align.h"
-#include "face_recog.h"
 #include "face_db.h"
-#include "resident_db.h"
-#include "resident_catalog.h"
-#include "resident_reconcile.h"
-#include "match_engine.h"
+#include "face_recog.h"
+#include "face_track_assoc.h"
 #include "interaction.h"
 #include "log/logger.h"
+#include "match_engine.h"
+#include "person_tracker.h"
+#include "resident_catalog.h"
+#include "resident_db.h"
+#include "resident_reconcile.h"
+#include "scrfd_post.h"
+#include "yolo_post.h"
 
 #include "app_config.h"
-#include "video_io.h"
-#include "event_video_recorder.h"
-#include "overlay.h"
 #include "benchmark.h"
-#include "face_label.h"
 #include "cabin_config.h"
-#include "edge_client.h"
-#include "floor_call_coordinator.h"
-#include "socketio_client.h"
 #include "door_inference.h"
+#include "edge_client.h"
+#include "event_video_recorder.h"
+#include "face_label.h"
+#include "floor_call_coordinator.h"
+#include "occupancy_config.h"
+#include "occupancy_counter.h"
+#include "occupancy_state.h"
+#include "overlay.h"
+#include "socketio_client.h"
 #include "system_metrics.h"
+#include "video_io.h"
 #include <memory>
 
 static constexpr int NPU_INPUT_W = 640;
@@ -81,17 +84,20 @@ static double now_ms() {
 }
 
 static std::atomic<bool> g_stop{false};
-static void on_signal(int) { g_stop.store(true); }
+static void              on_signal(int) {
+                 g_stop.store(true);
+}
 
 static DoorTrackSummary summarize_door_tracks(const std::vector<TrackView>& tracks,
-                                               const std::set<int>& confirmed_track_ids,
-                                               bool operational) {
+                                              const std::set<int>&          confirmed_track_ids,
+                                              bool                          operational) {
     DoorTrackSummary summary;
     for (const auto& track : tracks) {
         if (track.state != ByteTrackState::Tracked && track.state != ByteTrackState::Lost) continue;
         ++summary.active;
         if (!track.identity.latched || track.identity.resident_id < 0 ||
-            (operational && !confirmed_track_ids.count(track.id))) ++summary.unresolved;
+            (operational && !confirmed_track_ids.count(track.id)))
+            ++summary.unresolved;
         if (track.state == ByteTrackState::Tracked && !track.predicted_only) ++summary.tracked;
     }
     return summary;
@@ -99,7 +105,7 @@ static DoorTrackSummary summarize_door_tracks(const std::vector<TrackView>& trac
 
 int main(int argc, char** argv) {
     // ---- Parse CLI --------------------------------------------------------
-    AppConfig cfg;
+    AppConfig   cfg;
     ParseResult pr = parse_args(argc, argv, cfg);
     if (pr.help_requested) return 0;
     if (pr.invalid_args) return 2;
@@ -114,22 +120,22 @@ int main(int argc, char** argv) {
         def.dir     = "/var/log/face-cabin";
         Logger::instance().init(resolve_log_config(argc, argv, def));
     }
-    std::signal(SIGINT,  SIG_IGN);
+    std::signal(SIGINT, SIG_IGN);
     std::signal(SIGTERM, on_signal);
 
     const bool use_tracker = (cfg.person_model_path != nullptr);
 
     // ---- 1) Open camera ---------------------------------------------------
     cv::VideoCapture cap;
-    bool is_stream = (cfg.custom_pipeline != nullptr) ||
+    bool             is_stream = (cfg.custom_pipeline != nullptr) ||
                      (cfg.source_url != nullptr && is_stream_source(cfg.source_url));
 
     // ---- Resolve cabin runtime config (spec cabin-runtime-config) --------
     // Operational mode (--resident-db) reads Nhóm A config from the cabins
     // table; precedence CLI > DB > default. Dev mode (--face-db only) keeps the
     // pure CLI>default path. A custom --gst-pipeline stays CLI-only (Nhóm C).
-    const bool operational = (cfg.recog_model_path && cfg.resident_db_path);
-    CabinConfig eff;                 // effective resolved config
+    const bool  operational = (cfg.recog_model_path && cfg.resident_db_path);
+    CabinConfig eff; // effective resolved config
     eff.gst_latency_ms   = cfg.gst_latency_ms;
     eff.match_thr        = cfg.match_threshold;
     eff.confirm_streak   = cfg.confirm_streak;
@@ -137,7 +143,7 @@ int main(int argc, char** argv) {
     eff.unknown_after_ms = cfg.unknown_after_ms;
     eff.reconnect_min_ms = cfg.reconnect_min_ms;
     eff.reconnect_max_ms = cfg.reconnect_max_ms;
-    bool cabin_resolved = false;
+    bool cabin_resolved  = false;
 
     if (operational && cfg.custom_pipeline == nullptr) {
         // Read the cabins row via a short-lived read-only handle (no writer);
@@ -149,28 +155,35 @@ int main(int argc, char** argv) {
                 LOG_WARN("cfg", "cabin id=%d not in DB — using defaults", cfg.cabin_id);
             }
             CliOverrides cli;
-            cli.has_source         = cfg.passed.source;         cli.source_val         = cfg.source_url ? cfg.source_url : "";
-            cli.has_gst_latency    = cfg.passed.gst_latency;    cli.gst_latency_val    = cfg.gst_latency_ms;
-            cli.has_match_thr      = cfg.passed.match_thr;      cli.match_thr_val      = cfg.match_threshold;
-            cli.has_confirm_streak = cfg.passed.confirm_streak; cli.confirm_streak_val = cfg.confirm_streak;
-            cli.has_cooldown       = cfg.passed.cooldown;       cli.cooldown_val       = cfg.cooldown_ms;
-            cli.has_unknown_after  = cfg.passed.unknown_after;  cli.unknown_after_val  = cfg.unknown_after_ms;
-            cli.has_reconnect_min  = cfg.passed.reconnect_min;  cli.reconnect_min_val  = cfg.reconnect_min_ms;
-            cli.has_reconnect_max  = cfg.passed.reconnect_max;  cli.reconnect_max_val  = cfg.reconnect_max_ms;
+            cli.has_source         = cfg.passed.source;
+            cli.source_val         = cfg.source_url ? cfg.source_url : "";
+            cli.has_gst_latency    = cfg.passed.gst_latency;
+            cli.gst_latency_val    = cfg.gst_latency_ms;
+            cli.has_match_thr      = cfg.passed.match_thr;
+            cli.match_thr_val      = cfg.match_threshold;
+            cli.has_confirm_streak = cfg.passed.confirm_streak;
+            cli.confirm_streak_val = cfg.confirm_streak;
+            cli.has_cooldown       = cfg.passed.cooldown;
+            cli.cooldown_val       = cfg.cooldown_ms;
+            cli.has_unknown_after  = cfg.passed.unknown_after;
+            cli.unknown_after_val  = cfg.unknown_after_ms;
+            cli.has_reconnect_min  = cfg.passed.reconnect_min;
+            cli.reconnect_min_val  = cfg.reconnect_min_ms;
+            cli.has_reconnect_max  = cfg.passed.reconnect_max;
+            cli.reconnect_max_val  = cfg.reconnect_max_ms;
 
-            CabinConfig def;   // compile-in defaults
-            eff = resolve_cabin_config(cli, row, def);
+            CabinConfig def; // compile-in defaults
+            eff            = resolve_cabin_config(cli, row, def);
             cabin_resolved = true;
             // Effective config summary + source, without logging RTSP credentials.
-            LOG_INFO("cfg", "cabin id=%d effective: stream=%d camera=%s match_thr=%.2f "
+            LOG_INFO("cfg",
+                     "cabin id=%d effective: stream=%d camera=%s match_thr=%.2f "
                      "confirm=%d cooldown=%.0f unknown=%.0f latency=%d reconnect=%d-%d "
                      "floors=%d-%d [src: %s]",
                      cfg.cabin_id, eff.use_stream ? 1 : 0,
-                     eff.use_stream ? "configured(redacted)" : "usb",
-                     eff.match_thr, eff.confirm_streak, eff.cooldown_ms,
-                     eff.unknown_after_ms, eff.gst_latency_ms,
-                     eff.reconnect_min_ms, eff.reconnect_max_ms,
-                     eff.floors_min, eff.floors_max,
+                     eff.use_stream ? "configured(redacted)" : "usb", eff.match_thr,
+                     eff.confirm_streak, eff.cooldown_ms, eff.unknown_after_ms, eff.gst_latency_ms,
+                     eff.reconnect_min_ms, eff.reconnect_max_ms, eff.floors_min, eff.floors_max,
                      cfg.passed.source ? "cli" : (row.found ? "db" : "default"));
             cfg_db.close();
         } else {
@@ -216,7 +229,8 @@ int main(int argc, char** argv) {
             // Stream not up yet (network/camera still booting). Don't die —
             // let the capture thread keep retrying with backoff so a cabin
             // started before its RTSP source recovers on its own.
-            LOG_WARN("cam", "stream not available yet — capture thread will "
+            LOG_WARN("cam",
+                     "stream not available yet — capture thread will "
                      "keep reconnecting (backoff %d-%d ms)",
                      cfg.reconnect_min_ms, cfg.reconnect_max_ms);
         } else {
@@ -224,26 +238,24 @@ int main(int argc, char** argv) {
             return 1;
         }
     } else {
-        LOG_INFO("cam", "%dx%d @ %.1f FPS (%s)",
-                 (int)cap.get(cv::CAP_PROP_FRAME_WIDTH),
-                 (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT),
-                 cap.get(cv::CAP_PROP_FPS),
+        LOG_INFO("cam", "%dx%d @ %.1f FPS (%s)", (int)cap.get(cv::CAP_PROP_FRAME_WIDTH),
+                 (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT), cap.get(cv::CAP_PROP_FPS),
                  is_stream ? "GStreamer" : "V4L2 MJPG");
     }
 
     EventVideoRecorderConfig recorder_config;
-    recorder_config.output_dir = cfg.record_dir ? cfg.record_dir : "";
-    recorder_config.fps = cfg.record_fps;
-    recorder_config.pre_roll_ms = cfg.record_pre_ms;
+    recorder_config.output_dir    = cfg.record_dir ? cfg.record_dir : "";
+    recorder_config.fps           = cfg.record_fps;
+    recorder_config.pre_roll_ms   = cfg.record_pre_ms;
     recorder_config.empty_stop_ms = cfg.record_empty_ms;
-    recorder_config.output_width = cfg.record_width;
-    recorder_config.cabin_id = cfg.cabin_id;
+    recorder_config.output_width  = cfg.record_width;
+    recorder_config.cabin_id      = cfg.cabin_id;
     EventVideoRecorder event_recorder(std::move(recorder_config));
 
     FrameSlot   slot;
     std::thread cap_th(capture_worker, &cap, &slot, cam_cfg, &event_recorder);
-    LOG_INFO("cam", "capture thread started (reconnect backoff %d-%d ms)",
-             cfg.reconnect_min_ms, cfg.reconnect_max_ms);
+    LOG_INFO("cam", "capture thread started (reconnect backoff %d-%d ms)", cfg.reconnect_min_ms,
+             cfg.reconnect_max_ms);
 
     // ---- 2) Init NPU. Load recog -> scrfd -> yolo (person detect last)
     //         This order minimizes NBG resource conflict on some models.
@@ -266,18 +278,18 @@ int main(int argc, char** argv) {
     // Resident-DB (operational) mode plumbing. When resident_db_path is set,
     // matching goes through MatchEngine (multi-embedding) instead of the .fdb
     // FaceDB, interaction sessions are tracked, and match_events are logged.
-    ResidentDB          resident_db;
-    ResidentCatalogReloader catalog_reloader;
-    MatchEngine         match_engine;
-    InteractionManager  interaction;
-    std::unique_ptr<EdgeClient> edge;   // nullptr unless --edge-socket given
-    std::unique_ptr<SocketIoClient> iot_socket; // async direct floor command client
+    ResidentDB                            resident_db;
+    ResidentCatalogReloader               catalog_reloader;
+    MatchEngine                           match_engine;
+    InteractionManager                    interaction;
+    std::unique_ptr<EdgeClient>           edge;       // nullptr unless --edge-socket given
+    std::unique_ptr<SocketIoClient>       iot_socket; // async direct floor command client
     std::shared_ptr<FloorCallCoordinator> floor_calls;
-    std::atomic<std::uint16_t> door_register{0};
-    std::atomic<double> door_received_ms{-1.0};
-    std::atomic<std::uint64_t> door_session{0};
-    std::map<int64_t, Resident> resident_by_id;   // id -> metadata for overlay
-    bool                use_resident_db = false;
+    std::atomic<std::uint16_t>            door_register{0};
+    std::atomic<double>                   door_received_ms{-1.0};
+    std::atomic<std::uint64_t>            door_session{0};
+    std::map<int64_t, Resident>           resident_by_id; // id -> metadata for overlay
+    bool                                  use_resident_db = false;
 
     if (cfg.recog_model_path) {
         recognizer = new FaceRecognizer(cfg.recog_model_path, cfg.recog_dim, cfg.recog_rgb);
@@ -288,8 +300,8 @@ int main(int argc, char** argv) {
             shutdown_capture();
             return 2;
         }
-        LOG_INFO("recog", "loaded %s (dim=%d, rgb=%d)",
-                 cfg.recog_model_path, cfg.recog_dim, cfg.recog_rgb ? 1 : 0);
+        LOG_INFO("recog", "loaded %s (dim=%d, rgb=%d)", cfg.recog_model_path, cfg.recog_dim,
+                 cfg.recog_rgb ? 1 : 0);
 
         // Prefer the operational SQLite path when --resident-db is given.
         if (cfg.resident_db_path) {
@@ -300,12 +312,12 @@ int main(int argc, char** argv) {
                 shutdown_capture();
                 return 2;
             }
-            size_t loaded_resident_count = 0;
+            size_t loaded_resident_count  = 0;
             size_t loaded_embedding_count = 0;
             if (cfg.resident_reload_ms > 0) {
                 std::string reload_error;
                 if (!catalog_reloader.open(cfg.resident_db_path, cfg.recog_dim,
-                                            cfg.resident_reload_ms, now_ms(), reload_error)) {
+                                           cfg.resident_reload_ms, now_ms(), reload_error)) {
                     LOG_ERROR("db-reload", "catalog reader startup failed error=%s",
                               reload_error.c_str());
                     resident_db.close();
@@ -318,7 +330,8 @@ int main(int argc, char** argv) {
                 auto result = catalog_reloader.poll(now_ms(), initial, reload_error);
                 if (result != ResidentCatalogReloader::PollResult::Reloaded) {
                     LOG_ERROR("db-reload", "initial catalog load failed error=%s",
-                              reload_error.empty() ? "unexpected_poll_result" : reload_error.c_str());
+                              reload_error.empty() ? "unexpected_poll_result"
+                                                   : reload_error.c_str());
                     catalog_reloader.close();
                     resident_db.close();
                     delete recognizer;
@@ -326,16 +339,15 @@ int main(int argc, char** argv) {
                     shutdown_capture();
                     return 2;
                 }
-                loaded_resident_count = initial.fingerprint.resident_count;
+                loaded_resident_count  = initial.fingerprint.resident_count;
                 loaded_embedding_count = initial.fingerprint.embedding_count;
-                match_engine = std::move(initial.matcher);
-                resident_by_id = std::move(initial.resident_by_id);
+                match_engine           = std::move(initial.matcher);
+                resident_by_id         = std::move(initial.resident_by_id);
                 catalog_reloader.accept(initial);
                 LOG_INFO("db-reload", "enabled interval_ms=%d generation=%llu",
-                         cfg.resident_reload_ms,
-                         (unsigned long long)catalog_reloader.generation());
+                         cfg.resident_reload_ms, (unsigned long long)catalog_reloader.generation());
             } else {
-                std::vector<Resident> residents;
+                std::vector<Resident>     residents;
                 std::vector<EmbeddingRow> embeddings;
                 if (!resident_db.load_active(residents, embeddings)) {
                     LOG_ERROR("db", "load_active failed on %s", cfg.resident_db_path);
@@ -349,7 +361,8 @@ int main(int argc, char** argv) {
                 if (!embeddings.empty()) {
                     int db_dim = (int)embeddings.front().vector.size();
                     if (db_dim != cfg.recog_dim) {
-                        LOG_ERROR("db", "embedding dim mismatch: DB has %d-D vectors "
+                        LOG_ERROR("db",
+                                  "embedding dim mismatch: DB has %d-D vectors "
                                   "but --recog-dim=%d. All matches would fail. "
                                   "Re-run with --recog-dim %d or re-enroll.",
                                   db_dim, cfg.recog_dim, db_dim);
@@ -362,11 +375,14 @@ int main(int argc, char** argv) {
                 }
                 match_engine.build(embeddings, cfg.recog_dim);
                 if (!embeddings.empty() && match_engine.vector_count() == 0) {
-                    LOG_ERROR("db", "no embeddings loaded into matcher despite %zu "
-                              "rows in DB — check embedding dim consistency", embeddings.size());
+                    LOG_ERROR("db",
+                              "no embeddings loaded into matcher despite %zu "
+                              "rows in DB — check embedding dim consistency",
+                              embeddings.size());
                 }
-                for (const auto& r : residents) resident_by_id[r.id] = r;
-                loaded_resident_count = residents.size();
+                for (const auto& r : residents)
+                    resident_by_id[r.id] = r;
+                loaded_resident_count  = residents.size();
                 loaded_embedding_count = embeddings.size();
                 LOG_INFO("db-reload", "disabled interval_ms=0");
             }
@@ -378,9 +394,10 @@ int main(int argc, char** argv) {
             interaction.set_config(icfg);
 
             use_resident_db = true;
-            LOG_INFO("db", "loaded %zu residents, %zu embeddings (dim=%d)",
-                     loaded_resident_count, loaded_embedding_count, cfg.recog_dim);
-            LOG_INFO("db", "cabin_id=%d confirm_streak=%d cooldown_ms=%.0f "
+            LOG_INFO("db", "loaded %zu residents, %zu embeddings (dim=%d)", loaded_resident_count,
+                     loaded_embedding_count, cfg.recog_dim);
+            LOG_INFO("db",
+                     "cabin_id=%d confirm_streak=%d cooldown_ms=%.0f "
                      "unknown_after_ms=%.0f",
                      cfg.cabin_id, eff.confirm_streak, eff.cooldown_ms, eff.unknown_after_ms);
             if (match_engine.vector_count() == 0) {
@@ -392,17 +409,17 @@ int main(int argc, char** argv) {
             // (no thread, no socket) — no regression.
             if (cfg.edge_socket && cfg.edge_socket[0]) {
                 EdgeConfig ec;
-                ec.socket_path     = cfg.edge_socket;
-                ec.cabin_id        = cfg.cabin_id;
-                ec.reconnect_min_ms = eff.reconnect_min_ms;   // reuse CabinConfig backoff
+                ec.socket_path      = cfg.edge_socket;
+                ec.cabin_id         = cfg.cabin_id;
+                ec.reconnect_min_ms = eff.reconnect_min_ms; // reuse CabinConfig backoff
                 ec.reconnect_max_ms = eff.reconnect_max_ms;
-                edge = std::make_unique<EdgeClient>(ec);
+                edge                = std::make_unique<EdgeClient>(ec);
                 if (!edge->start()) {
                     LOG_WARN("edge", "EdgeClient start failed; disabled");
                     edge.reset();
                 } else {
-                    LOG_INFO("edge", "EdgeClient -> %s (cabin_id=%d)",
-                             cfg.edge_socket, cfg.cabin_id);
+                    LOG_INFO("edge", "EdgeClient -> %s (cabin_id=%d)", cfg.edge_socket,
+                             cfg.cabin_id);
                 }
             }
 
@@ -410,16 +427,16 @@ int main(int argc, char** argv) {
             // inference thread; confirmed outcomes only enqueue a home_floor value.
             if (cfg.iot_ws && cfg.iot_ws[0]) {
                 SocketIoConfig sc;
-                sc.endpoint = cfg.iot_ws;
-                sc.device_code = cfg.iot_device_code;
-                sc.floor_address = cfg.iot_floor_address;
-                sc.request_id = cfg.iot_request_id;
-                sc.reconnect_min_ms = eff.reconnect_min_ms;
-                sc.reconnect_max_ms = eff.reconnect_max_ms;
+                sc.endpoint           = cfg.iot_ws;
+                sc.device_code        = cfg.iot_device_code;
+                sc.floor_address      = cfg.iot_floor_address;
+                sc.request_id         = cfg.iot_request_id;
+                sc.reconnect_min_ms   = eff.reconnect_min_ms;
+                sc.reconnect_max_ms   = eff.reconnect_max_ms;
                 sc.command_max_age_ms = cfg.floor_command_ttl_ms;
-                sc.ack_timeout_ms = cfg.floor_ack_timeout_ms;
-                sc.subscribe_door = cfg.adaptive_inference && use_tracker;
-                iot_socket = std::make_unique<SocketIoClient>(std::move(sc));
+                sc.ack_timeout_ms     = cfg.floor_ack_timeout_ms;
+                sc.subscribe_door     = cfg.adaptive_inference && use_tracker;
+                iot_socket            = std::make_unique<SocketIoClient>(std::move(sc));
                 if (cfg.adaptive_inference && use_tracker) {
                     iot_socket->set_door_callback([&](const DoorRegisterSample& sample) {
                         const auto current_session = iot_socket->session();
@@ -432,54 +449,70 @@ int main(int argc, char** argv) {
                     });
                 }
                 if (!iot_socket->start()) {
-                    LOG_WARN("socketio", "invalid Socket.IO floor-call configuration; client disabled");
+                    LOG_WARN("socketio",
+                             "invalid Socket.IO floor-call configuration; client disabled");
                     iot_socket.reset();
                 } else {
                     FloorCallConfig fc;
-                    fc.cabin_id = cfg.cabin_id;
-                    fc.floors_min = eff.floors_min;
-                    fc.floors_max = eff.floors_max;
-                    fc.session_empty_ms = cfg.floor_session_empty_ms;
+                    fc.cabin_id               = cfg.cabin_id;
+                    fc.floors_min             = eff.floors_min;
+                    fc.floors_max             = eff.floors_max;
+                    fc.session_empty_ms       = cfg.floor_session_empty_ms;
                     fc.max_commands_per_visit = cfg.floor_max_commands_per_visit;
-                    fc.request_id_prefix = cfg.iot_request_id;
-                    floor_calls = std::make_shared<FloorCallCoordinator>(
+                    fc.request_id_prefix      = cfg.iot_request_id;
+                    floor_calls               = std::make_shared<FloorCallCoordinator>(
                         fc, [&socket = iot_socket](const FloorCallCommand& command) {
-                            return socket && socket->enqueue_floor(
-                                SocketIoFloorCommand{command.request_id, command.floor, command.value});
+                            return socket && socket->enqueue_floor(SocketIoFloorCommand{
+                                                 command.request_id, command.floor, command.value});
                         });
                     floor_calls->set_decision_callback([](const FloorCallDecision& d) {
-                        LOG_INFO("floor-call", "visit_id=%llu request_id=%s resident_id=%lld floor=%d "
+                        LOG_INFO("floor-call",
+                                 "visit_id=%llu request_id=%s resident_id=%lld floor=%d "
                                  "state=%s reason=%s",
                                  (unsigned long long)d.visit_id, d.request_id.c_str(),
                                  (long long)d.resident_id, d.floor, floor_call_state_name(d.state),
                                  d.reason.empty() ? "-" : d.reason.c_str());
                     });
                     std::weak_ptr<FloorCallCoordinator> floor_calls_weak = floor_calls;
-                    iot_socket->set_status_callback([floor_calls_weak](const SocketIoCommandResult& result) {
-                        if (const auto calls = floor_calls_weak.lock()) {
-                            FloorCallState state = FloorCallState::AckedError;
-                            switch (result.state) {
-                                case SocketIoCommandState::Sent:           state = FloorCallState::Sent; break;
-                                case SocketIoCommandState::AckedSuccess:   state = FloorCallState::AckedSuccess; break;
-                                case SocketIoCommandState::AckedDuplicate: state = FloorCallState::AckedDuplicate; break;
-                                case SocketIoCommandState::AckedError:     state = FloorCallState::AckedError; break;
-                                case SocketIoCommandState::Expired:        state = FloorCallState::Expired; break;
-                                case SocketIoCommandState::Ambiguous:      state = FloorCallState::Ambiguous; break;
+                    iot_socket->set_status_callback(
+                        [floor_calls_weak](const SocketIoCommandResult& result) {
+                            if (const auto calls = floor_calls_weak.lock()) {
+                                FloorCallState state = FloorCallState::AckedError;
+                                switch (result.state) {
+                                case SocketIoCommandState::Sent:
+                                    state = FloorCallState::Sent;
+                                    break;
+                                case SocketIoCommandState::AckedSuccess:
+                                    state = FloorCallState::AckedSuccess;
+                                    break;
+                                case SocketIoCommandState::AckedDuplicate:
+                                    state = FloorCallState::AckedDuplicate;
+                                    break;
+                                case SocketIoCommandState::AckedError:
+                                    state = FloorCallState::AckedError;
+                                    break;
+                                case SocketIoCommandState::Expired:
+                                    state = FloorCallState::Expired;
+                                    break;
+                                case SocketIoCommandState::Ambiguous:
+                                    state = FloorCallState::Ambiguous;
+                                    break;
+                                }
+                                const std::string reason = result.code.empty()
+                                                               ? result.message
+                                                               : result.code + ":" + result.message;
+                                calls->on_transport_state(result.request_id, state, reason);
                             }
-                            const std::string reason = result.code.empty()
-                                ? result.message : result.code + ":" + result.message;
-                            calls->on_transport_state(result.request_id, state, reason);
-                        }
-                    });
+                        });
                     LOG_INFO("socketio", "direct floor-call client enabled address=%s",
                              cfg.iot_floor_address);
                 }
             }
         } else if (cfg.face_db_path && face_db.load(cfg.face_db_path)) {
-            LOG_INFO("recog", "loaded .fdb %s: %zu identities, dim=%d",
-                     cfg.face_db_path, face_db.size(), face_db.dim());
+            LOG_INFO("recog", "loaded .fdb %s: %zu identities, dim=%d", cfg.face_db_path,
+                     face_db.size(), face_db.dim());
             LOG_WARN("recog", ".fdb is TEST/DEV mode (no floor/language/audit); "
-                     "use --resident-db for real cabin operation");
+                              "use --resident-db for real cabin operation");
         } else if (cfg.face_db_path) {
             LOG_WARN("recog", "cannot load .fdb %s — matching disabled", cfg.face_db_path);
         } else {
@@ -507,8 +540,8 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    Awnn_Context_t* yolo_ctx = nullptr;
-    YoloDecoder     yolo;
+    Awnn_Context_t*                yolo_ctx = nullptr;
+    YoloDecoder                    yolo;
     std::unique_ptr<PersonTracker> tracker;
     if (use_tracker) {
         yolo_ctx = awnn_create(cfg.person_model_path);
@@ -531,33 +564,69 @@ int main(int argc, char** argv) {
             return 4;
         }
         TrackerConfig tracker_config;
-        tracker_config.high_threshold = cfg.person_thr;
-        tracker_config.low_threshold = cfg.person_low_thr;
+        tracker_config.high_threshold   = cfg.person_thr;
+        tracker_config.low_threshold    = cfg.person_low_thr;
         tracker_config.primary_iou_gate = cfg.track_iou;
-        tracker_config.lost_timeout_ms = cfg.track_lost_ms;
-        tracker = make_person_tracker(cfg.tracker_mode, tracker_config,
-                                      cfg.track_max_miss, cfg.recog_retry);
-        LOG_INFO("track", "mode=%s high=%.2f low=%.2f decode=%.2f iou=%.2f grace_ms=250 grace_updates=2 "
+        tracker_config.lost_timeout_ms  = cfg.track_lost_ms;
+        tracker = make_person_tracker(cfg.tracker_mode, tracker_config, cfg.track_max_miss,
+                                      cfg.recog_retry);
+        LOG_INFO("track",
+                 "mode=%s high=%.2f low=%.2f decode=%.2f iou=%.2f grace_ms=250 grace_updates=2 "
                  "lost_ms=%d confirm=3 conflict_recovery=%s person_every=%d",
-                 cfg.tracker_mode == TrackerMode::Byte ? "byte" : "greedy",
-                 cfg.person_thr, cfg.person_low_thr, cfg.person_decode_threshold(),
-                 cfg.track_iou, cfg.track_lost_ms,
-                 cfg.track_conflict_recovery ? "true" : "false", cfg.person_every);
+                 cfg.tracker_mode == TrackerMode::Byte ? "byte" : "greedy", cfg.person_thr,
+                 cfg.person_low_thr, cfg.person_decode_threshold(), cfg.track_iou,
+                 cfg.track_lost_ms, cfg.track_conflict_recovery ? "true" : "false",
+                 cfg.person_every);
     } else {
         LOG_INFO("track", "disabled (no --person-model). SCRFD-only pipeline.");
     }
 
+    std::unique_ptr<OccupancyStateHolder> occupancy_holder;
+    std::unique_ptr<OccupancyCounter>     occupancy_counter;
+    if (tracker && cfg.occupancy_config_path && cfg.occupancy_config_path[0]) {
+        OccupancyConfig occupancy_config;
+        std::string     occupancy_error;
+        if (!load_occupancy_config(cfg.occupancy_config_path, occupancy_config, occupancy_error)) {
+            LOG_WARN("occupancy", "config load failed: %s", occupancy_error.c_str());
+        } else {
+            occupancy_holder =
+                std::make_unique<OccupancyStateHolder>(resolve_occupancy_state_path(cfg));
+            OccupancyLoadStatus load_status = OccupancyLoadStatus::Loaded;
+            occupancy_holder->load(occupancy_error, &load_status);
+            const OccupancyState  initial = occupancy_holder->get();
+            OccupancyStateHolder* holder  = occupancy_holder.get();
+            occupancy_counter             = std::make_unique<OccupancyCounter>(
+                std::move(occupancy_config), initial,
+                [holder](int count, OccupancyConfidence confidence) {
+                    holder->request_save(count, confidence);
+                },
+                [](int track_id, int old_side, int new_side, bool in_zone,
+                   bool initialized_from_first) {
+                    LOG_DEBUG("occupancy-track", "track=%d side=%d->%d zone=%d first=%d", track_id,
+                                          old_side, new_side, in_zone ? 1 : 0, initialized_from_first ? 1 : 0);
+                });
+            LOG_INFO("occupancy", "enabled count=%d confidence=%s", occupancy_counter->count(),
+                     occupancy_counter->confidence() == OccupancyConfidence::Certain ? "certain"
+                                                                                     : "uncertain");
+        }
+    }
+
     SystemMetrics system_metrics("/home/orangepi/face_recog_app", 30000);
+    if (occupancy_counter) {
+        system_metrics.set_occupancy(occupancy_counter->count(),
+                                     occupancy_counter->confidence() ==
+                                         OccupancyConfidence::Uncertain);
+    }
     system_metrics.start();
 
     // ---- 3) Buffers + display --------------------------------------------
     std::vector<uint8_t> npu_input(NPU_INPUT_W * NPU_INPUT_H * 3);
 
-    DisplaySlot   disp_slot;
-    std::thread   disp_th;
+    DisplaySlot disp_slot;
+    std::thread disp_th;
     if (cfg.preview) {
-        disp_th = std::thread(display_worker, "Face Recog A733", &disp_slot,
-                              &g_stop, &slot, cfg.fullscreen);
+        disp_th = std::thread(display_worker, "Face Recog A733", &disp_slot, &g_stop, &slot,
+                              cfg.fullscreen);
         LOG_INFO("cam", "display thread started");
     } else {
         LOG_INFO("cam", "preview disabled (headless mode)");
@@ -571,34 +640,41 @@ int main(int argc, char** argv) {
     emb.reserve(cfg.recog_dim);
 
     cv::Mat frame, aligned;
-    double  fps = 0.0;
-    int     frame_id = 0;
-    double  last_report = now_ms();
+    double  fps                 = 0.0;
+    int     frame_id            = 0;
+    double  last_report         = now_ms();
     int     frames_since_report = 0;
 
-    StageStat s_cap, s_pre, s_yolo, s_scrfd, s_track, s_recog, s_draw, s_e2e;
-    double run_start = now_ms();
-    uint64_t last_seq = 0;
-    UiScale ui;                       // computed lazily on first frame
-    bool    ui_ready = false;
-    double  last_reload_error_log_ms = -1e12;
+    StageStat     s_cap, s_pre, s_yolo, s_scrfd, s_track, s_recog, s_draw, s_e2e;
+    double        run_start = now_ms();
+    uint64_t      last_seq  = 0;
+    UiScale       ui; // computed lazily on first frame
+    bool          ui_ready                 = false;
+    double        last_reload_error_log_ms = -1e12;
     std::set<int> confirmed_track_ids;
-    const bool adaptive = cfg.adaptive_inference && use_resident_db && use_tracker &&
-                          cfg.iot_ws && cfg.iot_ws[0];
+    const bool    adaptive =
+        cfg.adaptive_inference && use_resident_db && use_tracker && cfg.iot_ws && cfg.iot_ws[0];
     DoorInferenceScheduler door_scheduler;
-    DoorInferenceState previous_door_state = DoorInferenceState::Degraded;
-    bool door_state_logged = false;
-    std::uint64_t yolo_runs = 0, face_runs = 0, recog_runs = 0;
+    DoorInferenceState     previous_door_state      = DoorInferenceState::Degraded;
+    bool                   door_state_logged        = false;
+    double                 next_occupancy_update_ms = occupancy_counter ? now_ms() + 1000.0 : -1.0;
+    std::uint64_t          yolo_runs = 0, face_runs = 0, recog_runs = 0;
     LOG_INFO("scheduler", "door-gated inference=%s register=8472-2 bits=open:5,close:6",
              adaptive ? "enabled" : "disabled");
 
     while (true) {
-        double t0 = now_ms();
-        const double wait_ms = (use_resident_db && catalog_reloader.enabled())
-            ? std::max(0.0, catalog_reloader.next_deadline_ms() - now_ms())
-            : -1.0;
-        FrameWaitResult wait_result = wait_for_frame_or_deadline(
-            &slot, &g_stop, &last_seq, &frame, wait_ms);
+        double     t0               = now_ms();
+        double     wait_ms          = -1.0;
+        const auto include_deadline = [&](double deadline_ms) {
+            const double remaining_ms = std::max(0.0, deadline_ms - now_ms());
+            wait_ms = wait_ms < 0.0 ? remaining_ms : std::min(wait_ms, remaining_ms);
+        };
+        if (use_resident_db && catalog_reloader.enabled()) {
+            include_deadline(catalog_reloader.next_deadline_ms());
+        }
+        if (occupancy_counter) include_deadline(next_occupancy_update_ms);
+        FrameWaitResult wait_result =
+            wait_for_frame_or_deadline(&slot, &g_stop, &last_seq, &frame, wait_ms);
         if (wait_result == FrameWaitResult::Stop) break;
         const bool have_frame = (wait_result == FrameWaitResult::Frame);
 
@@ -607,18 +683,19 @@ int main(int argc, char** argv) {
         double reload_overhead_ms = 0.0;
         if (use_resident_db && catalog_reloader.enabled() &&
             now_ms() >= catalog_reloader.next_deadline_ms()) {
-            const double reload_start = now_ms();
+            const double             reload_start = now_ms();
             ResidentCatalogCandidate candidate;
-            std::string reload_error;
+            std::string              reload_error;
             auto reload_result = catalog_reloader.poll(now_ms(), candidate, reload_error);
             if (reload_result == ResidentCatalogReloader::PollResult::Reloaded) {
-                const size_t resident_count = candidate.fingerprint.resident_count;
+                const size_t resident_count  = candidate.fingerprint.resident_count;
                 const size_t embedding_count = candidate.fingerprint.embedding_count;
-                match_engine = std::move(candidate.matcher);
-                resident_by_id = std::move(candidate.resident_by_id);
-                CatalogReconcileResult reconciled = reconcile_catalog_runtime(
-                    candidate.diff, tracker.get(), interaction);
-                for (int id : reconciled.affected_subject_keys) confirmed_track_ids.erase(id);
+                match_engine                 = std::move(candidate.matcher);
+                resident_by_id               = std::move(candidate.resident_by_id);
+                CatalogReconcileResult reconciled =
+                    reconcile_catalog_runtime(candidate.diff, tracker.get(), interaction);
+                for (int id : reconciled.affected_subject_keys)
+                    confirmed_track_ids.erase(id);
                 catalog_reloader.accept(candidate);
                 const auto format_catalog_ids = [&](const std::set<int64_t>& ids) {
                     std::string formatted;
@@ -634,11 +711,12 @@ int main(int argc, char** argv) {
                     }
                     return formatted.empty() ? std::string("-") : formatted;
                 };
-                LOG_INFO("db-reload", "generation=%llu residents=%zu embeddings=%zu "
+                LOG_INFO("db-reload",
+                         "generation=%llu residents=%zu embeddings=%zu "
                          "latency_ms=%.2f added=%s changed=%s removed=%s "
                          "affected_subjects=%zu live_tracks=%d",
-                         (unsigned long long)catalog_reloader.generation(),
-                         resident_count, embedding_count, now_ms() - reload_start,
+                         (unsigned long long)catalog_reloader.generation(), resident_count,
+                         embedding_count, now_ms() - reload_start,
                          format_catalog_ids(candidate.diff.added).c_str(),
                          format_catalog_ids(candidate.diff.changed).c_str(),
                          format_catalog_ids(candidate.diff.removed).c_str(),
@@ -658,8 +736,16 @@ int main(int argc, char** argv) {
             reload_overhead_ms = now_ms() - reload_start;
         }
 
-        if (!have_frame) continue;
-        if (frame.empty()) continue;
+        if (!have_frame || frame.empty()) {
+            if (occupancy_counter) {
+                const OccupancySnapshot outage =
+                    occupancy_counter->update({}, 0, 0, now_ms(), false, false);
+                system_metrics.set_occupancy(outage.count,
+                                             outage.confidence == OccupancyConfidence::Uncertain);
+                next_occupancy_update_ms = now_ms() + 1000.0;
+            }
+            continue;
+        }
         // Keep stage timing semantically stable: polling affects wall-clock FPS
         // but is not capture or per-frame inference work.
         t0 += reload_overhead_ms;
@@ -668,12 +754,12 @@ int main(int argc, char** argv) {
         // Initialize UI scale once we know the frame size.
         if (!ui_ready) {
             ui = UiScale::compute(frame.rows, cfg.ui_scale_override);
-            LOG_INFO("ui", "frame=%dx%d ui_scale=%.2f%s (font=%.2f/%.2f, "
+            LOG_INFO("ui",
+                     "frame=%dx%d ui_scale=%.2f%s (font=%.2f/%.2f, "
                      "line=%d/%d, hud_h=%d)",
                      frame.cols, frame.rows, ui.scale,
-                     cfg.ui_scale_override > 0 ? " (manual)" : " (auto)",
-                     ui.font_label, ui.font_hud,
-                     ui.line_thick, ui.line_thin, ui.hud_h);
+                     cfg.ui_scale_override > 0 ? " (manual)" : " (auto)", ui.font_label,
+                     ui.font_hud, ui.line_thick, ui.line_thin, ui.hud_h);
             ui_ready = true;
         }
 
@@ -681,32 +767,36 @@ int main(int argc, char** argv) {
         if (tracker) tracker->predict(tracker_frame);
         if (adaptive && tracker) {
             std::set<int> live_ids;
-            for (const auto& track : tracker->active_tracks()) live_ids.insert(track.id);
+            for (const auto& track : tracker->active_tracks())
+                live_ids.insert(track.id);
             for (auto it = confirmed_track_ids.begin(); it != confirmed_track_ids.end();) {
-                if (!live_ids.count(*it)) it = confirmed_track_ids.erase(it);
-                else ++it;
+                if (!live_ids.count(*it))
+                    it = confirmed_track_ids.erase(it);
+                else
+                    ++it;
             }
         }
 
         bool run_person = use_tracker && (frame_id % cfg.person_every == 0);
-        bool run_face = true;
+        bool run_face   = true;
         if (adaptive) {
             const double seen_ms = door_received_ms.load();
-            const bool fresh = iot_socket && iot_socket->connected() &&
-                door_session.load() == iot_socket->session() && seen_ms >= 0.0 &&
-                tracker_frame.timestamp_ms - seen_ms <= 5000.0;
+            const bool   fresh   = iot_socket && iot_socket->connected() &&
+                               door_session.load() == iot_socket->session() && seen_ms >= 0.0 &&
+                               tracker_frame.timestamp_ms - seen_ms <= 5000.0;
             const DoorSignal signal = decode_door_register(door_register.load(), fresh);
             const auto before = summarize_door_tracks(tracker->active_tracks(), confirmed_track_ids,
                                                       use_resident_db);
-            const DoorRunPlan plan = door_scheduler.plan(tracker_frame.timestamp_ms, signal, before);
+            const DoorRunPlan plan =
+                door_scheduler.plan(tracker_frame.timestamp_ms, signal, before);
             run_person = plan.run_person;
-            run_face = plan.run_face;
+            run_face   = plan.run_face;
             if (!door_state_logged || plan.state != previous_door_state) {
                 LOG_INFO("scheduler", "state=%s door_fresh=%d tracks=%d unresolved=%d",
-                         door_inference_state_name(plan.state), signal.fresh ? 1 : 0,
-                         before.active, before.unresolved);
+                         door_inference_state_name(plan.state), signal.fresh ? 1 : 0, before.active,
+                         before.unresolved);
                 previous_door_state = plan.state;
-                door_state_logged = true;
+                door_state_logged   = true;
             }
         }
 
@@ -720,8 +810,8 @@ int main(int argc, char** argv) {
         double t_yolo = 0.0;
         persons.clear();
         if (run_person) {
-            void* ins[] = { npu_input.data() };
-            double y0 = now_ms();
+            void*  ins[] = {npu_input.data()};
+            double y0    = now_ms();
             awnn_set_input_buffers(yolo_ctx, ins);
             awnn_run(yolo_ctx);
             ++yolo_runs;
@@ -742,13 +832,13 @@ int main(int argc, char** argv) {
         if (adaptive && !run_face) {
             const auto after = summarize_door_tracks(tracker->active_tracks(), confirmed_track_ids,
                                                      use_resident_db);
-            run_face = door_scheduler.face_after_person(tracker_frame.timestamp_ms, after);
+            run_face         = door_scheduler.face_after_person(tracker_frame.timestamp_ms, after);
         }
 
         // ---- SCRFD face detect ----
         faces.clear();
         if (run_face) {
-            void* det_inputs[] = { npu_input.data() };
+            void* det_inputs[] = {npu_input.data()};
             awnn_set_input_buffers(det_ctx, det_inputs);
             awnn_run(det_ctx);
             ++face_runs;
@@ -758,10 +848,30 @@ int main(int argc, char** argv) {
         double t4 = now_ms();
 
         std::vector<TrackView> track_views;
-        std::vector<int> face_track_ids(faces.size(), -1);
+        std::vector<int>       face_track_ids(faces.size(), -1);
         if (tracker) {
-            track_views = tracker->active_tracks();
+            track_views    = tracker->active_tracks();
             face_track_ids = associate_faces_to_tracks(faces, track_views);
+        }
+
+        // ---- Occupancy counting ----
+        OccupancySnapshot occ_update;
+        if (occupancy_counter && tracker) {
+            const bool tracking_unreliable =
+                adaptive && previous_door_state == DoorInferenceState::Degraded;
+            occ_update =
+                occupancy_counter->update(track_views, frame.cols, frame.rows,
+                                          tracker_frame.timestamp_ms, true, tracking_unreliable);
+            next_occupancy_update_ms = tracker_frame.timestamp_ms + 1000.0;
+            system_metrics.set_occupancy(occ_update.count,
+                                         occ_update.confidence == OccupancyConfidence::Uncertain);
+            for (const auto& ev : occ_update.events) {
+                LOG_INFO("occupancy", "%s track=%d count=%d confidence=%s",
+                         ev.direction == OccupancyEventDirection::Entry ? "ENTRY" : "EXIT",
+                         ev.track_id, occ_update.count,
+                         occ_update.confidence == OccupancyConfidence::Certain ? "certain"
+                                                                               : "uncertain");
+            }
         }
 
         // ---- Face → Track association + recognition scheduling ----
@@ -774,38 +884,42 @@ int main(int argc, char** argv) {
         // subject_key = track_id when the tracker is on; otherwise we use a
         // single stable key (0) assigned to the largest face in the frame.
         std::vector<std::pair<int, MatchResult>> subjects;
-        int    best_face_idx = -1;
-        float  best_face_area = -1.0f;
+        int                                      best_face_idx  = -1;
+        float                                    best_face_area = -1.0f;
 
         double t_recog_total = 0.0;
         if (recog_enabled && recognizer) {
             double r0 = now_ms();
             for (size_t f = 0; f < faces.size(); ++f) {
                 const auto& fd = faces[f];
-                float area = std::max(0.0f, (fd.x2 - fd.x1)) *
-                             std::max(0.0f, (fd.y2 - fd.y1));
+                float area     = std::max(0.0f, (fd.x2 - fd.x1)) * std::max(0.0f, (fd.y2 - fd.y1));
                 face_labels[f].area = area;
-                if (area > best_face_area) { best_face_area = area; best_face_idx = (int)f; }
+                if (area > best_face_area) {
+                    best_face_area = area;
+                    best_face_idx  = (int)f;
+                }
 
                 std::optional<TrackView> linked_track;
-                bool   need_recog   = true;
+                bool                     need_recog = true;
                 if (use_tracker) {
                     if (face_track_ids[f] >= 0)
                         linked_track = tracker->find_track(face_track_ids[f]);
                     if (linked_track) {
                         face_labels[f].track_id = linked_track->id;
-                        need_recog = tracker->needs_recognition(linked_track->id, tracker_frame.timestamp_ms);
+                        need_recog              = tracker->needs_recognition(linked_track->id,
+                                                                             tracker_frame.timestamp_ms);
                         // The Track snapshot remains authoritative even when
                         // SCRFD temporarily misses a face in later frames.
                         face_labels[f].resident_id = linked_track->identity.resident_id;
-                        face_labels[f].name = linked_track->identity.resident_id >= 0
-                            ? linked_track->identity.display_name : "unknown";
-                        face_labels[f].sim  = linked_track->identity.similarity;
-                        face_labels[f].stat = need_recog ? 'r' : 'c';   // r=recog now, c=cached
+                        face_labels[f].name        = linked_track->identity.resident_id >= 0
+                                                         ? linked_track->identity.display_name
+                                                         : "unknown";
+                        face_labels[f].sim         = linked_track->identity.similarity;
+                        face_labels[f].stat = need_recog ? 'r' : 'c'; // r=recog now, c=cached
                     } else {
                         // Face detected but no person track around it — recog anyway
                         // (person detection may have missed this person for a frame)
-                        face_labels[f].stat = 'o';   // orphan
+                        face_labels[f].stat = 'o'; // orphan
                     }
                 }
 
@@ -814,9 +928,15 @@ int main(int argc, char** argv) {
                 if (!need_recog) continue;
 
                 align_face_112(frame, fd.landmarks, aligned);
-                if (aligned.empty()) { face_labels[f].stat = 'A'; continue; }
+                if (aligned.empty()) {
+                    face_labels[f].stat = 'A';
+                    continue;
+                }
                 ++recog_runs;
-                if (!recognizer->extract(aligned, emb)) { face_labels[f].stat = 'E'; continue; }
+                if (!recognizer->extract(aligned, emb)) {
+                    face_labels[f].stat = 'E';
+                    continue;
+                }
 
                 // ---- Matching: resident-db (MatchEngine) or legacy (.fdb) ----
                 std::string name;
@@ -829,13 +949,12 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     MatchResult mr = match_engine.match(emb, eff.match_thr);
-                    sim = mr.similarity;
-                    rid = mr.resident_id;
+                    sim            = mr.similarity;
+                    rid            = mr.resident_id;
                     if (rid >= 0) {
                         auto it = resident_by_id.find(rid);
                         // Prefer greeting_name for the overlay; fall back to name.
-                        if (it != resident_by_id.end() &&
-                            !it->second.greeting_name.empty()) {
+                        if (it != resident_by_id.end() && !it->second.greeting_name.empty()) {
                             name = it->second.greeting_name;
                         } else if (it != resident_by_id.end()) {
                             name = it->second.name;
@@ -848,10 +967,19 @@ int main(int argc, char** argv) {
                         stat = 'U';
                     }
                 } else {
-                    if (face_db.size() == 0) { face_labels[f].stat = 'D'; continue; }
+                    if (face_db.size() == 0) {
+                        face_labels[f].stat = 'D';
+                        continue;
+                    }
                     int idx = face_db.match(emb, cfg.match_threshold, sim);
-                    if (idx >= 0) { name = face_db.all()[idx].name; rid = idx; stat = 'M'; }
-                    else          { name = "unknown";               stat = 'U'; }
+                    if (idx >= 0) {
+                        name = face_db.all()[idx].name;
+                        rid  = idx;
+                        stat = 'M';
+                    } else {
+                        name = "unknown";
+                        stat = 'U';
+                    }
                 }
 
                 face_labels[f].name        = name;
@@ -865,9 +993,10 @@ int main(int argc, char** argv) {
                                                 tracker_frame.timestamp_ms);
                     if (auto refreshed = tracker->find_track(linked_track->id)) {
                         face_labels[f].resident_id = refreshed->identity.resident_id;
-                        face_labels[f].name = refreshed->identity.resident_id >= 0
-                            ? refreshed->identity.display_name : "unknown";
-                        face_labels[f].sim = refreshed->identity.similarity;
+                        face_labels[f].name        = refreshed->identity.resident_id >= 0
+                                                         ? refreshed->identity.display_name
+                                                         : "unknown";
+                        face_labels[f].sim         = refreshed->identity.similarity;
                     }
                 }
             }
@@ -879,11 +1008,11 @@ int main(int argc, char** argv) {
                 // Per-frame detail is DEBUG-only (hot path). No PII (R7):
                 // reference subjects by resident_id / track_id, never by name.
                 std::string line;
-                char seg[64];
+                char        seg[64];
                 for (size_t f = 0; f < faces.size(); ++f) {
                     const auto& L = face_labels[f];
-                    std::snprintf(seg, sizeof(seg), " f%zu={rid=%lld,%.2f,%c,tid=%d}",
-                                  f, (long long)L.resident_id, L.sim, L.stat, L.track_id);
+                    std::snprintf(seg, sizeof(seg), " f%zu={rid=%lld,%.2f,%c,tid=%d}", f,
+                                  (long long)L.resident_id, L.sim, L.stat, L.track_id);
                     line += seg;
                 }
                 LOG_DEBUG("recog", "frame %d:%s", frame_id, line.c_str());
@@ -904,7 +1033,8 @@ int main(int argc, char** argv) {
                 if (tracker) {
                     present_subjects.reserve(track_views.size());
                     for (const TrackView& track : track_views) {
-                        if (track.state == ByteTrackState::Tracked || track.state == ByteTrackState::Lost)
+                        if (track.state == ByteTrackState::Tracked ||
+                            track.state == ByteTrackState::Lost)
                             present_subjects.push_back(track.id);
                     }
                 } else if (!faces.empty()) {
@@ -915,12 +1045,12 @@ int main(int argc, char** argv) {
             subjects.clear();
             for (size_t f = 0; f < faces.size(); ++f) {
                 const FaceLabel& L = face_labels[f];
-                int subject_key;
+                int              subject_key;
                 if (use_tracker) {
-                    if (L.track_id < 0) continue;   // orphan face, no stable key
+                    if (L.track_id < 0) continue; // orphan face, no stable key
                     subject_key = L.track_id;
                 } else {
-                    if ((int)f != best_face_idx) continue;  // only the largest face
+                    if ((int)f != best_face_idx) continue; // only the largest face
                     subject_key = 0;
                 }
 
@@ -933,22 +1063,22 @@ int main(int argc, char** argv) {
             auto outcomes = interaction.update(subjects, now_ms());
             for (const auto& oc : outcomes) {
                 MatchEvent ev;
-                ev.cabin_id    = cfg.cabin_id;
-                ev.similarity  = oc.similarity;
-                ev.latency_ms  = (int)std::lround(t_recog_total);
+                ev.cabin_id   = cfg.cabin_id;
+                ev.similarity = oc.similarity;
+                ev.latency_ms = (int)std::lround(t_recog_total);
                 if (oc.confirmed) {
                     metrics_event = true;
                     if (adaptive && tracker) confirmed_track_ids.insert(oc.subject_key);
-                    ev.resident_id    = oc.resident_id;
-                    ev.action         = "matched";
-                    auto it = resident_by_id.find(oc.resident_id);
-                    int hf = (it != resident_by_id.end()) ? it->second.home_floor : 0;
+                    ev.resident_id = oc.resident_id;
+                    ev.action      = "matched";
+                    auto it        = resident_by_id.find(oc.resident_id);
+                    int  hf        = (it != resident_by_id.end()) ? it->second.home_floor : 0;
                     // A queue admission is not evidence that the board accepted a
                     // floor.  FloorCallCoordinator emits the later transport state.
                     ev.floor_selected = 0;
                     if (floor_calls) {
-                        floor_calls->on_confirmed(oc.subject_key, oc.resident_id, hf,
-                                                  oc.similarity, tracker_frame.timestamp_ms);
+                        floor_calls->on_confirmed(oc.subject_key, oc.resident_id, hf, oc.similarity,
+                                                  tracker_frame.timestamp_ms);
                     }
                     resident_db.log_event(ev);
                     resident_db.touch_resident(oc.resident_id);
@@ -961,20 +1091,20 @@ int main(int argc, char** argv) {
                     // fallback to_string(resident_id) (R7.3). name goes on the socket
                     // (business), never into the log above (PII stays out of logs).
                     if (edge) {
-                        std::string id_str = (it != resident_by_id.end() &&
-                                              !it->second.ext_id.empty())
-                                             ? it->second.ext_id
-                                             : std::to_string(oc.resident_id);
+                        std::string id_str =
+                            (it != resident_by_id.end() && !it->second.ext_id.empty())
+                                ? it->second.ext_id
+                                : std::to_string(oc.resident_id);
                         std::string name = (it != resident_by_id.end()) ? it->second.name : "";
                         edge->send_recog(id_str, name, hf, oc.similarity, (int64_t)now_ms());
                     }
                 } else if (oc.unknown) {
-                    metrics_event = true;
-                    ev.resident_id = -1;   // NULL
+                    metrics_event  = true;
+                    ev.resident_id = -1; // NULL
                     ev.action      = "unknown";
                     resident_db.log_event(ev);
-                    LOG_INFO("event", "UNKNOWN subject_key=%d sim=%.2f",
-                             oc.subject_key, oc.similarity);
+                    LOG_INFO("event", "UNKNOWN subject_key=%d sim=%.2f", oc.subject_key,
+                             oc.similarity);
                     if (edge) edge->send_unknown(oc.similarity, (int64_t)now_ms());
                 }
             }
@@ -982,69 +1112,86 @@ int main(int argc, char** argv) {
         double t5 = now_ms();
 
         ++frames_since_report;
-        double now = now_ms();
+        double       now                 = now_ms();
         const double metrics_interval_ms = cfg.preview ? 500.0 : 30000.0;
         if (metrics_event || now - last_report > metrics_interval_ms) {
-            const int window_frames = frames_since_report;
-            fps = frames_since_report * 1000.0 / (now - last_report);
-            last_report = now;
-            frames_since_report = 0;
+            const int window_frames   = frames_since_report;
+            fps                       = frames_since_report * 1000.0 / (now - last_report);
+            last_report               = now;
+            frames_since_report       = 0;
+            char occupancy_suffix[32] = {};
+            if (occupancy_counter) {
+                const char* mark =
+                    occ_update.confidence == OccupancyConfidence::Uncertain ? "?" : "";
+                std::snprintf(occupancy_suffix, sizeof(occupancy_suffix), " occ=%d%s",
+                              occ_update.count, mark);
+            }
             if (use_tracker) {
                 if (cfg.preview) {
-                    LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
-                              "recog=%.1f faces=%zu tracked=%d active=%d",
-                              frame_id, fps, t1-t0, t2-t1, t_yolo, t4-t3,
-                              t_recog_total, faces.size(), tracker->tracked_count(), tracker->active_count());
+                    LOG_DEBUG("frame",
+                              "%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
+                              "recog=%.1f faces=%zu tracked=%d active=%d%s",
+                              frame_id, fps, t1 - t0, t2 - t1, t_yolo, t4 - t3, t_recog_total,
+                              faces.size(), tracker->tracked_count(), tracker->active_count(),
+                              occupancy_suffix);
                 } else {
-                    LOG_INFO("metrics", "frame=%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f scrfd=%.1f "
-                             "recog=%.1f faces=%zu tracked=%d active=%d",
-                             frame_id, fps, t1-t0, t2-t1, t_yolo, t4-t3,
-                             t_recog_total, faces.size(), tracker->tracked_count(), tracker->active_count());
+                    LOG_INFO("metrics",
+                             "frame=%d fps=%.1f cap=%.1f pre=%.1f yolo=%.1f "
+                             "scrfd=%.1f recog=%.1f faces=%zu tracked=%d active=%d%s",
+                             frame_id, fps, t1 - t0, t2 - t1, t_yolo, t4 - t3, t_recog_total,
+                             faces.size(), tracker->tracked_count(), tracker->active_count(),
+                             occupancy_suffix);
                 }
+            } else if (cfg.preview) {
+                LOG_DEBUG("frame",
+                          "%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
+                          "recog=%.1f faces=%zu%s",
+                          frame_id, fps, t1 - t0, t2 - t1, t4 - t3, 0.0, t_recog_total,
+                          faces.size(), occupancy_suffix);
             } else {
-                if (cfg.preview) {
-                    LOG_DEBUG("frame", "%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
-                              "recog=%.1f faces=%zu",
-                              frame_id, fps, t1-t0, t2-t1, t4-t3, 0.0,
-                              t_recog_total, faces.size());
-                } else {
-                    LOG_INFO("metrics", "frame=%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f post=%.1f "
-                             "recog=%.1f faces=%zu",
-                             frame_id, fps, t1-t0, t2-t1, t4-t3, 0.0,
-                             t_recog_total, faces.size());
-                }
+                LOG_INFO("metrics",
+                         "frame=%d fps=%.1f cap=%.1f pre=%.1f npu=%.1f "
+                         "post=%.1f recog=%.1f faces=%zu%s",
+                         frame_id, fps, t1 - t0, t2 - t1, t4 - t3, 0.0, t_recog_total, faces.size(),
+                         occupancy_suffix);
             }
             if (adaptive && !cfg.preview) {
-                LOG_INFO("scheduler", "window_frames=%d yolo_runs=%llu scrfd_runs=%llu recog_runs=%llu state=%s",
-                         window_frames,
-                         (unsigned long long)yolo_runs, (unsigned long long)face_runs,
-                         (unsigned long long)recog_runs,
+                LOG_INFO("scheduler",
+                         "window_frames=%d yolo_runs=%llu scrfd_runs=%llu recog_runs=%llu state=%s",
+                         window_frames, (unsigned long long)yolo_runs,
+                         (unsigned long long)face_runs, (unsigned long long)recog_runs,
                          door_inference_state_name(previous_door_state));
             }
             yolo_runs = face_runs = recog_runs = 0;
         }
         double t6 = now_ms();
         if (cfg.preview) {
+            if (occupancy_counter) {
+                draw_counting_zones(frame, occupancy_counter->config(), frame.cols, frame.rows, ui);
+            }
             // Prefer drawing tracks (if enabled) over raw face bboxes for stability.
             if (use_tracker) {
-                draw_tracker_overlay(frame, tracker->active_tracks(), faces,
-                                     resident_by_id, ui, use_resident_db);
+                draw_tracker_overlay(frame, tracker->active_tracks(), faces, resident_by_id, ui,
+                                     use_resident_db);
             } else {
-                draw_scrfd_overlay(frame, faces, face_labels, resident_by_id,
-                                   ui, recog_enabled, use_resident_db);
+                draw_scrfd_overlay(frame, faces, face_labels, resident_by_id, ui, recog_enabled,
+                                   use_resident_db);
             }
 
             char hud[192];
             if (use_tracker) {
                 std::snprintf(hud, sizeof(hud),
-                    "FPS %.1f | cap %.1f pre %.1f yolo %.1f scrfd %.1f recog %.1f | tracked %d active %d",
-                    fps, t1-t0, t2-t1, t_yolo, t4-t3, t_recog_total,
-                    tracker->tracked_count(), tracker->active_count());
+                              "FPS %.1f | cap %.1f pre %.1f yolo %.1f scrfd %.1f recog %.1f | "
+                              "tracked %d active %d",
+                              fps, t1 - t0, t2 - t1, t_yolo, t4 - t3, t_recog_total,
+                              tracker->tracked_count(), tracker->active_count());
             } else {
                 std::snprintf(hud, sizeof(hud),
-                    "FPS %.1f | cap %.1f pre %.1f npu %.1f recog %.1f | faces %zu",
-                    fps, t1-t0, t2-t1, t4-t3, t_recog_total, faces.size());
+                              "FPS %.1f | cap %.1f pre %.1f npu %.1f recog %.1f | faces %zu", fps,
+                              t1 - t0, t2 - t1, t4 - t3, t_recog_total, faces.size());
             }
+            append_occupancy_hud(hud, sizeof(hud), occupancy_counter != nullptr, occ_update.count,
+                                 occ_update.confidence == OccupancyConfidence::Uncertain);
             draw_hud(frame, hud, ui);
 
             {
@@ -1057,13 +1204,13 @@ int main(int argc, char** argv) {
         }
 
         if (frame_id >= 3) {
-            s_cap.add  (t1 - t0);
-            s_pre.add  (t2 - t1);
+            s_cap.add(t1 - t0);
+            s_pre.add(t2 - t1);
             if (use_tracker && t_yolo > 0) s_yolo.add(t_yolo);
             if (run_face) s_scrfd.add(t4 - t3);
             s_recog.add(t_recog_total);
-            s_draw.add (t6 - t5);
-            s_e2e.add  (t6 - t0);
+            s_draw.add(t6 - t5);
+            s_e2e.add(t6 - t0);
         }
         ++frame_id;
         if (g_stop.load()) break;
@@ -1075,8 +1222,8 @@ int main(int argc, char** argv) {
 
     // ---- Summary (benchmark report — user-facing table) ------------------
     double run_secs = (now_ms() - run_start) / 1000.0;
-    print_benchmark_summary(run_secs, frame_id, use_tracker, cfg.person_every,
-                            s_cap, s_pre, s_yolo, s_scrfd, s_recog, s_draw, s_e2e);
+    print_benchmark_summary(run_secs, frame_id, use_tracker, cfg.person_every, s_cap, s_pre, s_yolo,
+                            s_scrfd, s_recog, s_draw, s_e2e);
 
     LOG_INFO("main", "stopping capture thread");
     shutdown_capture();
@@ -1098,32 +1245,34 @@ int main(int argc, char** argv) {
     }
     if (iot_socket) {
         iot_socket->close();
-        LOG_INFO("socketio", "closed floor-call client sent=%llu acked=%llu failed=%llu dropped=%llu",
-                 (unsigned long long)iot_socket->sent(),
-                 (unsigned long long)iot_socket->acked(),
-                 (unsigned long long)iot_socket->failed(),
-                 (unsigned long long)iot_socket->dropped());
+        LOG_INFO(
+            "socketio", "closed floor-call client sent=%llu acked=%llu failed=%llu dropped=%llu",
+            (unsigned long long)iot_socket->sent(), (unsigned long long)iot_socket->acked(),
+            (unsigned long long)iot_socket->failed(), (unsigned long long)iot_socket->dropped());
     }
 
     if (use_resident_db) {
         if (catalog_reloader.enabled()) {
             const auto& rs = catalog_reloader.stats();
-            LOG_INFO("db-reload", "closing generation=%llu polls=%llu version_changes=%llu "
+            LOG_INFO("db-reload",
+                     "closing generation=%llu polls=%llu version_changes=%llu "
                      "full_scans=%llu content_changes=%llu matcher_builds=%llu "
                      "success=%llu failure=%llu",
                      (unsigned long long)catalog_reloader.generation(),
-                     (unsigned long long)rs.polls,
-                     (unsigned long long)rs.version_changes,
-                     (unsigned long long)rs.full_scans,
-                     (unsigned long long)rs.content_changes,
-                     (unsigned long long)rs.matcher_builds,
-                     (unsigned long long)rs.reload_success,
+                     (unsigned long long)rs.polls, (unsigned long long)rs.version_changes,
+                     (unsigned long long)rs.full_scans, (unsigned long long)rs.content_changes,
+                     (unsigned long long)rs.matcher_builds, (unsigned long long)rs.reload_success,
                      (unsigned long long)rs.reload_failure);
             catalog_reloader.close();
         }
         LOG_INFO("db", "flushing resident-db event writer");
         resident_db.close();
     }
+    if (occupancy_counter && occupancy_holder) {
+        occupancy_holder->request_save(occupancy_counter->count(), occupancy_counter->confidence());
+        occupancy_holder->close();
+    }
+
     LOG_INFO("main", "destroying NPU contexts");
     delete recognizer;
     if (yolo_ctx) awnn_destroy(yolo_ctx);

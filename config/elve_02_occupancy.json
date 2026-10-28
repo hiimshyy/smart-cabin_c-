@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "reference_width": 1920,
+  "reference_height": 1080,
+  "zones": [
+    {
+      "name": "cabin-door",
+      "polygon": [
+        { "x": 0.469727, "y": 0.602431 },
+        { "x": 0.290039, "y": 0.725694 },
+        { "x": 0.324219, "y": 0.935764 },
+        { "x": 0.542969, "y": 0.770833 }
+      ],
+      "inside_direction_degrees": 68,
+      "min_crossing_displacement": 0.05
+    }
+  ]
+}
