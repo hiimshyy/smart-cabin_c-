@@ -72,4 +72,26 @@ done
 [ "$found_state" -eq 1 ] || { echo "FAIL: occupancy state argv missing"; exit 1; }
 [ "$found_iot" -eq 0 ] || { echo "FAIL: Socket.IO must be disabled by default"; exit 1; }
 [ "$found_record" -eq 0 ] || { echo "FAIL: recording should match disabled service default"; exit 1; }
+
+export FACE_CABIN_SOCKETIO=1
+export FACE_TEST_ARGV="$MOCK/service-argv"
+SERVICE_OUT="$(face_cabin)"
+if printf '%s' "$SERVICE_OUT" | grep -Eq 'rtsp://|fake-user|fake-secret|camera\.local|fake-token|@'; then
+    echo "FAIL: service profile leaked URL/credentials"
+    exit 1
+fi
+mapfile -t SERVICE_ARGS < "$FACE_TEST_ARGV"
+service_iot=0
+for ((i = 0; i < ${#SERVICE_ARGS[@]}; ++i)); do
+    if [ "${SERVICE_ARGS[$i]}" = "--iot-ws" ] &&
+       [ "${SERVICE_ARGS[$((i + 1))]}" = "ws://127.0.0.1:3000" ]; then
+        service_iot=1
+    fi
+done
+[ "$service_iot" -eq 1 ] || { echo "FAIL: production Socket.IO argv missing"; exit 1; }
+grep -q '^Environment=FACE_CABIN_SOCKETIO=1$' "$ROOT/face-recog-app.service"
+if grep -q '^Environment=FACE_IOT_WS=$' "$ROOT/face-recog-app.service"; then
+    echo "FAIL: service unit must not erase EnvironmentFile Socket.IO endpoint"
+    exit 1
+fi
 printf '[test_env_face_cabin] PASS\n'

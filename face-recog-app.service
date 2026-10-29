@@ -16,8 +16,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 EnvironmentFile=-/etc/face-recog-app.env
 Environment=FACE_CABIN_ID=2
 Environment="FACE_CAMERA_SELECT=#6"
-Environment=FACE_CABIN_SOCKETIO=0
-Environment=FACE_IOT_WS=
+Environment=FACE_CABIN_SOCKETIO=1
 Environment=FACE_CABIN_NO_PREVIEW=1
 
 ExecStart=/bin/bash -c 'source /home/orangepi/face_recog_app/env.sh && face_cabin'

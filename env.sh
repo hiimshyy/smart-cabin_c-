@@ -43,8 +43,8 @@ export FACE_PERSON_LOW_THR="${FACE_PERSON_LOW_THR:-0.1}"
 export FACE_TRACK_LOST_MS="${FACE_TRACK_LOST_MS:-1200}"
 # This installation serves physical cabin/elevator 2.
 export FACE_CABIN_ID="${FACE_CABIN_ID:-2}"
-# Direct floor-call Socket.IO is opt-in. Keep it disabled for occupancy-only
-# operation even if an endpoint remains configured in the service environment.
+# Direct floor-call Socket.IO is opt-in for manual runs. The production
+# systemd unit explicitly enables it so door-gated adaptive inference works.
 export FACE_CABIN_SOCKETIO="${FACE_CABIN_SOCKETIO:-0}"
 # FACE_EVENT_WS remains a compatibility fallback for earlier local setup.
 export FACE_IOT_WS="${FACE_IOT_WS-${FACE_EVENT_WS:-}}"

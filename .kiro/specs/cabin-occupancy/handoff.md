@@ -6,9 +6,10 @@ Cập nhật: 2026-10-27. Tài liệu này là điểm bắt đầu khi tiếp t
 
 - Thiết bị được chuẩn hóa cho cabin/thang máy `2`.
 - Camera PostgreSQL mặc định: `#6` (slave 2, đã xác nhận connected tại thời điểm cấu hình).
-- Socket.IO/floor-call bị tắt mặc định cho `face_cabin`: `FACE_CABIN_SOCKETIO=0`, `FACE_IOT_WS=`.
+- `face_cabin` chạy tay mặc định tắt Socket.IO/floor-call để test occupancy: `FACE_CABIN_SOCKETIO=0`.
+- Service production override `FACE_CABIN_SOCKETIO=1`, nhận `FACE_IOT_WS` từ `/etc/face-recog-app.env` và bật door-gated adaptive inference.
 - Service dùng `SIGTERM`, chạy headless và đã được cài tại `/etc/systemd/system/face-recog-app.service`.
-- Khi bàn giao, service là `inactive/dead` và không có process `face_recog_app`; camera/NPU đang rảnh.
+- Trạng thái runtime có thể thay đổi; kiểm tra bằng `systemctl is-active face-recog-app.service` và `pgrep -a face_recog_app` trước khi test tay. Không chạy service và app thủ công đồng thời.
 - Unit vẫn được enable từ trước, vì vậy có thể tự chạy sau reboot nếu không disable riêng.
 - SQLite `db/residents.db` có row cabin 2 để audit/FK dùng đúng `cabin_id=2`. Backup trước khi thêm row: `/tmp/residents.db.before-cabin2-20261027142511.db`.
 
@@ -51,7 +52,7 @@ Người dùng đã xác nhận polygon hiển thị đạt yêu cầu.
 - ByteTrack giữ first observation của tentative track tối đa 1 giây để hỗ trợ người đi nhanh mà vẫn giữ `confirm_hits=3`.
 - Candidate được giữ khi điểm chân rời polygon qua sticky projection band; đây là root cause thật của fast-entry video.
 - CLI, `env.sh`, main loop, HUD/overlay, system metrics và persistence wiring.
-- Cabin 2, camera `#6`, config/state suffix 2 và Socket.IO-disabled profile.
+- Cabin 2, camera `#6`, config/state suffix 2; manual-test profile tắt Socket.IO còn systemd production profile bật Socket.IO/adaptive inference.
 - Debug trace mức `debug` chỉ log numeric track ID và side transition (`occupancy-track`), không log tọa độ hoặc PII.
 
 ## Bằng chứng kiểm thử
