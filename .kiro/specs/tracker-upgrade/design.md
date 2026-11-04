@@ -2,7 +2,27 @@
 
 **Spec ID**: `tracker-upgrade`
 
-## 1. Quyết định kiến trúc
+## Overview
+
+Spec này thay tracker Greedy IoU hiện tại trong `src/tracker.{h,cpp}` bằng backend **ByteTrack-lite**
+viết bằng C++, chạy online trên main frame thread. Thay đổi chính:
+
+- **Kalman motion prediction**: mỗi track có state `(cx, cy, w, h, vx, vy, vw, vh)`, predict ở mọi video
+  frame theo `dt` từ monotonic timestamp, kể cả frame không chạy YOLO.
+- **Hungarian association hai vòng**: YOLO decode tới `person_low_thr`; vòng primary ghép high
+  detections, vòng secondary dùng low detections để cứu track vừa miss. Chỉ high detection tạo track mới.
+- **Lifecycle theo thời gian**: `Tentative → Tracked → Lost → Removed`, với tracked grace (250 ms và
+  2 detector updates) và deadline `lost_timeout_ms` tính từ last matched detection.
+- **Face-to-track một-một**: Hungarian trên faces × eligible tracks với head-region gate.
+- **Identity theo `resident_id`**: identity nằm trong track, latch sau known match và giữ tới khi track
+  Removed hoặc catalog/admin invalidation; track chưa match known hiển thị `unknown`.
+- **Rollback**: `--tracker-mode greedy|byte`, giữ greedy adapter trong giai đoạn rollout.
+
+Không thêm person ReID model hoặc NPU context; inference tiếp tục là chi phí chính.
+
+## Architecture
+
+### Quyết định kiến trúc
 
 Thay Greedy IoU bằng một backend ByteTrack-lite nội bộ:
 
@@ -34,7 +54,7 @@ Lý do chọn:
 - Cabin có ít người nên assignment matrix nhỏ; inference tiếp tục là chi phí chính.
 - Tracker vẫn online, một thread, phù hợp pipeline realtime hiện tại.
 
-## 2. Thành phần và file
+### Thành phần và file
 
 | File | Vai trò |
 |---|---|
@@ -62,58 +82,46 @@ Lý do chọn:
 backend. Nếu việc đổi tên `tracker.cpp` tạo diff quá lớn, có thể giữ greedy trong cùng module ở commit
 adapter đầu tiên rồi tách sau; public API cuối cùng không thay đổi.
 
-## 3. Public API
+### Main loop integration
+
+Pseudocode:
 
 ```cpp
-enum class TrackerMode : uint8_t { Greedy, Byte };
-enum class TrackState : uint8_t { Tentative, Tracked, Lost, Removed };
+FrameContext fc{frame_id, steady_now_ms, frame.cols, frame.rows};
 
-struct FrameContext {
-    int frame_id = 0;
-    double timestamp_ms = 0.0;  // steady/monotonic
-    int frame_width = 0;
-    int frame_height = 0;
-};
+tracker->predict(fc);                 // every received frame
 
-struct TrackIdentity {
-    int64_t resident_id = -1;
-    std::string display_name;
-    float similarity = -1.0f;
-    double last_recognition_ms = -1.0;
-    double last_recognition_attempt_ms = -1.0;
-    bool latched = false; // true after a known resident match
-};
+if (frame_id % person_every == 0) {
+    yolo.decode(outputs, pre, person_low_thr, nms_thr, persons);
+    tracker->update(persons, fc);     // split high/low internally
+}
 
-struct TrackView {
-    int id = -1;
-    TrackState state = TrackState::Tentative;
-    float x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-    float detection_score = 0;
-    bool predicted_only = false;
-    TrackIdentity identity;
-};
+auto track_views = tracker->active_tracks();
+auto face_track_ids = associate_faces(faces, track_views, previous_links);
 
-struct TrackerConfig {
-    float high_threshold = 0.50f;
-    float low_threshold = 0.10f;
-    float primary_iou_gate = 0.30f;
-    float secondary_iou_gate = 0.20f;
-    int confirm_hits = 3;
-    int lost_grace_min_updates = 2;
-    double lost_grace_ms = 250.0;
-    double lost_timeout_ms = 1200.0;
-    double max_predict_gap_ms = 2000.0;
-    double unknown_retry_ms = 1000.0; // migration from ~30 frames @30 fps
-    bool automatic_conflict_recovery = false;
-    int conflict_required_samples = 3;
-    double conflict_min_span_ms = 600.0;
-    double conflict_window_ms = 2000.0;
-    double conflict_probe_interval_ms = 500.0;
-    float conflict_similarity_floor = 0.50f;
-    float conflict_threshold_delta = 0.12f;
-    float conflict_runner_up_margin = 0.08f;
-};
+for each face:
+    track_id = face_track_ids[i];
+    if track_id >= 0 && tracker->needs_recognition(track_id, fc.timestamp_ms):
+        run recognition
+        tracker->record_recognition(track_id, resident_id, display_name, sim, now)
 
+build interaction subjects from stable track IDs
+draw TrackView snapshot  // latched identity stays on person box even without a face
+```
+
+Nếu không có tracker, SCRFD-only branch giữ nguyên.
+
+Lưu ý: predict phải chạy sau khi có frame dimensions. Khi frame wait timeout chỉ để poll DB và không
+có video frame, không advance motion bằng fake frame; timestamp gap được xử lý lúc frame kế tiếp.
+
+## Components and Interfaces
+
+### Public API: `PersonTracker`
+
+Các kiểu dữ liệu dùng trong interface (`TrackerMode`, `TrackState`, `FrameContext`, `TrackIdentity`,
+`TrackView`, `TrackerConfig`) mô tả ở [Data Models](#data-models).
+
+```cpp
 class PersonTracker {
 public:
     virtual ~PersonTracker() = default;
@@ -134,9 +142,9 @@ public:
 Không trả `Track*`. Main thu `TrackView` snapshot sau update và face association dùng IDs. Mutation
 recognition thực hiện qua method, rồi main có thể lấy lại view khi cần overlay.
 
-## 4. Kalman box model
+### Kalman box model
 
-### 4.1 State và measurement
+#### State và measurement
 
 ```text
 x = [cx, cy, w, h, vx, vy, vw, vh]^T
@@ -158,7 +166,7 @@ trong khoảng an toàn. Process noise tăng theo `dt`; measurement noise giữ 
 sau đó tune từ replay. Dùng `cv::KalmanFilter(8,4)` để giảm rủi ro tự viết matrix math; tests tracker
 phải link OpenCV.
 
-### 4.2 Initialization
+#### Initialization
 
 Track mới:
 
@@ -167,23 +175,16 @@ Track mới:
 - Position covariance vừa phải; velocity covariance lớn hơn để học chuyển động nhanh.
 - `last_predict_ms = frame.timestamp_ms`.
 
-### 4.3 Invalid time và reconnect
+Xử lý `dt` không hợp lệ và reconnect gap mô tả ở [Error Handling](#error-handling).
 
-Nếu `dt <= 0`, dùng `dt=0` và không extrapolate. Nếu `dt > max_predict_gap_ms`:
-
-- Zero velocity.
-- Tăng uncertainty hoặc reinitialize motion từ last measurement.
-- Không extrapolate xuyên toàn bộ outage.
-- Geometry track vẫn theo lifecycle timeout; track Removed kết thúc appearance và không thể lấy lại ID.
-
-### 4.4 Box sanitation
+#### Box sanitation
 
 - `w/h >= 1` pixel.
 - Chuyển `(cx,cy,w,h)` thành `(x1,y1,x2,y2)` với finite checks.
 - Output box clamp vào frame cho overlay; internal center có thể giữ margin nhỏ để người đi ra/vào.
 - Detection có NaN/Inf hoặc box area không dương bị loại trước assignment.
 
-## 5. Hungarian solver
+### Hungarian solver
 
 API đề xuất:
 
@@ -211,7 +212,7 @@ Contract:
 Với tối đa vài người, O(n³) đủ. Có thể thêm hard cap detections sau NMS để bảo vệ input lỗi, nhưng
 không cap thấp đến mức mất người thật.
 
-## 6. Association cost và gating
+### Association cost và gating
 
 Baseline cost:
 
@@ -229,7 +230,7 @@ cost = wiou * (1 - IoU) + wcenter * normalized_center_distance
 với hard gate: cặp chỉ hợp lệ nếu IoU đủ hoặc center distance trong giới hạn. Không đưa composite
 cost vào bản đầu nếu chưa có data chứng minh, để giữ thuật toán dễ kiểm tra.
 
-## 7. ByteTrack update sequence
+### ByteTrack update sequence
 
 ```text
 INPUT: all valid detections >= low threshold, predicted tracks
@@ -285,7 +286,7 @@ chuyển Removed khi now-t0 >= 1200 ms
 `lost_timeout_ms` là deadline tuyệt đối tính từ detection match cuối, không cộng thêm grace. Deadline
 này vẫn remove confirmed track nếu detector chạy quá thưa khiến miss counter chưa đạt 2.
 
-## 8. YOLO decoder migration
+### YOLO decoder migration
 
 Hiện `decode(... score_thresh ...)` vừa early-filter objectness vừa filter final score. Đổi tên tham số
 thành `decode_threshold` và main truyền `person_low_thr`. Output vẫn NMS theo score giảm dần, nên high
@@ -300,7 +301,7 @@ Validation:
 `--person-thr` map vào high threshold để giữ CLI. Thêm `--person-low-thr`. Không tạo hai lần decode
 NPU output; chỉ decode một lần rồi partition để giữ latency thấp.
 
-## 9. Lifecycle và public visibility
+### Lifecycle và public visibility
 
 - Tentative không xuất hiện trong interaction/recognition; overlay DEBUG có thể vẽ nếu cần.
 - Tracked xuất hiện trong active views, gồm tracked-grace predicted-only. Nếu `resident_id < 0`,
@@ -316,9 +317,9 @@ Timeout theo milliseconds. `track_max_miss` được giữ trong rollout cho gre
 `track_lost_ms`. Nếu cần backward migration, khi chỉ có `track_max_miss`, derive một lần từ nominal
 30 FPS và log rõ nguồn; cấu hình mới ưu tiên milliseconds.
 
-## 10. Face-to-track association
+### Face-to-track association
 
-### 10.1 Candidate gate
+#### Candidate gate
 
 Với mỗi TrackView Tracked:
 
@@ -328,7 +329,7 @@ face center phải nằm trong head_roi có margin nhỏ
 face width/person width và face height/person height phải trong range hợp lý
 ```
 
-### 10.2 Cost
+#### Cost
 
 ```text
 dx = |face_cx - expected_head_cx| / person_width
@@ -343,9 +344,9 @@ gate.
 
 API trả vector track IDs theo face index (`-1` = orphan), tránh pointer lifetime.
 
-## 11. Recognition identity và appearance/session
+### Recognition identity và appearance/session
 
-### 11.1 Single source of truth
+#### Single source of truth
 
 Identity được đặt trong track:
 
@@ -361,7 +362,7 @@ bool identity_latched = false;
 Loại bỏ dần `track_resident_id` map ngoài `main.cpp`. Trong commit chuyển tiếp có thể giữ adapter,
 nhưng trạng thái cuối chỉ có một authoritative resident mapping.
 
-### 11.2 Identity latch và recognition scheduling
+#### Identity latch và recognition scheduling
 
 Khi Tentative chuyển thành Tracked, identity khởi tạo:
 
@@ -416,7 +417,7 @@ cho greedy backend trong giai đoạn rollout và phải được ghi rõ trong 
 Việc hiển thị `unknown` ngay không gọi `InteractionManager` ngay lập tức. Unknown audit/event vẫn đi
 qua `unknown_after_ms`, confirmation/cooldown hiện tại và chỉ phát khi có subject evidence hợp lệ.
 
-### 11.3 Appearance boundary và track ID
+#### Appearance boundary và track ID
 
 Track ID chỉ đại diện một continuous visual appearance:
 
@@ -429,7 +430,7 @@ Track ID chỉ đại diện một continuous visual appearance:
 Điều này giữ audit rõ: hai lần một resident xuất hiện trước camera là hai track IDs khác nhau nhưng
 cùng resident ID.
 
-### 11.4 Identity conflict recovery
+#### Identity conflict recovery
 
 Mặc định `automatic_conflict_recovery=false`; known track không schedule recognition lại. Catalog
 invalidation/admin reset clear identity về Unknown rồi dùng standard recognition.
@@ -459,7 +460,7 @@ confirm B:
 
 Không mutate resident A→B trên cùng track ID; audit trước conflict tiếp tục thuộc appearance A.
 
-## 12. Resident hot reload integration
+### Resident hot reload integration
 
 `ResidentCatalog` diff gọi:
 
@@ -477,41 +478,9 @@ Behavior:
 `resident_reconcile` nhận list affected track IDs từ tracker để drop mapping/session cần thiết. Sau khi
 Track trực tiếp giữ resident ID, module không cần tự duy trì map song song.
 
-## 13. Main loop integration
+### Configuration
 
-Pseudocode:
-
-```cpp
-FrameContext fc{frame_id, steady_now_ms, frame.cols, frame.rows};
-
-tracker->predict(fc);                 // every received frame
-
-if (frame_id % person_every == 0) {
-    yolo.decode(outputs, pre, person_low_thr, nms_thr, persons);
-    tracker->update(persons, fc);     // split high/low internally
-}
-
-auto track_views = tracker->active_tracks();
-auto face_track_ids = associate_faces(faces, track_views, previous_links);
-
-for each face:
-    track_id = face_track_ids[i];
-    if track_id >= 0 && tracker->needs_recognition(track_id, fc.timestamp_ms):
-        run recognition
-        tracker->record_recognition(track_id, resident_id, display_name, sim, now)
-
-build interaction subjects from stable track IDs
-draw TrackView snapshot  // latched identity stays on person box even without a face
-```
-
-Nếu không có tracker, SCRFD-only branch giữ nguyên.
-
-Lưu ý: predict phải chạy sau khi có frame dimensions. Khi frame wait timeout chỉ để poll DB và không
-có video frame, không advance motion bằng fake frame; timestamp gap được xử lý lúc frame kế tiếp.
-
-## 14. Configuration
-
-### Giữ lại
+#### Giữ lại
 
 - `--person-thr`: high threshold.
 - `--person-every`.
@@ -521,7 +490,7 @@ có video frame, không advance motion bằng fake frame; timestamp gap được
 - `lost_grace_ms=250` và `lost_grace_min_updates=2`: compile-in ở version đầu, log rõ; expose CLI chỉ
   khi replay/live tuning chứng minh cần.
 
-### Thêm
+#### Thêm
 
 ```text
 --tracker-mode greedy|byte
@@ -536,7 +505,7 @@ data chứng minh cần field tuning.
 
 Parser phải validate và trả exit code config hiện hành; không silently clamp threshold đảo ngược.
 
-## 15. Logging và metrics
+### Logging và metrics
 
 Startup:
 
@@ -562,9 +531,255 @@ Benchmark:
 - active/lost count.
 - IDSW chỉ có trong replay có ground truth, không tự suy đoán production.
 
-## 16. Test design
+## Data Models
 
-### 16.1 Hungarian
+Các kiểu data-only dùng chung giữa tracker backend, overlay, reconciliation và tests:
+
+```cpp
+enum class TrackerMode : uint8_t { Greedy, Byte };
+enum class TrackState : uint8_t { Tentative, Tracked, Lost, Removed };
+
+struct FrameContext {
+    int frame_id = 0;
+    double timestamp_ms = 0.0;  // steady/monotonic
+    int frame_width = 0;
+    int frame_height = 0;
+};
+
+struct TrackIdentity {
+    int64_t resident_id = -1;
+    std::string display_name;
+    float similarity = -1.0f;
+    double last_recognition_ms = -1.0;
+    double last_recognition_attempt_ms = -1.0;
+    bool latched = false; // true after a known resident match
+};
+
+struct TrackView {
+    int id = -1;
+    TrackState state = TrackState::Tentative;
+    float x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+    float detection_score = 0;
+    bool predicted_only = false;
+    TrackIdentity identity;
+};
+
+struct TrackerConfig {
+    float high_threshold = 0.50f;
+    float low_threshold = 0.10f;
+    float primary_iou_gate = 0.30f;
+    float secondary_iou_gate = 0.20f;
+    int confirm_hits = 3;
+    int lost_grace_min_updates = 2;
+    double lost_grace_ms = 250.0;
+    double lost_timeout_ms = 1200.0;
+    double max_predict_gap_ms = 2000.0;
+    double unknown_retry_ms = 1000.0; // migration from ~30 frames @30 fps
+    bool automatic_conflict_recovery = false;
+    int conflict_required_samples = 3;
+    double conflict_min_span_ms = 600.0;
+    double conflict_window_ms = 2000.0;
+    double conflict_probe_interval_ms = 500.0;
+    float conflict_similarity_floor = 0.50f;
+    float conflict_threshold_delta = 0.12f;
+    float conflict_runner_up_margin = 0.08f;
+};
+```
+
+Kalman state/measurement vector mô tả ở Kalman box model; `Assignment` mô tả ở Hungarian solver;
+replay fixture schema mô tả ở Testing Strategy.
+
+## Correctness Properties
+
+Các tính chất dưới đây phải đúng với mọi input sequence của Byte backend. Mỗi tính chất ghi rõ yêu cầu
+nó kiểm chứng.
+
+### Property 1: Hungarian assignment một-một
+
+*Với mọi* cost matrix chữ nhật (kể cả 0 row hoặc 0 column), mỗi row và mỗi column xuất hiện tối đa
+một lần trong `matches`; mỗi row/column không match nằm trong `unmatched_rows`/`unmatched_cols`. Sau
+khi caller kiểm tra gate, không cặp nào có cost không finite, bị đánh dấu forbidden hoặc không qua gate
+được giữ lại.
+
+**Validates: Requirements 3.1, 3.2, 3.4**
+
+### Property 2: Tracker deterministic
+
+*Với mọi* chuỗi `(detections, FrameContext)` và config cố định, hai lần chạy cho cùng track IDs, states
+và boxes ở mọi frame. Khi cost bằng nhau, solver chọn theo row index rồi column index; không dùng random.
+
+**Validates: Requirements 2.7, 3.5, 4.8**
+
+### Property 3: Predict theo thời gian
+
+*Với mọi* track chỉ predict (không correction) từ `t` tới `t + Δ`, nếu không bước `dt` nào bị clamp,
+center/size dự đoán không phụ thuộc vào việc `Δ` được chia thành bao nhiêu frame (trong sai số floating
+point). `dt <= 0` không di chuyển box. Gap `> max_predict_gap_ms` đưa velocity về 0 thay vì extrapolate
+xuyên outage.
+
+**Validates: Requirements 2.2, 2.3, 2.6, 10.2**
+
+### Property 4: Box luôn hợp lệ
+
+*Với mọi* chuỗi input, kể cả timestamp lùi, gap lớn và detection NaN/Inf: width/height trong Kalman state
+luôn `>= 1` pixel; mọi `TrackView` có tọa độ hữu hạn và nằm trong frame; detection có NaN/Inf hoặc area
+không dương không bao giờ vào assignment.
+
+**Validates: Requirements 2.5, 2.6**
+
+### Property 5: Phân tầng high/low
+
+*Với mọi* update, detection được chia HIGH (`score >= high_threshold`) và LOW
+(`low_threshold <= score < high_threshold`). Vòng primary chỉ dùng HIGH; LOW detection chỉ được ghép với
+track `Tracked` chưa match ở vòng primary. Mỗi Tentative track mới tương ứng một-một với một HIGH
+detection còn lại sau bước 1–4; LOW detection còn lại bị bỏ.
+
+**Chưa quyết:** update sequence ghi secondary pool là "unmatched tracks từng ở Tracked (không ưu tiên
+stale Lost)"; chưa rõ Lost track bị loại khỏi vòng LOW hay chỉ xếp sau.
+
+**Validates: Requirements 4.2, 4.3, 4.4, 4.5, 4.6, 13.6**
+
+### Property 6: Confirm Tentative track
+
+*Với mọi* Tentative track, track chỉ chuyển `Tracked` sau `confirm_hits` match hợp lệ; một update miss
+trước đó chuyển track sang `Removed` và không tạo interaction event. Ngoại lệ duy nhất là track B do
+conflict recovery tạo (Property 14).
+
+**Validates: Requirements 5.2, 5.3, 7.18**
+
+### Property 7: Grace và deadline lifecycle
+
+*Với mọi* confirmed track có last matched detection (high hoặc low) tại `t0` và `missed_updates` lần
+detector update miss liên tiếp, state sau mỗi lần đánh giá lifecycle tại thời điểm `t` là:
+
+- `Removed` nếu `t - t0 >= lost_timeout_ms`, bất kể `missed_updates`;
+- ngược lại `Lost` nếu `missed_updates >= lost_grace_min_updates` và `t - t0 >= lost_grace_ms`;
+- ngược lại `Tracked` (`predicted_only=true` khi update gần nhất miss).
+
+Mọi match high hoặc low reset `t0` và `missed_updates`. `t` và `t0` chỉ lấy từ monotonic timestamp của
+`FrameContext`.
+
+**Validates: Requirements 5.4, 5.5, 5.6, 5.7, 5.8, 5.9**
+
+### Property 8: Visibility và eligibility
+
+*Với mọi* frame, `active_tracks()` trả đúng các confirmed track ở state `Tracked` (kể cả tracked-grace)
+hoặc `Lost` chưa hết timeout; không bao giờ trả `Tentative` hoặc `Removed`. Face association,
+recognition mới gắn vào track và interaction subject chỉ nhận track `Tracked` với `predicted_only=false`.
+
+**Validates: Requirements 5.10, 5.11, 6.1**
+
+### Property 9: Track ID theo appearance
+
+*Với mọi* process run, track ID là duy nhất và tăng dần. Match lại trong `lost_timeout_ms` (tracked grace
+hoặc Lost reactivation) giữ nguyên ID; ID của track đã `Removed` không bao giờ được gán lại; detection sau
+`Removed` luôn tạo ID mới, kể cả khi recognition ra cùng resident. Chuyển state `Tracked`↔`Lost` không
+đổi ID, nên không tạo interaction subject mới hoặc confirmed event trùng.
+
+**Validates: Requirements 1.6, 4.7, 5.12, 7.4, 7.5, 8.6**
+
+### Property 10: Face association một-một
+
+*Với mọi* tập faces và `TrackView`, kết quả có một track ID cho mỗi face index, là `-1` hoặc ID của một
+eligible track; không hai face nào nhận cùng track ID `>= 0`; mọi cặp được gán đều qua head-region và
+size gate, kể cả khi có history bonus.
+
+**Validates: Requirements 6.2, 6.3, 6.4, 6.5**
+
+### Property 11: Face association không phụ thuộc thứ tự input
+
+*Với mọi* hoán vị của danh sách faces hoặc tracks đầu vào, mỗi face nhận cùng track ID như trước hoán vị.
+
+**Validates: Requirements 6.6**
+
+### Property 12: Identity latch
+
+*Với mọi* track nhận `record_recognition(track_id, resident_id >= 0, ...)`, cho tới khi track `Removed`,
+catalog invalidation ảnh hưởng resident đó hoặc explicit admin reset: `resident_id` và `display_name`
+không đổi; `record_recognition(... resident_id = -1 ...)` không có hiệu lực; identity giữ qua frame không
+có face, tracked grace, match bằng low detection và `Tracked`→`Lost`→`Tracked`. Khi conflict recovery tắt,
+`needs_recognition()` trả false cho track này. So sánh identity chỉ dùng `resident_id`, không dùng
+`display_name`.
+
+**Validates: Requirements 7.1, 7.9, 7.10, 7.11, 7.12, 7.14**
+
+### Property 13: Unknown label và retry scheduling
+
+*Với mọi* track trong `active_tracks()` có `resident_id < 0`, overlay vẽ `unknown` (không có
+`...`/untried). Với track unknown, `needs_recognition(track_id, now)` trả true khi và chỉ khi track ở
+`Tracked` và (`last_recognition_attempt_ms < 0` hoặc
+`now - last_recognition_attempt_ms >= unknown_retry_ms`). Audit/event unknown không phát trước
+`unknown_after_ms` dù label `unknown` hiển thị ngay.
+
+**Validates: Requirements 7.3, 7.6, 7.7, 7.8, 7.13**
+
+### Property 14: Conflict recovery
+
+*Với* `automatic_conflict_recovery=false` (mặc định), known track không bao giờ được schedule recognition
+lại. *Với* conflict recovery bật: known track được probe tối đa một lần mỗi 500 ms; track A chỉ chuyển
+sang resident B khi có 3 sample B liên tiếp, mỗi sample thỏa `sim_B >= max(match_thr + 0.12, 0.50)` và
+`sim_B - sim_runner_up >= 0.08`, lấy khi track `Tracked`, `predicted_only=false` và association
+unambiguous; các sample trải ≥ 600 ms và nằm trong window ≤ 2000 ms. Sample A, unknown, resident C,
+association ambiguous hoặc quá window reset candidate. Trong pending state, track A không phát thêm
+interaction event. Khi confirm, track A kết thúc và B được latch vào track ID mới ở state `Tracked`;
+conflict recovery không bao giờ đổi `resident_id` A→B trên cùng track ID.
+
+**Validates: Requirements 7.15, 7.16, 7.17, 7.18, 9.10**
+
+### Property 15: Hot reload chỉ chạm identity
+
+*Với mọi* `CatalogDiff`, `invalidate_catalog` không đổi track ID, box, Kalman state hay lifecycle state
+của track nào. `added` clear recognition schedule của unknown tracks; `changed`/`removed` chỉ clear
+identity của tracks mang đúng resident ID đó; track mang resident khác giữ nguyên identity.
+
+**Validates: Requirements 8.1, 8.2, 8.3**
+
+### Property 16: Config invalid bị từ chối
+
+*Với mọi* cấu hình có threshold không thỏa `0 <= person_low_thr < person_thr <= 1` hoặc giá trị tracker
+invalid khác, parser trả lỗi với exit code config hiện hành; giá trị không bị clamp im lặng.
+
+**Validates: Requirements 9.2, 9.7**
+
+### Property 17: Log không chứa PII
+
+*Với mọi* dòng log từ tracker, face association và conflict recovery, identity chỉ được tham chiếu bằng
+`track_id`/`resident_id`; không có display name, greeting, embedding, ảnh hoặc RTSP URL.
+
+**Validates: Requirements 7.19, 11.4**
+
+## Error Handling
+
+### Timestamp không hợp lệ và reconnect
+
+Nếu `dt <= 0`, dùng `dt=0` và không extrapolate. Nếu `dt > max_predict_gap_ms`:
+
+- Zero velocity.
+- Tăng uncertainty hoặc reinitialize motion từ last measurement.
+- Không extrapolate xuyên toàn bộ outage.
+- Geometry track vẫn theo lifecycle timeout; track Removed kết thúc appearance và không thể lấy lại ID.
+
+Motion reset do invalid timestamp/reconnect được log ở INFO/WARN có rate-limit (xem Logging và metrics).
+
+### Tổng hợp tình huống lỗi
+
+| Tình huống | Xử lý | Chi tiết |
+|---|---|---|
+| `dt <= 0` | `dt=0`, không extrapolate | Mục trên |
+| Gap `> max_predict_gap_ms` (RTSP reconnect) | Zero velocity, không extrapolate xuyên outage | Mục trên |
+| Frame wait timeout chỉ để poll DB, không có video frame | Không predict bằng fake frame; gap xử lý ở frame kế tiếp | Main loop integration |
+| Detection NaN/Inf hoặc area không dương | Loại trước assignment | Kalman box model → Box sanitation |
+| Cost không finite hoặc cặp không qua gate | Xem là forbidden; caller kiểm tra gate sau solver | Hungarian solver |
+| Số detection bất thường sau NMS | Có thể hard cap, không cap thấp đến mức mất người thật | Hungarian solver |
+| Config invalid (vd. `person_low_thr >= person_thr`) | Báo lỗi với exit code config hiện hành; không silently clamp | Configuration |
+| Unknown/failure recognition trên known track | Bỏ qua, giữ identity đã latch | Recognition identity → Identity latch |
+| SCRFD miss, người quay mặt, align/extract failure | Giữ identity, tiếp tục vẽ name trên person box | Recognition identity → Identity latch |
+| Face không có eligible track | Orphan (`-1`), không tạo stable interaction subject | Face-to-track association |
+| Conflict sample xen kẽ, ambiguous hoặc quá window | Reset pending candidate | Recognition identity → Identity conflict recovery |
+
+## Testing Strategy
+
+### Hungarian
 
 - Known optimal 2×2, 3×3.
 - Rectangular 2×4 và 4×2.
@@ -572,7 +787,7 @@ Benchmark:
 - Forbidden rows/columns.
 - Equal costs deterministic.
 
-### 16.2 Kalman
+### Kalman
 
 - Stationary measurements converge.
 - Constant horizontal/vertical motion.
@@ -581,7 +796,7 @@ Benchmark:
 - Negative/NaN/large gap safe reset.
 - Width/height stay positive.
 
-### 16.3 Tracker replay fixtures
+### Tracker replay fixtures
 
 Fixture schema đề xuất:
 
@@ -616,7 +831,7 @@ Fixtures:
 - Duplicate overlapping detection.
 - Entry/exit at frame boundary.
 
-### 16.4 Face/identity
+### Face/identity
 
 - Overlapping person boxes, two faces.
 - Face orphan.
@@ -637,7 +852,7 @@ Fixtures:
 - Catalog add/change/remove.
 - Logs contain no display label.
 
-## 17. Performance plan
+### Performance plan
 
 Benchmark cùng binary/config và cùng replay/video:
 
@@ -659,7 +874,29 @@ Target:
 
 HOTA/IDF1 dùng khi đủ ground truth; nếu annotation ít, report raw IDSW/fragments cùng scenario count.
 
-## 18. Rollout
+### Độ phủ property
+
+| Property | Test |
+|---|---|
+| 1 | Hungarian |
+| 2 | Hungarian (equal costs deterministic), tracker replay fixtures |
+| 3 | Kalman (constant motion, missing observations, variable dt, large gap); replay (variable FPS, reconnect time gap) |
+| 4 | Kalman (width/height positive, negative/NaN/large gap) |
+| 5 | Replay (low-confidence bridge, low-confidence false positive); performance (zero low-only track creation) |
+| 7 | Face/identity (YOLO miss trong grace, Lost/Removed deadlines) |
+| 8 | Face/identity (Lost chỉ để overlay) |
+| 9 | Face/identity (Lost reactivation, Removed rồi re-entry) |
+| 10 | Face/identity (overlapping person boxes, face orphan, one face eligible for two tracks) |
+| 12 | Face/identity (known match một lần, unknown/failure không overwrite, Tracked→Lost→Tracked, same display name) |
+| 13 | Face/identity (unknown chưa từng có face, unknown event trước `unknown_after_ms`) |
+| 14 | Face/identity (conflict recovery) |
+| 15 | Face/identity (catalog add/change/remove) |
+| 17 | Face/identity (logs contain no display label) |
+
+Property chưa có test riêng trong kế hoạch: Property 6 (confirm/miss Tentative), Property 11
+(input-order invariance), Property 16 (config validation).
+
+## Rollout
 
 1. Merge backend interface + tests, default greedy.
 2. Merge byte backend, A/B replay CI/local.
@@ -672,7 +909,7 @@ HOTA/IDF1 dùng khi đủ ground truth; nếu annotation ít, report raw IDSW/fr
 
 Rollback không thay DB/data; chỉ đổi CLI mode và restart service.
 
-## 19. Rủi ro và giảm thiểu
+## Rủi ro và giảm thiểu
 
 | Rủi ro | Giảm thiểu |
 |---|---|
@@ -686,7 +923,7 @@ Rollback không thay DB/data; chỉ đổi CLI mode và restart service.
 | Performance regression | no ReID model, small matrices, benchmark gate |
 | Rollout gây mất ổn định | backend flag, greedy fallback, canary |
 
-## 20. References
+## References
 
 - SORT: https://arxiv.org/abs/1602.00763
 - ByteTrack: https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136820001.pdf

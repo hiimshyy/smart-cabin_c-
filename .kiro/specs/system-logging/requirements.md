@@ -1,10 +1,14 @@
-# Requirements — System / Operational Logging (Loại A)
+# Requirements Document
+
+## Introduction
+
+Spec này mô tả **System / Operational Logging (Loại A)**: logger kỹ thuật cho toàn bộ binary trong `src/`.
 
 **Spec ID**: `system-logging`
 **Loại**: Nhật ký kỹ thuật của tiến trình (KHÔNG phải audit nghiệp vụ — cái đó nằm ở `match_events`).
 **Phụ thuộc**: không có (độc lập với `resident-db-layer`); áp dụng cho toàn bộ binary trong `src/`.
 
-## 1. Bối cảnh & vấn đề
+### Bối cảnh & vấn đề
 
 Hiện toàn bộ ứng dụng ghi log bằng `printf`/`fprintf(stderr, ...)` rải rác trong `main.cpp` và các tool. Vấn đề:
 
@@ -16,7 +20,7 @@ Hiện toàn bộ ứng dụng ghi log bằng `printf`/`fprintf(stderr, ...)` r�
 
 Cần một logger nhẹ, tự viết (không thêm dependency), cho thiết bị nhúng Orange Pi chạy dịch vụ liên tục.
 
-## 2. Phạm vi
+### Phạm vi
 
 **Trong scope:**
 1. Logger header-only tự viết (`src/log/logger.h`) — level, thread-safe, ghi stderr + file, rotation theo ngày.
@@ -28,7 +32,23 @@ Cần một logger nhẹ, tự viết (không thêm dependency), cho thiết b�
 - Gửi log qua mạng / log tập trung (syslog remote, Loki...) — version sau.
 - Shim SDK `src/log/log.h` — giữ nguyên.
 
-## 3. Yêu cầu chức năng
+## Glossary
+
+- **Logger:** logger ứng dụng tự viết của spec này (`src/log/logger.h`), dùng như singleton toàn cục.
+- **Log level:** mức nghiêm trọng của một bản ghi, theo thứ tự `TRACE < DEBUG < INFO < WARN < ERROR`.
+- **Ngưỡng (threshold):** level tối thiểu được ghi; bản ghi có level thấp hơn ngưỡng bị bỏ qua.
+- **Tag:** chuỗi ngắn định danh module phát ra bản ghi (vd `cam`, `npu`, `db`, `track`, `enroll`).
+- **Sink:** đích ghi bản ghi log; spec này có sink stderr và sink file.
+- **Rotation theo ngày:** mỗi ngày ghi vào một file riêng `face-cabin-YYYY-MM-DD.log`, tự chuyển file khi sang ngày mới.
+- **`retention_days`:** số ngày giữ file log; file cũ hơn bị xóa (mặc định 14).
+- **App chính:** binary `face_recog_app` (`main.cpp`) chạy dịch vụ liên tục qua systemd.
+- **Tool offline:** các binary `enroll_faces`, `add_person`, `capture_person`, `migrate_fdb`.
+- **Shim SDK:** `src/log/log.h`, chỉ dùng để tắt log ồn của SDK NPU (awnn); không phải Logger.
+- **PII:** thông tin định danh cá nhân của cư dân, gồm tên thật, `greeting_name`, `apartment`.
+
+## Requirements
+
+Mã `Rx.y` trong `design.md` và `tasks.md` trỏ tới requirement Rx, tiêu chí thứ y bên dưới.
 
 ### R1 — Log levels
 1. HỆ THỐNG PHẢI hỗ trợ 5 mức theo thứ tự: `TRACE < DEBUG < INFO < WARN < ERROR`.
@@ -73,7 +93,7 @@ Cần một logger nhẹ, tự viết (không thêm dependency), cho thiết b�
 2. Các tool offline (`enroll_faces`, `add_person`, `capture_person`, `migrate_fdb`) PHẢI dùng logger; mặc định các tool này CHỈ ghi stderr (không đòi ghi `/var/log`), nhưng vẫn bật được file qua `--log-dir`.
 3. Sau di trú, KHÔNG còn `printf`/`fprintf(stderr,...)` cho mục đích log ứng dụng trong các file trên (trừ phần in usage/help của CLI — được phép giữ `fprintf`).
 
-## 4. Yêu cầu phi chức năng
+## Yêu cầu phi chức năng (NFR)
 
 - **Không dependency mới**: chỉ dùng C++17 std + POSIX (`<filesystem>`, `<mutex>`, `<chrono>`). Không spdlog.
 - **Hiệu năng**: overhead mỗi bản ghi phải nhỏ; các bản ghi bị lọc (dưới ngưỡng) gần như miễn phí (kiểm tra level trước khi format).
@@ -81,7 +101,7 @@ Cần một logger nhẹ, tự viết (không thêm dependency), cho thiết b�
 - **Header-only**: để mọi binary include mà không phải sửa nhiều Makefile (có thể tách 1 `.cpp` cho định nghĩa singleton nếu cần, xem design).
 - **Build**: compile trên Orange Pi (arm64, g++) và máy dev (WSL). `<filesystem>` cần link `-lstdc++fs` trên vài toolchain cũ — kiểm tra.
 
-## 5. Giả định
+## Giả định
 
 - Thiết bị có đồng hồ hệ thống đúng (dùng giờ địa phương). Không xử lý NTP ở đây.
 - systemd sẽ thu stderr vào journald; file log là bản lưu bổ sung, không thay thế journald.

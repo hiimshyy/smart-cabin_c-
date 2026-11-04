@@ -1,11 +1,16 @@
-# Requirements — Lớp config vận hành DB-driven (web/app chỉnh RTSP + settings cabin)
+# Requirements Document
+
+## Introduction
+
+Spec này mô tả **lớp config vận hành DB-driven**: web/app chỉnh được link RTSP và các settings của
+từng cabin.
 
 **Spec ID**: `cabin-runtime-config` · **Đề xuất số**: 4 (config vận hành)
 **Phụ thuộc**: `resident-db-layer` (ResidentDB, `db/schema.sql`, MatchEngine, InteractionManager),
 `main.cpp` (CLI args + `CamConfig` + `capture_worker`), spec Enroll API (đội web gọi vào — cùng REST layer)
 **Liên quan**: `DEVELOPMENT_PLAN.md` §3.2 (ghi chú config), §3.4 (Enroll API), §2.1 (topology web-on-Pi)
 
-## 1. Bối cảnh & vấn đề
+### Bối cảnh & vấn đề
 
 Hiện `face_recog_app` cấu hình **hoàn toàn bằng CLI args + env** khi khởi động
 (`--source`, `--gst-latency`, `--cabin-id`, `--match-thr`, `--confirm-streak`,
@@ -29,7 +34,7 @@ Vấn đề bản chất:
 Spec này chốt: (a) những setting nào web được chỉnh, (b) chúng lưu ở đâu, (c) app đọc + áp dụng
 thế nào, (d) đổi RTSP khi đang chạy 24/7 xử lý ra sao.
 
-## 2. Phạm vi
+### Phạm vi
 
 **Trong scope:**
 
@@ -53,11 +58,11 @@ thế nào, (d) đổi RTSP khi đang chạy 24/7 xử lý ra sao.
   triển khai (phụ thuộc Giai đoạn 2/3 chưa có code).
 - File `config.yaml` — spec này thay thế hẳn ý tưởng YAML ở `DEVELOPMENT_PLAN.md` §3.2 bằng DB-driven.
 
-## 3. Phân loại setting (quyết định trung tâm của spec)
+### Phân loại setting (quyết định trung tâm của spec)
 
 Phân theo **ai được chỉnh**, vì không phải tham số nào cũng an toàn khi cho web đụng vào.
 
-### Nhóm A — Per-cabin, web/app CHỈNH ĐƯỢC (config vận hành)
+#### Nhóm A — Per-cabin, web/app CHỈNH ĐƯỢC (config vận hành)
 
 Lưu trong bảng `cabins`, một dòng / cabin. Web đọc/ghi qua REST API.
 
@@ -75,7 +80,7 @@ Lưu trong bảng `cabins`, một dòng / cabin. Web đọc/ghi qua REST API.
 | Reconnect backoff min | `--reconnect-min-ms` | `reconnect_min_ms` (thêm) | mặc định 500 |
 | Reconnect backoff max | `--reconnect-max-ms` | `reconnect_max_ms` (thêm) | mặc định 10000 |
 
-### Nhóm B — Admin-only (đổi được nhưng ảnh hưởng an toàn, KHÔNG cho cư dân thường)
+#### Nhóm B — Admin-only (đổi được nhưng ảnh hưởng an toàn, KHÔNG cho cư dân thường)
 
 Chưa có code (phụ thuộc Giai đoạn 2/3). Ghi tên để version 2 chừa chỗ, triển khai sau:
 
@@ -83,7 +88,7 @@ Chưa có code (phụ thuộc Giai đoạn 2/3). Ghi tên để version 2 chừa
 - TTS on/off, ngôn ngữ mặc định cabin cho khách/unknown (Giai đoạn 2 — Piper).
 - Debounce theo tầng cho ElevatorBackend (Đề xuất 2).
 
-### Nhóm C — KHÔNG cho web chỉnh (thuộc thiết bị/triển khai)
+#### Nhóm C — KHÔNG cho web chỉnh (thuộc thiết bị/triển khai)
 
 Giữ nguyên qua CLI/env, gắn với build + filesystem của Pi. Cho web đụng = mở lỗ hổng hoặc app chết:
 
@@ -95,10 +100,37 @@ Giữ nguyên qua CLI/env, gắn với build + filesystem của Pi. Cho web đ�
   `build_gst_pipeline()`.
 - YOLO/tracker params (`--person-*`, `--track-*`, `--recog-retry`), UI/fullscreen.
 
-## 4. Yêu cầu chức năng
+## Glossary
 
-### R1 — Migration schema_version 2
-Là hệ thống, tôi cần thêm cột config vào `cabins` mà không mất dữ liệu residents đã enroll.
+- **Config vận hành:** các tham số runtime theo từng cabin (RTSP, ngưỡng match, cooldown, ...) mà
+  web/app được chỉnh; chính là các setting Nhóm A.
+- **Bảng `cabins`:** bảng SQLite trong cùng DB residents (`--resident-db`), một dòng cho mỗi cabin,
+  khóa chính `id` (khớp `--cabin-id`).
+- **`CabinConfig`:** struct config runtime app dựng lúc khởi động từ CLI, dòng `cabins` và default
+  compile-in.
+- **Nhóm A / B / C:** ba nhóm setting phân theo ai được chỉnh (xem mục Phân loại setting). Nhóm A:
+  web/app chỉnh được. Nhóm B: admin-only, chưa triển khai. Nhóm C: không cho web chỉnh.
+- **Precedence:** thứ tự ưu tiên nguồn giá trị cho mỗi tham số: CLI > DB > default compile-in.
+- **Default compile-in:** giá trị mặc định trong code, dùng khi cả CLI lẫn DB không cung cấp giá trị.
+- **Clamp (kẹp):** đưa giá trị ngoài khoảng hợp lệ về khoảng hợp lệ và ghi log cảnh báo.
+- **`schema_version`:** bảng ghi version schema của DB; migration của spec này nâng version 1 → 2.
+- **Restart-to-apply:** chiến lược v1: ghi config mới vào `cabins`, config có hiệu lực sau khi
+  systemd khởi động lại service (`Restart=always`).
+- **Hot-reload:** áp config mới khi app đang chạy mà không restart; ngoài scope v1.
+- **`build_gst_pipeline()`:** hàm app dùng để dựng chuỗi GStreamer pipeline từ URL camera; web chỉ
+  nhập URL, không nhập pipeline thô.
+- **Chế độ `--resident-db` / `--face-db`:** `--resident-db` là chế độ vận hành dùng SQLite và đọc
+  bảng `cabins`; `--face-db` là chế độ test/dev, không đọc `cabins`.
+
+## Requirements
+
+Mã `Rx.y` trong `design.md` và `tasks.md` trỏ tới Requirement x, tiêu chí chấp nhận thứ y bên dưới.
+
+### Requirement 1: Migration schema_version 2
+
+**User Story:** Là hệ thống, tôi cần thêm cột config vào `cabins` mà không mất dữ liệu residents đã enroll.
+
+#### Acceptance Criteria
 
 1. HỆ THỐNG PHẢI cung cấp migration nâng schema từ version 1 → 2, idempotent (chạy lại không lỗi).
 2. Migration PHẢI thêm các cột Nhóm A còn thiếu vào `cabins` (`gst_latency_ms`, `match_thr`,
@@ -110,8 +142,11 @@ Là hệ thống, tôi cần thêm cột config vào `cabins` mà không mất d
 5. KHI mở một DB đang ở version 1, `ResidentDB::open()` PHẢI tự áp migration lên version 2.
 6. Cột thêm PHẢI dùng `ALTER TABLE ADD COLUMN` (SQLite giữ dữ liệu cũ); KHÔNG drop/recreate `cabins`.
 
-### R2 — App đọc config vận hành từ DB (`CabinConfig`)
-Là cabin, tôi cần app chạy theo config lưu trong DB, không phải hardcode CLI.
+### Requirement 2: App đọc config vận hành từ DB (`CabinConfig`)
+
+**User Story:** Là cabin, tôi cần app chạy theo config lưu trong DB, không phải hardcode CLI.
+
+#### Acceptance Criteria
 
 1. KHI khởi động ở chế độ `--resident-db`, HỆ THỐNG PHẢI đọc dòng `cabins` có `id = cabin_id`
    và nạp các trường Nhóm A vào một struct config runtime.
@@ -122,8 +157,11 @@ Là cabin, tôi cần app chạy theo config lưu trong DB, không phải hardco
 4. Các giá trị đọc từ DB PHẢI được validate theo ràng buộc R4 trước khi áp dụng; giá trị ngoài
    khoảng PHẢI bị kẹp (clamp) về khoảng hợp lệ + log, KHÔNG để giá trị bẩn làm cabin hành xử sai.
 
-### R3 — Precedence CLI > DB > default
-Là dev, tôi cần override config bằng CLI khi test mà không phải sửa DB.
+### Requirement 3: Precedence CLI > DB > default
+
+**User Story:** Là dev, tôi cần override config bằng CLI khi test mà không phải sửa DB.
+
+#### Acceptance Criteria
 
 1. Với mỗi tham số Nhóm A, thứ tự ưu tiên PHẢI là: **giá trị CLI (nếu người dùng truyền) > giá trị DB
    (nếu dòng cabin có) > default compile-in**.
@@ -134,8 +172,11 @@ Là dev, tôi cần override config bằng CLI khi test mà không phải sửa 
 4. Chế độ `--face-db` (test/dev) KHÔNG đọc config từ `cabins` (không có khái niệm cabin operational);
    chỉ dùng CLI > default.
 
-### R4 — Ràng buộc validate (áp cho cả app đọc DB lẫn REST API ghi DB)
-Là hệ thống gọi thang máy, tôi cần config bẩn không làm cabin hành xử nguy hiểm.
+### Requirement 4: Ràng buộc validate (áp cho cả app đọc DB lẫn REST API ghi DB)
+
+**User Story:** Là hệ thống gọi thang máy, tôi cần config bẩn không làm cabin hành xử nguy hiểm.
+
+#### Acceptance Criteria
 
 1. `match_thr` PHẢI trong [0.05, 0.95]; ngoài khoảng → clamp + log.
 2. `confirm_streak` PHẢI ≥ 1.
@@ -147,8 +188,11 @@ Là hệ thống gọi thang máy, tôi cần config bẩn không làm cabin hà
    PHẢI bị từ chối (chống command-injection — Nhóm C).
 7. REST API PHẢI từ chối (400) request đổi bất kỳ trường Nhóm C nào (model path, log, gst-pipeline).
 
-### R5 — Đổi RTSP / config khi đang chạy (reload strategy)
-Là người vận hành, tôi cần đổi camera RTSP từ web và cabin áp dụng được.
+### Requirement 5: Đổi RTSP / config khi đang chạy (reload strategy)
+
+**User Story:** Là người vận hành, tôi cần đổi camera RTSP từ web và cabin áp dụng được.
+
+#### Acceptance Criteria
 
 1. Khi web PATCH config qua REST API, HỆ THỐNG PHẢI ghi giá trị mới vào bảng `cabins` (persistent).
 2. v1 áp dụng chiến lược **restart-to-apply**: config mới có hiệu lực SAU khi service khởi động lại.
@@ -161,7 +205,7 @@ Là người vận hành, tôi cần đổi camera RTSP từ web và cabin áp d
 6. (Tương lai, ngoài scope) hot-reload: `capture_worker` release + `open_capture()` với URL mới —
    spec này để ngỏ đường nhưng KHÔNG triển khai v1.
 
-## 5. Yêu cầu phi chức năng
+## Yêu cầu phi chức năng
 
 - **Không hồi quy**: app chạy với DB version 1 cũ (chưa migrate) PHẢI vẫn khởi động được — migration
   tự chạy khi mở. Các CLI args hiện có PHẢI giữ nguyên ý nghĩa.
@@ -172,7 +216,7 @@ Là người vận hành, tôi cần đổi camera RTSP từ web và cabin áp d
 - **Quan sát được**: lúc khởi động app PHẢI log toàn bộ config hiệu lực kèm nguồn (cli/db/default) —
   một dòng tóm tắt để field test đối chiếu.
 
-## 6. Giả định & quyết định
+## Giả định & quyết định
 
 - SQLite là nguồn chân lý cho **cả** dữ liệu residents (spec `resident-db-layer`) **và** config vận
   hành cabin (spec này). Một DB, hai nhóm bảng.

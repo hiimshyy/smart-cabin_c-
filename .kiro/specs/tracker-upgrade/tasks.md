@@ -1,9 +1,18 @@
 # Implementation Plan — Tracker Upgrade (ByteTrack-lite)
 
+## Overview
+
 **Spec ID**: `tracker-upgrade`  
 **Trạng thái ban đầu**: chưa triển khai  
 **Nguyên tắc**: mỗi checkpoint phải build/test được; default giữ `greedy` cho tới khi A/B và live
 acceptance đạt.
+
+Yêu cầu: [requirements.md](requirements.md)
+Thiết kế: [design.md](design.md)
+
+Kế hoạch thay person tracker greedy IoU hiện tại bằng backend ByteTrack-lite: Kalman bounding-box motion, Hungarian linear assignment và association hai tầng high/low confidence. Backend mới chạy sau interface `PersonTracker`, với `GreedyIouTracker` làm legacy fallback và chọn qua `--tracker-mode greedy|byte`. Kế hoạch cũng chuyển face↔track sang one-to-one association, latch resident identity vào từng track, cập nhật hot reload reconciliation và thêm observability/benchmark.
+
+Thứ tự: baseline và replay fixtures (task 1), API và legacy adapter (task 2), Hungarian và Kalman (task 3–4), ByteTrack core và YOLO low-confidence pipeline (task 5–6), tích hợp main loop (task 7), face association và resident identity (task 8–9), hot reload và observability (task 10–11), kiểm chứng tự động và live trên Orange Pi (task 12–13), rồi rollout và tài liệu (task 14–15).
 
 ## Tasks
 
@@ -289,7 +298,19 @@ acceptance đạt.
   - [ ] 15.4 Final privacy/security review
   - [ ] 15.5 Mark spec complete khi mọi acceptance gate đạt
 
-## Checkpoints
+## Notes
+
+- Task Dependency Graph ghi phụ thuộc giữa các task cấp cao (1–15); sub-task trong cùng một task chạy theo thứ tự đánh số.
+- Phụ thuộc chính theo nội dung task:
+  - 2.3 so greedy output với fixture baseline của task 1.
+  - ByteTrack core (5) dùng Hungarian solver (3) và Kalman state (4).
+  - Main loop (7) gọi predict/update của backend (5) và YOLO decode từ low threshold (6).
+  - Face association (8) dùng Hungarian (3) và `TrackView` (2); resident identity (9) chuyển vào Track storage của backend (5).
+  - Hot reload (10) xóa resident cache nằm trong Track sau migration của task 9.
+  - Kiểm chứng tự động (12) chạy sau khi các code task (1–11) xong; live validation (13) chạy sau 12; rollout (14) và tài liệu (15) cần live evidence của 13.
+- Một số task cùng wave đụng cùng chỗ: 8.4 và 9.5 (wave 5) cùng sửa overlay/main consumers; 14.3 và 15.1 (wave 9) cùng cập nhật README; 15.5 chỉ đánh dấu spec complete khi mọi acceptance gate đạt, nên cần kết quả 14.2. Nên chạy các cặp này tuần tự.
+
+### Checkpoints
 
 1. **API checkpoint** — sau Task 2: behavior greedy không đổi, không raw pointer.
 2. **Algorithm checkpoint** — sau Task 5: ByteTrack core pass deterministic tests.
@@ -297,7 +318,7 @@ acceptance đạt.
 4. **Identity checkpoint** — sau Task 10: hot reload/interaction/privacy pass.
 5. **Release checkpoint** — sau Task 13: A733 live evidence đạt trước đổi default.
 
-## Suggested commit sequence
+### Suggested commit sequence
 
 1. `test(tracker): add deterministic replay fixtures`
 2. `refactor(tracker): introduce backend interface and legacy adapter`
@@ -312,7 +333,7 @@ acceptance đạt.
 11. `docs(tracker): record A-B and live validation evidence`
 12. `feat(tracker): enable ByteTrack backend by default`
 
-## Dependency graph
+## Task Dependency Graph
 
 ```json
 {

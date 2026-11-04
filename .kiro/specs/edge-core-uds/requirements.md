@@ -1,4 +1,8 @@
-# Requirements — AI Core ↔ Edge Core qua Unix Domain Socket (chiều AI→Edge)
+# Requirements Document
+
+## Introduction
+
+Spec này mô tả **AI Core ↔ Edge Core qua Unix Domain Socket (chiều AI→Edge)**.
 
 > **Trạng thái migration — 2026-10-06:** hợp đồng UDS trong tài liệu này là **legacy contract** và
 > vẫn mô tả đúng code `EdgeClient` hiện tại. Hướng tích hợp mới dùng TCP WebSocket RFC 6455 +
@@ -13,7 +17,7 @@ outcome nhận diện), `cabin-runtime-config` (AppConfig, precedence CLI)
 **Liên quan**: `docs/Smart_cabin_communicate.docx` (§3 Luồng giao tiếp nội bộ Edge),
 `DEVELOPMENT_PLAN.md` §2 (topology), §6 (gọi tầng qua ConnCore/COMM Core)
 
-## 1. Bối cảnh & vấn đề
+### 1. Bối cảnh & vấn đề
 
 `face_recog_app` (dự án này) chính là **AI Core** trong sơ đồ Smart Cabin: tiến trình chạy model
 inference (Face Detection → Alignment → Recognition). Hôm nay, sau khi nhận diện thành công một
@@ -43,7 +47,7 @@ Spec này chốt **chiều AI Core → Edge Core** (đợt "a"): AI Core kết n
 3 loại thông điệp — `EVENT_FACE_RECOG_DETECTED` (0x1001), `EVENT_FACE_UNKNOWN` (0x1002),
 `CMD_HEARTBEAT_PING` (0x1003) — mà **không** làm chậm vòng lặp nhận diện realtime.
 
-## 2. Phạm vi
+### 2. Phạm vi
 
 **Trong scope (đợt a — chỉ chiều AI→Edge):**
 
@@ -77,7 +81,7 @@ Spec này chốt **chiều AI Core → Edge Core** (đợt "a"): AI Core kết n
 - **Mã hóa / xác thực trên UDS**: UDS cục bộ trên cùng máy, quyền truy cập theo file-permission của
   socket; không thêm TLS/token ở v1.
 
-## 3. Phân tách trách nhiệm AI Core vs Edge Core (quyết định trung tâm)
+### 3. Phân tách trách nhiệm AI Core vs Edge Core (quyết định trung tâm)
 
 Đây là quyết định kiến trúc quan trọng nhất của spec, trả lời câu hỏi "làm thế nào để một người đổi
 tầng bằng tay không ảnh hưởng gọi tầng tự động của người khác".
@@ -96,7 +100,33 @@ quyết định** gọi tầng.
 - Để Edge Core làm được việc tương quan/chống-ghi-đè, mỗi sự kiện AI gửi lên PHẢI đủ **khóa tương
   quan**: `20001` (cabin nào) + `20002` (ai) + `20000` (khi nào). Xem R7.
 
-## 4. Từ điển tag số (Data Dictionary) — dải tag v2
+## Glossary
+
+- **AI Core:** tiến trình `face_recog_app` chạy inference (Face Detection → Alignment →
+  Recognition); là client UDS trong spec này.
+- **Edge Core:** tiến trình trung tâm quản lý logic thang máy; là server UDS, nhận sự kiện nhận diện
+  và ra quyết định gọi tầng.
+- **COMM Core:** thành phần nói chuyện Modbus RTU với board thang; Edge Core ghi lệnh gọi tầng qua
+  COMM Core.
+- **UDS:** Unix Domain Socket; spec này dùng `AF_UNIX` / `SOCK_STREAM`, full-duplex.
+- **Pathname / abstract namespace:** hai dạng địa chỉ UDS. Pathname là file trên đĩa (ví dụ
+  `/run/elev_edge_core.sock`); abstract namespace bắt đầu bằng `@`, ánh xạ sang leading NUL của
+  `sun_path`.
+- **Frame:** một thông điệp trên luồng UDS, gồm header 8 byte (`magic` `0xAA 0x55` + `msg_type`
+  uint16 + `payload_len` uint32, network byte order) và body JSON UTF-8.
+- **msg_type:** mã loại thông điệp: `0x1001 EVENT_FACE_RECOG_DETECTED`, `0x1002 EVENT_FACE_UNKNOWN`,
+  `0x1003 CMD_HEARTBEAT_PING` (chiều AI→Edge); `0x2001`, `0x2002` (chiều Edge→AI, ngoài scope).
+- **Tag số:** key dạng chuỗi số (ví dụ `"20002"`) trong body JSON; ý nghĩa từng tag theo bảng §4.
+- **Dải tag v2:** bảng tag chốt cho spec này: chèn `cabin_id` vào `20001`, dời +1 các tag v1 từ
+  `20001` trở đi, bổ sung `20008`.
+- **Khóa tương quan:** bộ `20001` (cabin) + `20002` (ai) + `20000` (khi nào) để Edge Core ghép và
+  cộng dồn yêu cầu tầng theo từng người.
+- **Đợt a / đợt b:** đợt a là chiều AI→Edge (spec này); đợt b là chiều Edge→AI, để spec/đợt sau.
+- **Hàng đợi drop-oldest:** hàng đợi có giới hạn; khi đầy thì bỏ gói cũ nhất và tăng bộ đếm gói
+  mất.
+- **ext_id:** cột `residents.ext_id` (mã nhân viên / ID người dùng), nguồn của tag `20002`.
+
+### 4. Từ điển tag số (Data Dictionary) — dải tag v2
 
 **Thay đổi so với `Smart_cabin_communicate.docx` (dải v1)**: chèn `cabin_id` vào `20001`, mọi tag từ
 `20001` (cũ) trở đi **dời +1**. Bảng dưới là **hợp đồng chính thức** của spec này (đã chốt với chủ
@@ -116,10 +146,15 @@ v2 này để đồng bộ liên-team (xem `tasks.md`). Body JSON dùng key là 
 | `20007` | `20006` | Tầng người dùng bấm tay | int | **KHÔNG gửi ở đợt a** (nguồn từ Edge Core) |
 | `20008` | *(mới)* | Độ tương đồng nhận diện (similarity, 0..1) | float | `Outcome.similarity` (0x1001) |
 
-## 5. Yêu cầu chức năng
+## Requirements
 
-### R1 — Kết nối UDS client tới Edge Core
-Là AI Core, tôi cần chủ động kết nối tới socket của Edge Core để gửi sự kiện.
+Mã `R<n>.<m>` dùng trong spec này, `design.md` và `tasks.md` trỏ tới tiêu chí `m` của Requirement `n`.
+
+### Requirement 1: Kết nối UDS client tới Edge Core
+
+**User Story:** Là AI Core, tôi cần chủ động kết nối tới socket của Edge Core để gửi sự kiện.
+
+#### Acceptance Criteria
 
 1. KHI khởi động ở chế độ `--resident-db` VÀ có `--edge-socket`, HỆ THỐNG PHẢI tạo một socket
    `AF_UNIX` / `SOCK_STREAM` và `connect()` tới đường dẫn được cấu hình.
@@ -130,8 +165,12 @@ Là AI Core, tôi cần chủ động kết nối tới socket của Edge Core �
 4. NẾU không truyền `--edge-socket`, HỆ THỐNG PHẢI chạy đúng như hôm nay (EdgeClient tắt hoàn toàn,
    không tạo thread, không kết nối) — không hồi quy.
 
-### R2 — Đóng khung length-prefixed (Message Framing)
-Là bên gửi trên luồng byte `SOCK_STREAM`, tôi cần đóng khung để Edge Core tách gói chính xác.
+### Requirement 2: Đóng khung length-prefixed (Message Framing)
+
+**User Story:** Là bên gửi trên luồng byte `SOCK_STREAM`, tôi cần đóng khung để Edge Core tách gói
+chính xác.
+
+#### Acceptance Criteria
 
 1. Mỗi thông điệp PHẢI gồm **header 8 byte** + **body**:
    - byte 0–1: magic `0xAA 0x55` (theo đúng thứ tự này trên đường truyền).
@@ -144,8 +183,11 @@ Là bên gửi trên luồng byte `SOCK_STREAM`, tôi cần đóng khung để E
 4. HỆ THỐNG PHẢI ghi header + body bằng ghi đầy đủ (`send`/`write` lặp cho tới hết, xử lý
    partial-write) — không giả định một lần `send()` ghi hết.
 
-### R3 — Serialize payload JSON (tự viết, không dependency)
-Là AI Core, tôi cần tạo body JSON đúng định dạng tag-số mà không kéo thêm thư viện.
+### Requirement 3: Serialize payload JSON (tự viết, không dependency)
+
+**User Story:** Là AI Core, tôi cần tạo body JSON đúng định dạng tag-số mà không kéo thêm thư viện.
+
+#### Acceptance Criteria
 
 1. HỆ THỐNG PHẢI serialize được object JSON phẳng gồm cặp key(string)–value, value kiểu string hoặc
    số nguyên (int64), khớp từ điển tag §4.
@@ -161,8 +203,11 @@ Là AI Core, tôi cần tạo body JSON đúng định dạng tag-số mà khôn
    có thì `0`). KHÔNG dùng key chữ `status`/`confidence` — mọi trường là tag số.
 5. `0x1003` PHẢI serialize tối thiểu `20000` (int64) làm heartbeat.
 
-### R4 — Gửi non-blocking (không chặn vòng lặp frame)
-Là cabin realtime, tôi cần việc gửi sự kiện KHÔNG làm tụt FPS nhận diện.
+### Requirement 4: Gửi non-blocking (không chặn vòng lặp frame)
+
+**User Story:** Là cabin realtime, tôi cần việc gửi sự kiện KHÔNG làm tụt FPS nhận diện.
+
+#### Acceptance Criteria
 
 1. HỆ THỐNG PHẢI cung cấp API fire-and-forget (ví dụ `send_recog(...)`, `send_unknown(...)`) mà
    người gọi (vòng lặp frame) trả về ngay, không đợi I/O socket.
@@ -175,8 +220,12 @@ Là cabin realtime, tôi cần việc gửi sự kiện KHÔNG làm tụt FPS nh
 5. Lỗi ghi socket (`EPIPE`/`ECONNRESET`) trên thread nền PHẢI kích hoạt reconnect (R5), KHÔNG làm
    chết thread nền hay chết app.
 
-### R5 — Reconnect bền bỉ
-Là AI Core chạy 24/7, tôi cần tự nối lại khi Edge Core restart mà không cần restart AI Core.
+### Requirement 5: Reconnect bền bỉ
+
+**User Story:** Là AI Core chạy 24/7, tôi cần tự nối lại khi Edge Core restart mà không cần restart
+AI Core.
+
+#### Acceptance Criteria
 
 1. KHI connect thất bại hoặc kết nối đang mở bị rớt, HỆ THỐNG PHẢI thử kết nối lại theo backoff
    (ví dụ tăng dần tới trần), tái dùng khoảng `reconnect_min_ms`/`reconnect_max_ms` sẵn có nếu hợp
@@ -186,16 +235,23 @@ Là AI Core chạy 24/7, tôi cần tự nối lại khi Edge Core restart mà k
 3. HỆ THỐNG PHẢI log chuyển trạng thái kết nối (connected/disconnected/retrying) đủ để field-test
    theo dõi, nhưng KHÔNG spam mỗi lần retry (log có tiết chế).
 
-### R6 — Heartbeat
-Là Edge Core, tôi cần biết AI Core còn sống.
+### Requirement 6: Heartbeat
+
+**User Story:** Là Edge Core, tôi cần biết AI Core còn sống.
+
+#### Acceptance Criteria
 
 1. HỆ THỐNG PHẢI gửi `0x1003 CMD_HEARTBEAT_PING` định kỳ (chu kỳ cấu hình được, mặc định ví dụ
    5000 ms) khi đang có kết nối.
 2. Heartbeat PHẢI đi qua cùng đường gửi non-blocking (R4), KHÔNG tạo đường ghi socket song song.
 3. NẾU không có kết nối, HỆ THỐNG KHÔNG cần gửi heartbeat (reconnect lo việc nối lại).
 
-### R7 — Nội dung sự kiện đủ cho Edge Core điều phối
-Là Edge Core, tôi cần mỗi sự kiện có đủ khóa để tương quan và không ghi đè lẫn nhau (§3).
+### Requirement 7: Nội dung sự kiện đủ cho Edge Core điều phối
+
+**User Story:** Là Edge Core, tôi cần mỗi sự kiện có đủ khóa để tương quan và không ghi đè lẫn nhau
+(§3).
+
+#### Acceptance Criteria
 
 1. `0x1001` PHẢI chứa `20002` (định danh cá nhân) + `20005` (tầng mặc định của người đó) +
    `20000` (timestamp ms) để Edge Core cộng dồn yêu cầu tầng theo từng người, và `20008` (độ tương
@@ -207,8 +263,11 @@ Là Edge Core, tôi cần mỗi sự kiện có đủ khóa để tương quan v
 4. AI Core KHÔNG được tự sinh/gửi `20007`; trường này do Edge Core điền khi tương quan với sự kiện
    Modbus bấm tay (§3, ngoài scope).
 
-### R8 — Cấu hình & nạp dữ liệu
-Là dev/vận hành, tôi cần bật/tắt và trỏ socket bằng CLI.
+### Requirement 8: Cấu hình & nạp dữ liệu
+
+**User Story:** Là dev/vận hành, tôi cần bật/tắt và trỏ socket bằng CLI.
+
+#### Acceptance Criteria
 
 1. HỆ THỐNG PHẢI thêm CLI flag `--edge-socket <path>` vào `AppConfig` (mặc định: rỗng = tắt).
 2. `usage`/help PHẢI mô tả flag mới.
@@ -216,7 +275,7 @@ Là dev/vận hành, tôi cần bật/tắt và trỏ socket bằng CLI.
    `20002` lúc phát sự kiện (không truy vấn DB trong vòng lặp nóng).
 4. KHI `--edge-socket` không truyền, toàn bộ đường EdgeClient PHẢI bị tắt (R1.4).
 
-## 6. Yêu cầu phi chức năng
+## Yêu cầu phi chức năng
 
 - **Không hồi quy**: không có `--edge-socket` ⇒ hành vi app y hệt hôm nay; không thread mới, không
   I/O mới. Các CLI args + build hiện có giữ nguyên.
@@ -235,7 +294,7 @@ Là dev/vận hành, tôi cần bật/tắt và trỏ socket bằng CLI.
 - **Kiểm thử được**: framing (encode header) + JSON serialize + escape phải unit-test được **không
   cần socket thật**; transport có thể test qua `socketpair()`.
 
-## 7. Giả định & quyết định
+## Giả định & quyết định
 
 - AI Core = client, Edge Core = server; Edge Core có thể lên sau AI Core ⇒ reconnect là bắt buộc,
   không phải tùy chọn.

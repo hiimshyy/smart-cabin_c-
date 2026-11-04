@@ -1,14 +1,14 @@
-# Tasks — AI Core ↔ Edge Core qua Unix Domain Socket (edge-core-uds)
+# Implementation Plan: AI Core ↔ Edge Core qua Unix Domain Socket (edge-core-uds)
+
+## Overview
 
 > **Migration note — 2026-10-06:** các task `[x]` bên dưới là lịch sử implementation UDS hiện tại,
 > không phải trạng thái của transport WebSocket mới. Không mở rộng thêm UDS; thực hiện backlog
-> migration ở cuối file và theo [websocket-migration-review.md](websocket-migration-review.md).
+> migration ở cuối mục Tasks và theo [websocket-migration-review.md](websocket-migration-review.md).
 
 **Spec ID**: `edge-core-uds`
 
----
-
-## 📌 TRẠNG THÁI
+### 📌 TRẠNG THÁI
 
 **Đã hoàn thành code (Tasks 1–6, 7.1–7.2).** Chiều AI→Edge (đợt a) implement + test xong trên
 Orange Pi: build 6 binary sạch, full suite 167/167 pass (thêm 23 edge_json + 15 edge_frame).
@@ -44,7 +44,9 @@ NPU/OpenCV). Module `edge_json` và `edge_client` **không phụ thuộc NPU/Ope
 model. Khâu nối `main.cpp` build đầy đủ bằng `make` trên Orange Pi để xác nhận link. Không có ràng
 buộc "blocked-pending-Linux".
 
----
+## Tasks
+
+### Transport UDS, chiều AI→Edge (đợt a)
 
 - [x] 1. Serializer JSON tối giản (`src/edge_json.{h,cpp}`)
   - [x] 1.1 `json_escape(s)`: escape `"`, `\`, `\b \f \n \r \t`, control `< 0x20` → `\u00XX`; giữ nguyên byte UTF-8 ≥ 0x80.
@@ -110,9 +112,50 @@ buộc "blocked-pending-Linux".
   - [ ] 7.3 **[Đội tài liệu]** Cập nhật `docs/Smart_cabin_communicate.docx` sang dải tag v2 (chèn `cabin_id`=`20001`, dời +1 toàn bộ §2 MQTT + §3 UDS + từ điển §3.4 + các payload mẫu §2.1/§2.2/§3.4.1–3.4.4). Ngoài scope code; ghi ở đây để không mất dấu quyết định liên-team.
     - _Requirements: §4 requirements (dải tag v2), liên-team_
 
----
+### Backlog migration sang Socket.IO v4
 
-## Thứ tự triển khai đề xuất
+> Task 8–12 trước đây đánh số W0–W4 (W0 → 8, W1 → 9, W2 → 10, W3 → 11, W4 → 12; subtask giữ nguyên số sau dấu chấm).
+
+- [ ] 8. Chốt contract nghiệp vụ còn thiếu
+  - [x] 8.1 AI Core trực tiếp gửi `Client/command` sau confirmed recognition; unknown không gọi tầng.
+    `value = 2^Resident.home_floor`; tầng 5 tạo giá trị 32.
+  - [ ] 8.2 Chốt URL service, authentication và service-side ownership của endpoint.
+  - [ ] 8.3 Chốt ack success/error schema, timeout, retry và idempotency.
+  - [ ] 8.4 Chốt `ws://` hay `wss://`, authentication header/query và certificate policy.
+
+- [ ] 9. Tách protocol codec khỏi `socket_test.cpp`
+  - [ ] 9.1 RFC 6455 handshake/frame codec với client masking, fragmentation, ping/pong/close,
+    payload limit và validate `Sec-WebSocket-Accept`.
+  - [x] 9.2 Engine.IO 4 state machine: open `0`, namespace connect `40`, ping `2` → pong `3`.
+  - [x] 9.3 Socket.IO event/ack codec, ack id tăng đơn điệu và một command in-flight.
+  - [ ] 9.4 JSON parser có cấu trúc; không đưa regex/parser phẳng trong sample vào production.
+
+- [ ] 10. Implement `SocketIoClient`, non-blocking
+  - [ ] 10.1 TCP connect + WebSocket/Socket.IO handshake + namespace + reconnect/backoff/jitter.
+  - [x] 10.2 Bounded outbound floor-command queue; overflow phải reject có metric, không
+    drop-oldest âm thầm.
+  - [x] 10.3 Emit `Client/command` với `action=write`, configured `deviceCode`, address `8193-2`,
+    `value=2^home_floor`, `requestId=ai-core`.
+  - [x] 10.4 Ack id tăng đơn điệu + timeout; không tự resend lệnh đã gửi nhưng mất ack khi chưa có
+    idempotency key duy nhất cho từng lệnh.
+
+- [ ] 11. Config và main integration
+  - [x] 11.1 Thêm `--iot-ws`, deviceCode/address/requestId và giữ `--edge-socket` để rollback.
+  - [x] 11.2 Nối confirmed outcome có `home_floor > 0` → enqueue `Client/command`; unknown hoặc
+    `home_floor <= 0` không gửi lệnh.
+  - [x] 11.3 Giữ transport UDS sau feature flag trong một release để rollback; không chạy đồng thời
+    hai transport gửi cùng một hành động.
+
+- [ ] 12. Verification
+  - [ ] 12.1 Unit tests WebSocket frame/fragment/control/masking và handshake validation.
+  - [ ] 12.2 Engine.IO/Socket.IO transcript tests từ sample, gồm packet bị chia/dính.
+  - [ ] 12.3 Fake server nhận floor command, trả ack/error/timeout và test reconnect.
+  - [ ] 12.4 Live test `home_floor=5` tạo đúng lệnh ghi `8193-2` giá trị `32`, chỉ một lần cho mỗi
+    confirmed outcome.
+
+## Notes
+
+### Thứ tự triển khai đề xuất
 
 1 (edge_json) → 2 (framing thuần) → 6.2/6.3 (test ngay, TDD) → 3 (EdgeClient thread) → 6.4 → 4
 (config + ext_id) → 5 (nối main) → 6.1/6.5 (build + run_tests) → 7 (regression + docs).
@@ -120,43 +163,30 @@ buộc "blocked-pending-Linux".
 Task 1–2 và test 6.2–6.3 làm được **độc lập, không cần Orange Pi** (chỉ g++). Task 3–5 cần verify
 link đầy đủ trên Orange Pi.
 
----
+### Về Task Dependency Graph
 
-## Backlog migration sang Socket.IO v4
+- Task UDS (1–7) theo mục "Chiều phụ thuộc" và mô tả `worker_loop` trong `design.md`: `JsonObj` (1.2) gọi `json_escape` (1.1), các hàm dựng body (1.3) dùng `JsonObj`; `encode_frame` (2.2) cần hằng và `MsgType` (2.1); `connect_locked` (3.1) và `enqueue` (3.2) cần `EdgeConfig`/`MsgType` (2.1); `worker_loop` (3.3) ghép 2.2, 2.3, 3.1 và 3.2; heartbeat (3.4) cần `build_heartbeat` (1.3) và 3.3; `send_recog`/`send_unknown` (3.5) cần 1.3 và 3.2; `start`/`close` (3.6) cần 3.3.
+- Khâu nối `main.cpp`: 5.1 cần `EdgeClient` (3.6) và `--edge-socket` (4.1); 5.2 cần 3.5, `Resident.ext_id` (4.2) và 5.1; 5.3 cần 5.1.
+- Test đứng sau code nó kiểm: 6.2 sau 1.3; 6.3 sau 2.2 và 2.3; 6.4 (khối reconnect + bounded queue trong `test_edge_frame.cpp`) sau 3.6. Task 6.1 cần đủ mã nguồn của `edge_json` và `edge_client` (1.3, 3.4–3.6). Task 6.5 đăng ký hai file test sau 6.2–6.4. Task 7.1 kiểm không hồi quy nên đứng sau 5.2, 5.3, 6.1 và 6.5.
+- Task 4.1, 4.2, 7.2 và 7.3 không phụ thuộc task nào khác trong spec nên nằm ở wave 0. "Thứ tự triển khai đề xuất" ở trên là một cách chạy tuần tự hợp lệ theo graph này.
+- Backlog migration (8–12): 8.x là quyết định cần chốt với IoT Core, không phụ thuộc code. Codec Socket.IO (9.3) chạy trên Engine.IO (9.2). 10.1 cần endpoint/auth (8.2), `ws://`/`wss://` (8.4), codec WebSocket (9.1) và namespace connect (9.2). 10.3 cần codec event (9.3), queue (10.2) và công thức `2^home_floor` (8.1); 10.4 cần 9.3 và 10.3.
+- 11.1 giữ `--edge-socket` (4.1). 11.2 cần 8.1, 10.3 và 11.1. 11.3 đặt UDS sau feature flag nên cần 11.2 và nhánh UDS trong outcome loop (5.2).
+- 12.1 sau 9.1. 12.2 sau 9.1–9.3, vì packet bị chia/dính đi qua codec WebSocket. 12.3 cần reconnect (10.1), timeout ack (10.4), schema ack/error (8.3) và JSON parser (9.4) để phân loại ack/error. Live test 12.4 đứng cuối, sau 11.3, 12.1, 12.2 và 12.3.
+- Một số task cùng wave sửa cùng file: 2.1 và 2.3; 2.2, 3.1 và 3.2; 3.4, 3.5 và 3.6 (đều trong `src/edge_client.{h,cpp}`); 5.2 và 5.3 (`src/main.cpp`). Các task này đã xong; nếu phải làm lại thì chạy tuần tự.
 
-- [ ] W0. Chốt contract nghiệp vụ còn thiếu
-  - [x] W0.1 AI Core trực tiếp gửi `Client/command` sau confirmed recognition; unknown không gọi tầng.
-    `value = 2^Resident.home_floor`; tầng 5 tạo giá trị 32.
-  - [ ] W0.2 Chốt URL service, authentication và service-side ownership của endpoint.
-  - [ ] W0.3 Chốt ack success/error schema, timeout, retry và idempotency.
-  - [ ] W0.4 Chốt `ws://` hay `wss://`, authentication header/query và certificate policy.
+## Task Dependency Graph
 
-- [ ] W1. Tách protocol codec khỏi `socket_test.cpp`
-  - [ ] W1.1 RFC 6455 handshake/frame codec với client masking, fragmentation, ping/pong/close,
-    payload limit và validate `Sec-WebSocket-Accept`.
-  - [x] W1.2 Engine.IO 4 state machine: open `0`, namespace connect `40`, ping `2` → pong `3`.
-  - [x] W1.3 Socket.IO event/ack codec, ack id tăng đơn điệu và một command in-flight.
-  - [ ] W1.4 JSON parser có cấu trúc; không đưa regex/parser phẳng trong sample vào production.
-
-- [ ] W2. Implement `SocketIoClient`, non-blocking
-  - [ ] W2.1 TCP connect + WebSocket/Socket.IO handshake + namespace + reconnect/backoff/jitter.
-  - [x] W2.2 Bounded outbound floor-command queue; overflow phải reject có metric, không
-    drop-oldest âm thầm.
-  - [x] W2.3 Emit `Client/command` với `action=write`, configured `deviceCode`, address `8193-2`,
-    `value=2^home_floor`, `requestId=ai-core`.
-  - [x] W2.4 Ack id tăng đơn điệu + timeout; không tự resend lệnh đã gửi nhưng mất ack khi chưa có
-    idempotency key duy nhất cho từng lệnh.
-
-- [ ] W3. Config và main integration
-  - [x] W3.1 Thêm `--iot-ws`, deviceCode/address/requestId và giữ `--edge-socket` để rollback.
-  - [x] W3.2 Nối confirmed outcome có `home_floor > 0` → enqueue `Client/command`; unknown hoặc
-    `home_floor <= 0` không gửi lệnh.
-  - [x] W3.3 Giữ transport UDS sau feature flag trong một release để rollback; không chạy đồng thời
-    hai transport gửi cùng một hành động.
-
-- [ ] W4. Verification
-  - [ ] W4.1 Unit tests WebSocket frame/fragment/control/masking và handshake validation.
-  - [ ] W4.2 Engine.IO/Socket.IO transcript tests từ sample, gồm packet bị chia/dính.
-  - [ ] W4.3 Fake server nhận floor command, trả ack/error/timeout và test reconnect.
-  - [ ] W4.4 Live test `home_floor=5` tạo đúng lệnh ghi `8193-2` giá trị `32`, chỉ một lần cho mỗi
-    confirmed outcome.
+```json
+{
+  "waves": [
+    { "id": 0, "tasks": ["1.1", "2.1", "2.3", "4.1", "4.2", "7.2", "7.3", "8.1", "8.2", "8.3", "8.4", "9.1", "9.2", "9.4", "10.2"] },
+    { "id": 1, "tasks": ["1.2", "2.2", "3.1", "3.2", "9.3", "10.1", "11.1", "12.1"] },
+    { "id": 2, "tasks": ["1.3", "3.3", "6.3", "10.3", "12.2"] },
+    { "id": 3, "tasks": ["3.4", "3.5", "3.6", "6.2", "10.4", "11.2"] },
+    { "id": 4, "tasks": ["5.1", "6.1", "6.4", "12.3"] },
+    { "id": 5, "tasks": ["5.2", "5.3", "6.5"] },
+    { "id": 6, "tasks": ["7.1", "11.3"] },
+    { "id": 7, "tasks": ["12.4"] }
+  ]
+}
+```

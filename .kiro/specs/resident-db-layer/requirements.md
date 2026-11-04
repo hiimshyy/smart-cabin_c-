@@ -1,9 +1,15 @@
-# Requirements — Lớp SQLite + Multi-embedding + State Machine tương tác
+# Requirements Document
+
+## Introduction
+
+Spec này mô tả **lớp SQLite + Multi-embedding + State Machine tương tác**: wrapper `ResidentDB` theo
+`db/schema.sql`, matching đa embedding, tool migrate `.fdb` → SQLite, và state machine tương tác có
+cooldown trong `main.cpp`.
 
 **Spec ID**: `resident-db-layer` · **Đề xuất số**: 1 (nền tảng)
 **Phụ thuộc**: pipeline vision hiện tại (`face_recog.h`, `face_db.h`, `tracker.h`, `main.cpp`, `db/schema.sql`)
 
-## 1. Bối cảnh & vấn đề
+### 1. Bối cảnh & vấn đề
 
 Hệ thống hiện nhận diện tốt (~25 FPS) nhưng lớp dữ liệu chỉ là file `.fdb`:
 
@@ -14,7 +20,7 @@ Hệ thống hiện nhận diện tốt (~25 FPS) nhưng lớp dữ liệu chỉ
 
 `db/schema.sql` đã thiết kế đủ (residents, embeddings, cabins, match_events) nhưng **chưa có code C++ nào dùng**. Đây là nút thắt chặn Đề xuất 2 (elevator action) và 3 (UI/TTS).
 
-## 2. Phạm vi
+### 2. Phạm vi
 
 **Trong scope:**
 1. Wrapper C++ cho SQLite (WAL) theo `db/schema.sql`.
@@ -27,7 +33,45 @@ Hệ thống hiện nhận diện tốt (~25 FPS) nhưng lớp dữ liệu chỉ
 
 **Ngoài scope (Đề xuất 2 & 3):** điều khiển tầng/GPIO, self-supervised capture, UI SDL2, TTS Piper, REST API. Tool `bulk_enroll` (CSV) để spec riêng — nhưng `enroll_faces` sẽ đặt nền (ghi SQLite) cho nó.
 
-## 3. Yêu cầu chức năng
+## Glossary
+
+- **Resident (cư dân):** một hàng trong bảng `residents`. Chỉ resident `active=1` được nạp để match.
+- **Embedding:** vector đặc trưng khuôn mặt 512-D. Mỗi hàng bảng `embeddings` lưu một vector của một
+  resident, kèm `source` (ví dụ `'id_photo'`).
+- **Multi-embedding:** lưu và so khớp nhiều embedding cho mỗi resident, không gộp trung bình. Điểm
+  của một resident là similarity lớn nhất trong các embedding của người đó.
+- **Similarity:** độ tương đồng cosine giữa embedding query và một embedding đã lưu.
+- **Ngưỡng match:** similarity tối thiểu để gán resident. Dưới ngưỡng, kết quả là "unknown".
+- **`.fdb`:** định dạng file DB nhận diện cũ, lưu 1 embedding trung bình/người, đọc bằng
+  `FaceDB::load()`. Sau spec này chỉ còn là input cho `migrate_fdb` và chế độ test/dev `--face-db`.
+- **`ResidentDB`:** wrapper C++ cho SQLite (R1): mở DB chế độ WAL, nạp residents + embeddings, ghi
+  `match_events`.
+- **`MatchEngine`:** thành phần so khớp embedding query với toàn bộ embedding đã nạp, trả
+  `resident_id` + similarity (R2).
+- **`InteractionManager`:** state machine phiên tương tác kèm cooldown (R4).
+- **`migrate_fdb`:** tool CLI chuyển dữ liệu `.fdb` sang SQLite (R3).
+- **Phiên tương tác:** đơn vị state machine theo dõi thay cho từng frame riêng lẻ: một người có mặt
+  trước camera, từ lúc xuất hiện tới khi rời đi.
+- **`IDLE` / `DETECTING` / `MATCHED` / `CONFIRMED`:** các trạng thái của phiên tương tác (R4.1).
+- **Cooldown:** khoảng thời gian (mặc định 3s) sau khi một resident CONFIRMED, trong đó hệ thống
+  không trigger lại cùng người.
+- **Flip-flop:** kết quả match nhảy qua lại giữa các resident, hoặc giữa match và unknown, qua từng
+  frame.
+- **`match_events`:** bảng audit trong SQLite, một hàng cho mỗi sự kiện tương tác (`action` =
+  `'matched'` hoặc `'unknown'`).
+- **WAL:** chế độ Write-Ahead Logging của SQLite.
+- **Sentinel `home_floor = 0`:** quy ước "chưa đăng ký tầng" (xem §6).
+- **Pipeline SCRFD-only / pipeline có tracker:** hai chế độ của pipeline vision: chỉ detect khuôn mặt
+  bằng SCRFD theo từng frame, hoặc có thêm tracker gán `track_id` cho từng khuôn mặt.
+- **`cabin_id`:** id cabin trong bảng `cabins`, đặt qua `--cabin-id` (mặc định 1).
+- **Giai đoạn 1 / Giai đoạn 2:** hai giai đoạn triển khai của spec (xem §8).
+- **FAR (False Accept Rate):** tỷ lệ nhận nhầm một người thành resident khác hoặc nhận người lạ
+  thành resident.
+
+## Requirements
+
+Mục này là mục 3 (yêu cầu chức năng) của tài liệu; các mục §4–§8 phía sau giữ nguyên số. Mã `Rx.y`
+trong `design.md` và `tasks.md` trỏ tới yêu cầu `Rx`, tiêu chí thứ `y` bên dưới.
 
 ### R1 — Wrapper SQLite (`ResidentDB`)
 Là hệ thống, tôi cần API C++ để đọc cư dân + embedding và ghi sự kiện.

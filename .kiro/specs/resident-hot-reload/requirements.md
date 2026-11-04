@@ -1,11 +1,14 @@
-# Requirements — Resident Hot Reload
+# Requirements Document
 
+**Tính năng**: Resident Hot Reload  
 **Spec ID**: `resident-hot-reload`  
 **Phụ thuộc**: `resident-db-layer`, Phương án A enroll (`add_person --ext-id ... --json`),
 `main-cpp-refactor`  
 **Liên quan**: `edge-core-uds` đợt b (đường dài hạn), `cabin-runtime-config`
 
-## 1. Bối cảnh & vấn đề
+## Introduction
+
+### Bối cảnh & vấn đề
 
 `face_recog_app` hiện gọi `ResidentDB::load_active()` đúng một lần lúc khởi động, xây
 `MatchEngine` và `resident_by_id` trong RAM rồi giữ nguyên cho đến khi thoát. Phương án A enroll
@@ -20,9 +23,9 @@ Mục tiêu của spec: sau khi transaction enroll commit, app tự phát hiện
 trong tối đa khoảng một chu kỳ poll, **không restart**, **không đổi schema**, không làm hỏng catalog
 đang dùng nếu reload thất bại.
 
-## 2. Phạm vi
+### Phạm vi
 
-### Trong scope
+#### Trong scope
 
 1. Poll thay đổi resident/embedding trong SQLite khi chạy `--resident-db`.
 2. Mặc định poll mỗi 1000 ms; CLI `--resident-reload-ms N` cho phép chỉnh, `0` = tắt.
@@ -38,7 +41,7 @@ trong tối đa khoảng một chu kỳ poll, **không restart**, **không đổ
 9. Unit/integration test không NPU cho transaction/detection/snapshot/swap; một smoke test NPU có
    kiểm soát cho luồng app-running + `add_person`.
 
-### Ngoài scope
+#### Ngoài scope
 
 - Enroll model inference trong cùng process; Phương án A vẫn spawn `add_person` và có thể gây NPU
   contention ngắn.
@@ -48,7 +51,7 @@ trong tối đa khoảng một chu kỳ poll, **không restart**, **không đổ
 - UDS `0x2002 register request`; đây là kiến trúc cuối ở `edge-core-uds` đợt b.
 - Tối ưu FPS YOLO/SCRFD và thermal.
 
-## 3. Thuật ngữ
+## Glossary
 
 - **Catalog**: tập active residents, metadata dùng runtime và mọi embedding của họ.
 - **Catalog fingerprint**: hash ổn định của các trường catalog ảnh hưởng runtime; không gồm
@@ -58,7 +61,7 @@ trong tối đa khoảng một chu kỳ poll, **không restart**, **không đổ
 - **Affected track**: track unknown/unrecognized khi có resident mới, hoặc track đang map tới
   resident bị thay đổi/xóa/deactivate.
 
-## 4. Yêu cầu chức năng
+## Requirements
 
 ### R1 — Bật/tắt và chu kỳ kiểm tra
 
@@ -172,7 +175,7 @@ trong tối đa khoảng một chu kỳ poll, **không restart**, **không đổ
    transaction để một reload không bao giờ nhận resident với zero/partial embeddings.
 5. CLI precedence/config camera không thuộc spec và không bị thay đổi.
 
-## 5. Tiêu chí chấp nhận end-to-end
+## Tiêu chí chấp nhận end-to-end
 
 1. Start app với DB có resident A; xác nhận log initial generation.
 2. Giữ app chạy, dùng `add_person` enroll resident B vào đúng DB.
@@ -190,7 +193,7 @@ trong tối đa khoảng một chu kỳ poll, **không restart**, **không đổ
 10. Test replace nhiều embeddings: generation chỉ áp catalog trước hoặc sau nguyên batch, không bao
     giờ quan sát zero/partial embeddings.
 
-## 6. Quyết định đã chốt
+## Quyết định đã chốt
 
 - Phương án trung gian: **poll SQLite 1000 ms**, không signal từ Node, tránh coupling với
   `edge_elevator/server.js` do đội IoT quản lý.

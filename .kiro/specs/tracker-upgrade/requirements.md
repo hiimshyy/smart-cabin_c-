@@ -1,11 +1,15 @@
-# Requirements — Nâng cấp Person Tracker lên ByteTrack-lite
+# Requirements Document
+
+## Introduction
+
+Spec này mô tả việc **nâng cấp Person Tracker lên ByteTrack-lite**.
 
 **Spec ID**: `tracker-upgrade`  
 **Phụ thuộc**: pipeline YOLO/SCRFD hiện tại, `resident-db-layer`, `resident-hot-reload`,
 `main-cpp-refactor`, `system-logging`  
 **Tham khảo**: SORT (Kalman + Hungarian), ByteTrack (association hai mức confidence), HOTA
 
-## 1. Bối cảnh và vấn đề
+### Bối cảnh và vấn đề
 
 Pipeline vận hành hiện tại dùng YOLOv5s phát hiện người và một tracker tự viết trong
 `src/tracker.{h,cpp}`. Tracker ghép detection với track bằng cách tính toàn bộ IoU, sắp xếp giảm dần
@@ -37,7 +41,7 @@ Spec này thay tracker hiện tại bằng **ByteTrack-lite** viết bằng C++:
 Hungarian assignment, association hai mức confidence, lifecycle theo thời gian, face-to-track một-một
 và recognition identity theo `resident_id`. Không thêm person ReID model trong phạm vi này.
 
-## 2. Mục tiêu
+### Mục tiêu
 
 1. Giảm ID switch và track fragmentation trong cảnh 1–6 người của cabin.
 2. Duy trì cùng track ID qua YOLO miss/che khuất ngắn trong timeout cho phép.
@@ -53,9 +57,9 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 10. Không làm giảm đáng kể FPS/latency trên Orange Pi A733.
 11. Có chế độ rollback sang tracker greedy trong giai đoạn rollout.
 
-## 3. Phạm vi
+### Phạm vi
 
-### Trong scope
+#### Trong scope
 
 - Backend tracker mới: Kalman box state + Hungarian + two-stage ByteTrack association.
 - Chuẩn hóa tracker API; tránh trả raw pointer vào vector nội bộ.
@@ -68,7 +72,7 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 - CLI config tối thiểu, startup observability và rollback mode.
 - Unit tests, deterministic detection replay, benchmark và live smoke test.
 
-### Ngoài scope
+#### Ngoài scope
 
 - Thêm person ReID CNN/DeepSORT/BoT-SORT hoặc model NPU mới.
 - Train/fine-tune YOLO, SCRFD hoặc recognition model.
@@ -77,7 +81,7 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 - Thay đổi schema SQLite residents/cabins nếu không thật sự cần cho config rollout.
 - Tracking ngoài vùng camera hoặc suy luận identity khi không có bằng chứng.
 
-## 4. Thuật ngữ
+## Glossary
 
 - **High detection**: person detection có score ≥ `person_high_thr`.
 - **Low detection**: person detection có `person_low_thr ≤ score < person_high_thr`.
@@ -92,7 +96,10 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
   Removed luôn là appearance mới với track ID mới, dù recognition ra cùng resident.
 - **FrameContext**: `frame_id`, monotonic timestamp, frame dimensions và cờ detector có chạy.
 
-## 5. Yêu cầu chức năng
+## Requirements
+
+Mã `Rx.y` trong `tasks.md` trỏ tới requirement Rx, tiêu chí thứ y bên dưới.
+R1–R11 là yêu cầu chức năng; R12–R13 là yêu cầu kiểm thử và nghiệm thu.
 
 ### R1 — API tracker và compatibility
 
@@ -263,8 +270,6 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 5. Benchmark summary PHẢI tách tracker predict/associate nếu cần đo regression nhưng không làm đổi
    format vận hành nếu chưa có migration tài liệu.
 
-## 6. Yêu cầu kiểm thử và nghiệm thu
-
 ### R12 — Unit và deterministic replay
 
 1. Hungarian PHẢI có test square/rectangular/empty/forbidden/tie.
@@ -296,7 +301,7 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 9. Nếu có annotation đầy đủ, báo cáo IDF1/HOTA trước–sau; nếu không, báo IDSW, fragments, duplicate
    events, FPS và p95 tracker latency.
 
-## 7. Rollout và rollback
+## Rollout và rollback
 
 1. Tracker mới PHẢI merge với default `greedy` ở giai đoạn đầu.
 2. Detection replay PHẢI chạy A/B cả hai backend từ cùng input.
@@ -305,7 +310,7 @@ và recognition identity theo `resident_id`. Không thêm person ReID model tron
 5. `--tracker-mode greedy` PHẢI được giữ ít nhất một chu kỳ release sau khi đổi default.
 6. Rollback không được yêu cầu DB migration hoặc xóa resident/event data.
 
-## 8. Tiêu chí hoàn thành spec
+## Tiêu chí hoàn thành spec
 
 Spec hoàn thành khi:
 

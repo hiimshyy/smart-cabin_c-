@@ -1,9 +1,13 @@
-# Requirements: Điều phối gọi tầng tự động
+# Requirements Document
+
+## Introduction
+
+Spec này mô tả tính năng **Điều phối gọi tầng tự động**.
 
 Trạng thái: **Draft để chốt nghiệp vụ trước khi sửa runtime**
 Phạm vi: AI Core trong cabin, nhận diện cư dân và gửi lệnh gọi tầng qua Socket.IO tới IoT Core.
 
-## 1. Mục tiêu
+### Mục tiêu
 
 Hệ thống phải gọi đúng tầng của cư dân đã được nhận diện, chỉ gọi số lần cần thiết trong một lần sử
 dụng cabin, không chặn luồng camera/inference và có đủ trạng thái để phân biệt lệnh mới xếp hàng,
@@ -15,7 +19,7 @@ Thiết kế này tách ba trách nhiệm:
 2. `FloorCallCoordinator` quyết định có nên gọi tầng trong phiên cabin hiện tại hay không.
 3. `SocketIoClient` truyền lệnh và trả kết quả truyền về coordinator.
 
-## 2. Các quyết định đã thống nhất
+### Các quyết định đã thống nhất
 
 - AI Core gửi trực tiếp event `Client/command` tới IoT Core.
 - Thiết bị: `deviceCode=2026010900100098`.
@@ -28,7 +32,7 @@ Thiết kế này tách ba trách nhiệm:
 - Danh tính đã xác nhận được latch theo track; quay mặt đi tạm thời không làm mất tên và không tạo
   lại quyền gọi tầng.
 
-## 3. Vấn đề của logic hiện tại
+### Vấn đề của logic hiện tại
 
 - Quyền gọi tầng đang gắn với `confirmed outcome` và cooldown 3 giây. Một người bị đổi track hoặc
   xuất hiện đủ lâu có thể sinh thêm outcome và gọi lại trong cùng lần đi thang máy.
@@ -39,7 +43,7 @@ Thiết kế này tách ba trách nhiệm:
   lỗi nghiệp vụ.
 - `requestId=ai-core` là cố định, không đủ để tương quan từng lệnh hoặc retry an toàn.
 
-## 4. Định nghĩa
+## Glossary
 
 - **Phiên cabin (cabin visit):** khoảng thời gian bắt đầu khi hệ thống nhìn thấy ít nhất một người và
   kết thúc khi không còn người liên tục đủ `session_empty_ms`.
@@ -52,7 +56,7 @@ Thiết kế này tách ba trách nhiệm:
 - **ACK transport:** Socket.IO trả đúng `ack_id`; chỉ chứng minh có phản hồi.
 - **ACK nghiệp vụ:** payload ACK cho biết write được chấp nhận, trùng, hay bị từ chối.
 
-## 5. Yêu cầu chức năng
+## Requirements
 
 ### R1 — Biên phiên cabin
 
@@ -170,7 +174,7 @@ tại `QUEUED`.
 3. Callback trạng thái từ transport phải thread-safe và không giữ lock trong khi gọi ra component
    khác.
 
-## 6. Kịch bản chấp nhận
+## Kịch bản chấp nhận
 
 | ID | Kịch bản | Kết quả mong đợi |
 |---|---|---|
@@ -193,7 +197,7 @@ tại `QUEUED`.
 | S17 | Recognition lặp sau cooldown 3 giây | Coordinator vẫn không gọi lại trong cùng phiên |
 | S18 | Hai confirmed cùng timestamp | Thứ tự ổn định theo resident_id |
 
-## 7. Thông tin phải chốt với IoT Core
+## Thông tin phải chốt với IoT Core
 
 Semantics register đã được xác nhận: write là thao tác set thêm một tầng; ghi `32` rồi `64` giữ cả
 tầng 5 và tầng 6. Các điểm còn lại cần chốt trước khi coi bản triển khai là production-ready:
@@ -203,7 +207,7 @@ tầng 5 và tầng 6. Các điểm còn lại cần chốt trước khi coi b�
 3. Có trạng thái chuẩn hóa nào để chặn gọi trong maintenance, emergency, fire mode hoặc khi cửa/cabin
    ở trạng thái không phù hợp không?
 
-## 8. Ngoài phạm vi phiên bản đầu
+## Ngoài phạm vi phiên bản đầu
 
 - Chọn tầng theo lịch, vai trò hoặc quyền truy cập ngoài `home_floor`.
 - Hủy tầng đã bấm trên board.

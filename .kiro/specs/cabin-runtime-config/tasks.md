@@ -1,10 +1,12 @@
-# Tasks — Lớp config vận hành DB-driven (cabin-runtime-config)
+# Implementation Plan: Lớp config vận hành DB-driven (cabin-runtime-config)
+
+## Overview
 
 **Spec ID**: `cabin-runtime-config`
+Yêu cầu: [requirements.md](requirements.md)
+Thiết kế: [design.md](design.md)
 
----
-
-## 📌 TRẠNG THÁI
+### 📌 TRẠNG THÁI
 
 **Chưa bắt đầu code.** Tài liệu (requirements + design) đã chốt. Đây là spec Đề xuất 4, phụ thuộc
 `resident-db-layer` (đã xong) và dùng chung REST layer với spec Enroll API (đang là Ưu tiên 1).
@@ -23,7 +25,7 @@ sqlite3 + NPU/OpenCV/AI SDK). Module `src/cabin_config.{h,cpp}` không phụ thu
 migration test bằng DB tạm. Khâu nối `main.cpp` build đầy đủ bằng `make` trên chính Orange Pi để xác
 nhận (NPU/OpenCV). Không có ràng buộc "blocked-pending-Linux" — mọi task đều verify được tại chỗ.
 
----
+## Tasks
 
 - [x] 1. Migration schema_version 2 (`db/schema.sql` + `ResidentDB::apply_migrations`)
   - [x] 1.1 Thêm định nghĩa cột Nhóm A vào `CREATE TABLE cabins` (đường tạo-mới) + khối `ALTER TABLE ... ADD COLUMN` version 2 (đường nâng cấp). Thêm `residents.ext_id TEXT` + unique index partial. `INSERT OR IGNORE schema_version VALUES(2)`.
@@ -42,11 +44,11 @@ nhận (NPU/OpenCV). Không có ràng buộc "blocked-pending-Linux" — mọi t
     - _Requirements: R2.2_
 
 - [x] 3. Module `src/cabin_config.{h,cpp}` — struct + resolve + validate
-  - [x] 3.1 Định nghĩa `CabinRow`, `CabinConfig`, `CliOverrides` (design §4).
+  - [x] 3.1 Định nghĩa `CabinRow`, `CabinConfig`, `CliOverrides` (design, mục Data Models).
     - _Requirements: R2, R3_
   - [x] 3.2 `resolve_cabin_config(cli, db, def)`: precedence per-field CLI>DB>default (R3.1, R3.2).
     - _Requirements: R3.1, R3.2, R3.4_
-  - [x] 3.3 Validate/clamp trong resolve (design §4.2): match_thr, confirm_streak, cooldown/unknown/latency ≥0, reconnect min≤max, floors min≤max. LOG_WARN khi clamp.
+  - [x] 3.3 Validate/clamp trong resolve (design, mục Components and Interfaces → Validate/clamp): match_thr, confirm_streak, cooldown/unknown/latency ≥0, reconnect min≤max, floors min≤max. LOG_WARN khi clamp.
     - _Requirements: R4.1–R4.5_
   - [x] 3.4 Parse `camera_urls` JSON array tối giản → phần tử [0]; scheme rtsp/http/https → use_stream; rỗng/lỗi/scheme lạ → fallback USB + LOG_WARN.
     - _Requirements: R2.3, R4.6_
@@ -70,7 +72,7 @@ nhận (NPU/OpenCV). Không có ràng buộc "blocked-pending-Linux" — mọi t
        `load_cabin()` đã implement + test. Chỉ còn phần HTTP endpoint, gộp vào đợt dựng REST
        layer của spec Enroll API (Ưu tiên 1) — không dựng server riêng.
   - [ ] 5.1 `GET /api/v1/cabins/{id}`: trả JSON trường Nhóm A (không lộ Nhóm C).
-    - _Requirements: R6 (design §6)_
+    - _Requirements: R6 (design, mục REST API cho config)_
   - [ ] 5.2 `PATCH /api/v1/cabins/{id}`: body JSON → `validate_cabin_patch` → `update_cabin_config`; response `{ok, restart_required:true, cabin}`. Trường Nhóm C / URL lỗi → 400.
     - _Requirements: R4.6, R4.7, R5.1, R5.2_
   - [ ] 5.3 Test API: PATCH camera_urls hợp lệ → DB đổi + restart_required; PATCH model path → 400; PATCH pipeline string → 400.
@@ -82,11 +84,38 @@ nhận (NPU/OpenCV). Không có ràng buộc "blocked-pending-Linux" — mọi t
   - [x] 6.3 DEVELOPMENT_PLAN §3.2: thay ghi chú YAML bằng link spec này (đã làm ở task list tài liệu).
     - _Requirements: R5.5, NFR quan sát được_
 
----
+## Notes
 
-## Thứ tự đề xuất
+### Thứ tự đề xuất
 
 Task 1–3 (migration + module config + test) không phụ thuộc NPU → làm + test trước bằng g++ +
 sqlite3 ngay trên Orange Pi (nhanh, không cần load model). Task 4 build đầy đủ bằng `make` trên
 Orange Pi (NPU/OpenCV) + smoke test tại chỗ. Task 5 gộp vào đợt dựng REST layer của spec Enroll API
 không dựng server riêng cho config. Task 6 chốt cuối.
+
+### Về Task Dependency Graph
+
+- Graph ghi phụ thuộc theo luồng dữ liệu trong `design.md`: migration runtime (1.2) chạy khối ALTER của schema version 2 (1.1); `load_cabin`/`update_cabin_config` (2.1, 2.2) cần cột v2 (1.2) và struct `CabinRow` (3.1, đặt trong `src/resident_db.h`); `resolve_cabin_config` (3.2) dùng struct của 3.1; clamp (3.3) và parse `camera_urls` (3.4) nằm trong resolve; `validate_cabin_patch` (3.5) dùng chung luật URL của 3.4.
+- Task 4.x đặt sau khi task 1–3 đã qua test (1.3, 2.3, 3.6), theo "Thứ tự đề xuất" ở trên. Về mặt code, 4.1 chỉ cần `CliOverrides` (3.1).
+- Task 5.x chỉ phụ thuộc backend trong spec này (2.3, 3.6). Ngoài graph, task 5 còn bị chặn bởi REST layer của spec Enroll API.
+- Task 6.x đặt sau 4.4 vì tài liệu mô tả hành vi đã nối vào `main.cpp` và `env.sh` (CLI override DB). Task 6 không chờ task 5: task 5 đang hoãn, task 6 đã xong.
+- Theo `design.md` (mục "Khoảng trống đã biết"), hiện chưa có test nào trong `tests/` gọi `load_cabin`, `update_cabin_config` hoặc chạy migration v1→v2, dù task 1.3 và 2.3 đã đánh dấu xong.
+
+## Task Dependency Graph
+
+```json
+{
+  "waves": [
+    { "id": 0, "tasks": ["1.1", "3.1"] },
+    { "id": 1, "tasks": ["1.2", "3.2"] },
+    { "id": 2, "tasks": ["1.3", "2.1", "2.2", "3.3", "3.4"] },
+    { "id": 3, "tasks": ["2.3", "3.5"] },
+    { "id": 4, "tasks": ["3.6", "5.1"] },
+    { "id": 5, "tasks": ["4.1", "5.2"] },
+    { "id": 6, "tasks": ["4.2", "5.3"] },
+    { "id": 7, "tasks": ["4.3"] },
+    { "id": 8, "tasks": ["4.4"] },
+    { "id": 9, "tasks": ["6.1", "6.2", "6.3"] }
+  ]
+}
+```

@@ -1,10 +1,14 @@
-# Requirements: Điều phối inference theo trạng thái thang máy
+# Requirements Document
+
+## Introduction
+
+Spec này mô tả tính năng **Điều phối inference theo trạng thái thang máy** (adaptive inference).
 
 Trạng thái: **Draft để chốt hợp đồng event với IoT Core trước khi triển khai**
 Phạm vi: pipeline realtime trong cabin gồm YOLO person detection, SCRFD face detection, face
 recognition, person tracker và tín hiệu trạng thái thang máy từ IoT Core.
 
-## 1. Mục tiêu
+### Mục tiêu
 
 Giảm số lần chạy NPU khi cabin không cần nhận diện nhưng vẫn bảo đảm không bỏ lỡ hành khách và không
 làm sai logic gọi tầng. Hệ thống điều chỉnh tần suất inference theo trạng thái cửa, trạng thái kết nối
@@ -13,7 +17,7 @@ IoT Core, person track và identity của từng track.
 Các model vẫn được load một lần khi khởi động. “Bật/tắt model” trong tài liệu này có nghĩa là cho phép
 hoặc bỏ qua một lần chạy inference; không unload/reload NPU context trong runtime.
 
-## 2. Hiện trạng
+### Hiện trạng
 
 - YOLO chạy theo `frame_id % person_every == 0`.
 - Person tracker predict mỗi frame và update khi YOLO chạy.
@@ -25,7 +29,7 @@ hoặc bỏ qua một lần chạy inference; không unload/reload NPU context t
 Chi phí cần giảm trước tiên là số lần chạy SCRFD khi không có người và số lần chạy YOLO khi cabin
 đang idle. Recognition tiếp tục được quản lý theo từng track, không tắt toàn cục sau người đầu tiên.
 
-## 3. Quyết định kiến trúc
+### Quyết định kiến trúc
 
 1. IoT Core đọc Modbus và chuyển dữ liệu board thành event nghiệp vụ; AI Core không đọc raw Modbus.
 2. AI Core nhận event trạng thái qua WebSocket/Socket.IO đang dùng với IoT Core.
@@ -36,135 +40,40 @@ Chi phí cần giảm trước tiên là số lần chạy SCRFD khi không có 
 6. Khi ở maintenance, emergency hoặc fire mode, AI Core không phát lệnh gọi tầng tự động. Quyết định
    ghi hình/nhận diện trong các mode này được cấu hình riêng.
 
-## 4. Event cần nhận từ IoT Core
+## Glossary
 
-Schema logic tối thiểu, tên Socket.IO event và envelope cuối cùng cần chốt với IoT Core:
+- **AI Core**: ứng dụng nhận diện trên thiết bị cabin, chạy YOLO, SCRFD, face recognition và person
+  tracker trên NPU.
+- **IoT Core**: dịch vụ đọc Modbus từ board điều khiển thang và gửi event nghiệp vụ cho AI Core qua
+  Socket.IO.
+- **Elevator state**: trạng thái thang máy mới nhất AI Core đã áp dụng (cửa, service mode, tầng, chiều,
+  sequence, timestamp), theo schema ở mục "Event cần nhận từ IoT Core".
+- **Snapshot**: elevator state đầy đủ IoT Core gửi ngay khi AI Core connect hoặc reconnect.
+- **Stale state**: elevator state có monotonic receive time cũ hơn `state_ttl_ms`.
+- **`ElevatorStateProvider`**: module quản lý snapshot, sequence, timestamp, reconnect và độ mới của
+  elevator state.
+- **`InferenceScheduler`**: module thuần logic quyết định model nào được chạy ở mỗi frame; không gọi
+  NPU, socket hoặc DB.
+- **`FloorCallCoordinator`**: module sở hữu dedupe gọi tầng và cabin visit.
+- **Scheduler state**: một trong các state `IDLE`, `ARMED`, `DOOR_ACTIVE`, `OCCUPIED_UNRESOLVED`,
+  `OCCUPIED_RESOLVED`, `EMPTY_GRACE`, `DEGRADED`, `INHIBITED` ở mục "State machine scheduler".
+- **Gate (bật/tắt model)**: cho phép hoặc bỏ qua một lần chạy inference của một model; không
+  unload/reload NPU context.
+- **NPU execution**: một lần gọi `awnn_run`.
+- **Baseline**: lịch inference hiện tại, dùng khi adaptive scheduling tắt.
+- **Shadow mode**: chế độ scheduler tính và log decision nhưng vẫn chạy lịch baseline.
+- **Person track**: track người do person tracker duy trì. Track `Tracked` đang khớp với detection
+  thật; track `Lost`/`predicted_only` chỉ còn vị trí dự đoán.
+- **Eligible track**: track `Tracked` có detection thật, đủ điều kiện kích hoạt face detection và
+  recognition.
+- **Identity latch**: known identity được gắn cố định vào track sau khi recognition xác nhận, giữ trong
+  suốt vòng đời track.
+- **Resolved track**: track đã latch known identity, hoặc track unknown đã đạt unknown policy (hết cửa
+  sổ recognition).
+- **Unresolved track**: track chưa resolved, vẫn cần recognition theo retry/backoff.
+- **Cabin visit**: một phiên có người trong cabin, kết thúc khi cabin trống quá `session_empty_ms`.
 
-```json
-{
-  "event": "elevator/state",
-  "deviceCode": "2026010900100098",
-  "elevator": 2,
-  "sequence": 1042,
-  "timestamp": 1791760000000,
-  "doorState": "opening",
-  "currentFloor": 3,
-  "direction": "up",
-  "moving": false,
-  "serviceMode": "normal",
-  "callPending": true
-}
-```
-
-Các trường bắt buộc:
-
-| Trường | Giá trị | Mục đích |
-|---|---|---|
-| `deviceCode` | string | Loại event của thiết bị khác |
-| `elevator` | integer | Chỉ nhận thang máy số 2 |
-| `sequence` | uint64 tăng dần | Loại event cũ/đảo thứ tự |
-| `timestamp` | epoch milliseconds | Audit và kiểm tra state stale |
-| `doorState` | `closed/opening/open/closing/unknown` | Tín hiệu đánh thức chính |
-| `serviceMode` | `normal/maintenance/emergency/fire/unknown` | Cho phép hoặc chặn tự động |
-
-Các trường khuyến nghị: `currentFloor`, `direction`, `moving`, `callPending`. `callPending` chỉ dùng để
-đánh thức sớm; không được là điều kiện duy nhất để bật/tắt pipeline.
-
-Khi client kết nối hoặc reconnect, IoT Core phải gửi snapshot hiện tại; AI Core không được chờ một
-thay đổi tiếp theo mới biết state.
-
-## 5. State machine scheduler
-
-### S0 — `IDLE`
-
-Điều kiện điển hình: cửa đóng, không có active person track và state IoT còn mới.
-
-- Person detection chạy ở tần suất dự phòng thấp.
-- SCRFD tắt.
-- Recognition tắt.
-- Camera capture/decode và tracker clock vẫn hoạt động.
-
-### S1 — `ARMED`
-
-Điều kiện: có `callPending`, cửa `opening`, hoặc scheduler nhận tín hiệu cabin sắp phục vụ.
-
-- Tăng tần suất person detection trước khi cửa mở hoàn toàn.
-- SCRFD chỉ chạy sau khi có person detection/track phù hợp.
-- Trạng thái tự hết hạn nếu không có cửa mở hoặc person sau `armed_timeout_ms`.
-
-### S2 — `DOOR_ACTIVE`
-
-Điều kiện: cửa `opening`, `open` hoặc `closing` trong grace.
-
-- Person detection chạy tần suất cao.
-- SCRFD chạy khi có ít nhất một person track đủ điều kiện.
-- Recognition chạy cho từng track chưa có identity latch.
-
-### S3 — `OCCUPIED_UNRESOLVED`
-
-Điều kiện: có person track nhưng còn ít nhất một track chưa xác định.
-
-- Person detection và SCRFD chạy tần suất trung bình/cao.
-- Recognition chỉ chạy cho unresolved track, theo retry/backoff hiện tại.
-- Known/latched track không chạy recognition lại.
-
-### S4 — `OCCUPIED_RESOLVED`
-
-Điều kiện: có person track và mọi eligible track hiện tại đã known hoặc đã đạt unknown policy.
-
-- Giảm tần suất person detection để phát hiện người mới.
-- SCRFD tắt khi không có track mới/unresolved.
-- Recognition tắt cho resolved tracks.
-- Nếu xuất hiện track mới, chuyển về `OCCUPIED_UNRESOLVED`.
-
-### S5 — `EMPTY_GRACE`
-
-Điều kiện: person cuối vừa biến mất nhưng chưa đủ timeout kết thúc phiên.
-
-- Person detection chạy tần suất thấp/trung bình.
-- SCRFD và recognition tắt nếu không có track.
-- Person trở lại trước timeout thì giữ cùng cabin visit.
-- Hết `session_empty_ms` thì về `IDLE` và kết thúc cabin visit.
-
-### S6 — `DEGRADED`
-
-Điều kiện: chưa có snapshot IoT, mất kết nối, state quá `state_ttl_ms`, sequence reset không hợp lệ hoặc
-door/service mode là `unknown`.
-
-- Không phụ thuộc event cửa để phát hiện người.
-- Chạy person scan dự phòng.
-- Có person thì cho phép SCRFD/recognition như `OCCUPIED_UNRESOLVED`.
-- Chính sách gọi tầng mặc định: chỉ cho phép trong `normal`; nếu service mode không xác định thì
-  suppress command và log reason, trừ khi product owner chọn fail-open riêng.
-
-### S7 — `INHIBITED`
-
-Điều kiện: `maintenance`, `emergency` hoặc `fire`.
-
-- Không gọi tầng tự động.
-- Mặc định giữ person detection ở tần suất thấp để audit/recording.
-- Face recognition mặc định tắt; có thể bật bằng policy vận hành sau.
-
-## 6. Lịch inference mặc định
-
-Giả định camera nominal 30 FPS. Scheduler dùng thời gian monotonic, không phụ thuộc tuyệt đối vào số
-frame; bảng FPS chỉ là giá trị cấu hình dễ hiểu.
-
-| State | Person | SCRFD | Recognition |
-|---|---:|---:|---|
-| `IDLE` | 2 FPS | 0 | 0 |
-| `ARMED` | 10 FPS | Khi có person, tối đa 10 FPS | Theo unresolved track |
-| `DOOR_ACTIVE` | 15 FPS | Khi có person, tối đa 10 FPS | Theo unresolved track |
-| `OCCUPIED_UNRESOLVED` | 10 FPS | 10 FPS | Theo retry/backoff từng track |
-| `OCCUPIED_RESOLVED` | 3 FPS | Chỉ khi có track mới | 0 cho resolved track |
-| `EMPTY_GRACE` | 5 FPS | 0 nếu không có track | 0 |
-| `DEGRADED` | 5 FPS; tăng lên 10 khi thấy person | 10 FPS khi có person | Theo unresolved track |
-| `INHIBITED` | 2 FPS | 0 mặc định | 0 mặc định |
-
-Giá trị này là baseline rollout, phải điều chỉnh bằng benchmark trên Orange Pi. Scheduler không được
-chạy nhiều hơn một NPU model cùng lúc trên context hiện tại.
-
-## 7. Yêu cầu chức năng
+## Requirements
 
 ### R1 — Model lifecycle
 
@@ -244,7 +153,135 @@ chạy nhiều hơn một NPU model cùng lúc trên context hiện tại.
 4. Shadow mode tính decision nhưng vẫn chạy baseline inference để so sánh trước khi bật gating thật.
 5. Có một config duy nhất để rollback về baseline mà không build lại.
 
-## 8. Kịch bản chấp nhận
+## Event cần nhận từ IoT Core
+
+Schema logic tối thiểu, tên Socket.IO event và envelope cuối cùng cần chốt với IoT Core:
+
+```json
+{
+  "event": "elevator/state",
+  "deviceCode": "2026010900100098",
+  "elevator": 2,
+  "sequence": 1042,
+  "timestamp": 1791760000000,
+  "doorState": "opening",
+  "currentFloor": 3,
+  "direction": "up",
+  "moving": false,
+  "serviceMode": "normal",
+  "callPending": true
+}
+```
+
+Các trường bắt buộc:
+
+| Trường | Giá trị | Mục đích |
+|---|---|---|
+| `deviceCode` | string | Loại event của thiết bị khác |
+| `elevator` | integer | Chỉ nhận thang máy số 2 |
+| `sequence` | uint64 tăng dần | Loại event cũ/đảo thứ tự |
+| `timestamp` | epoch milliseconds | Audit và kiểm tra state stale |
+| `doorState` | `closed/opening/open/closing/unknown` | Tín hiệu đánh thức chính |
+| `serviceMode` | `normal/maintenance/emergency/fire/unknown` | Cho phép hoặc chặn tự động |
+
+Các trường khuyến nghị: `currentFloor`, `direction`, `moving`, `callPending`. `callPending` chỉ dùng để
+đánh thức sớm; không được là điều kiện duy nhất để bật/tắt pipeline.
+
+Khi client kết nối hoặc reconnect, IoT Core phải gửi snapshot hiện tại; AI Core không được chờ một
+thay đổi tiếp theo mới biết state.
+
+## State machine scheduler
+
+### S0 — `IDLE`
+
+Điều kiện điển hình: cửa đóng, không có active person track và state IoT còn mới.
+
+- Person detection chạy ở tần suất dự phòng thấp.
+- SCRFD tắt.
+- Recognition tắt.
+- Camera capture/decode và tracker clock vẫn hoạt động.
+
+### S1 — `ARMED`
+
+Điều kiện: có `callPending`, cửa `opening`, hoặc scheduler nhận tín hiệu cabin sắp phục vụ.
+
+- Tăng tần suất person detection trước khi cửa mở hoàn toàn.
+- SCRFD chỉ chạy sau khi có person detection/track phù hợp.
+- Trạng thái tự hết hạn nếu không có cửa mở hoặc person sau `armed_timeout_ms`.
+
+### S2 — `DOOR_ACTIVE`
+
+Điều kiện: cửa `opening`, `open` hoặc `closing` trong grace.
+
+- Person detection chạy tần suất cao.
+- SCRFD chạy khi có ít nhất một person track đủ điều kiện.
+- Recognition chạy cho từng track chưa có identity latch.
+
+### S3 — `OCCUPIED_UNRESOLVED`
+
+Điều kiện: có person track nhưng còn ít nhất một track chưa xác định.
+
+- Person detection và SCRFD chạy tần suất trung bình/cao.
+- Recognition chỉ chạy cho unresolved track, theo retry/backoff hiện tại.
+- Known/latched track không chạy recognition lại.
+
+### S4 — `OCCUPIED_RESOLVED`
+
+Điều kiện: có person track và mọi eligible track hiện tại đã known hoặc đã đạt unknown policy.
+
+- Giảm tần suất person detection để phát hiện người mới.
+- SCRFD tắt khi không có track mới/unresolved.
+- Recognition tắt cho resolved tracks.
+- Nếu xuất hiện track mới, chuyển về `OCCUPIED_UNRESOLVED`.
+
+### S5 — `EMPTY_GRACE`
+
+Điều kiện: person cuối vừa biến mất nhưng chưa đủ timeout kết thúc phiên.
+
+- Person detection chạy tần suất thấp/trung bình.
+- SCRFD và recognition tắt nếu không có track.
+- Person trở lại trước timeout thì giữ cùng cabin visit.
+- Hết `session_empty_ms` thì về `IDLE` và kết thúc cabin visit.
+
+### S6 — `DEGRADED`
+
+Điều kiện: chưa có snapshot IoT, mất kết nối, state quá `state_ttl_ms`, sequence reset không hợp lệ hoặc
+door/service mode là `unknown`.
+
+- Không phụ thuộc event cửa để phát hiện người.
+- Chạy person scan dự phòng.
+- Có person thì cho phép SCRFD/recognition như `OCCUPIED_UNRESOLVED`.
+- Chính sách gọi tầng mặc định: chỉ cho phép trong `normal`; nếu service mode không xác định thì
+  suppress command và log reason, trừ khi product owner chọn fail-open riêng.
+
+### S7 — `INHIBITED`
+
+Điều kiện: `maintenance`, `emergency` hoặc `fire`.
+
+- Không gọi tầng tự động.
+- Mặc định giữ person detection ở tần suất thấp để audit/recording.
+- Face recognition mặc định tắt; có thể bật bằng policy vận hành sau.
+
+## Lịch inference mặc định
+
+Giả định camera nominal 30 FPS. Scheduler dùng thời gian monotonic, không phụ thuộc tuyệt đối vào số
+frame; bảng FPS chỉ là giá trị cấu hình dễ hiểu.
+
+| State | Person | SCRFD | Recognition |
+|---|---:|---:|---|
+| `IDLE` | 2 FPS | 0 | 0 |
+| `ARMED` | 10 FPS | Khi có person, tối đa 10 FPS | Theo unresolved track |
+| `DOOR_ACTIVE` | 15 FPS | Khi có person, tối đa 10 FPS | Theo unresolved track |
+| `OCCUPIED_UNRESOLVED` | 10 FPS | 10 FPS | Theo retry/backoff từng track |
+| `OCCUPIED_RESOLVED` | 3 FPS | Chỉ khi có track mới | 0 cho resolved track |
+| `EMPTY_GRACE` | 5 FPS | 0 nếu không có track | 0 |
+| `DEGRADED` | 5 FPS; tăng lên 10 khi thấy person | 10 FPS khi có person | Theo unresolved track |
+| `INHIBITED` | 2 FPS | 0 mặc định | 0 mặc định |
+
+Giá trị này là baseline rollout, phải điều chỉnh bằng benchmark trên Orange Pi. Scheduler không được
+chạy nhiều hơn một NPU model cùng lúc trên context hiện tại.
+
+## Kịch bản chấp nhận
 
 | ID | Kịch bản | Kết quả mong đợi |
 |---|---|---|
@@ -267,7 +304,7 @@ chạy nhiều hơn một NPU model cùng lúc trên context hiện tại.
 | A17 | Shadow mode | Log decision nhưng số lần inference không thay đổi |
 | A18 | Skipped SCRFD frame | Không còn face/label/association từ frame trước |
 
-## 9. Tiêu chí hiệu năng
+## Tiêu chí hiệu năng
 
 Không đặt phần trăm tiết kiệm trước khi đo baseline. Rollout chỉ được coi là đạt khi:
 
@@ -280,7 +317,7 @@ Không đặt phần trăm tiết kiệm trước khi đo baseline. Rollout ch�
   trống.
 - FPS camera/capture ổn định và không có queue tăng không giới hạn.
 
-## 10. Ngoài phạm vi phiên bản đầu
+## Ngoài phạm vi phiên bản đầu
 
 - Unload/reload model động để giảm RAM.
 - AI Core truy cập Modbus TCP/RTU trực tiếp.
@@ -288,7 +325,7 @@ Không đặt phần trăm tiết kiệm trước khi đo baseline. Rollout ch�
 - Tối ưu lịch trình tầng theo current floor/direction.
 - Dùng nhận diện khuôn mặt trong emergency/fire mode nếu chưa có yêu cầu vận hành rõ ràng.
 
-## 11. Điểm cần chốt với IoT Core
+## Điểm cần chốt với IoT Core
 
 1. Tên Socket.IO event và envelope thực tế cho elevator state.
 2. Mapping raw register sang `doorState`, `serviceMode`, `moving`, `direction`.

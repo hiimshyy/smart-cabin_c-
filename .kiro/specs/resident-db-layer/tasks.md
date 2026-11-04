@@ -1,10 +1,12 @@
-# Tasks — Lớp SQLite + Multi-embedding + State Machine tương tác
+# Implementation Plan: Lớp SQLite + Multi-embedding + State Machine tương tác (resident-db-layer)
+
+## Overview
 
 **Spec ID**: `resident-db-layer`
+Yêu cầu: [requirements.md](requirements.md)
+Thiết kế: [design.md](design.md)
 
----
-
-## 📌 TRẠNG THÁI (cập nhật để tiếp tục trên Orange Pi)
+### 📌 TRẠNG THÁI (cập nhật để tiếp tục trên Orange Pi)
 
 **Đã xong (commit `2b9e6cb`):**
 - ✅ **Task 2** — `MatchEngine` (`src/match_engine.h/.cpp`) + unit test `tests/test_match_engine.cpp` (14 checks pass).
@@ -35,11 +37,11 @@
 - `MatchEngine` KHÔNG gộp trung bình embedding — giữ tất cả, lấy max cosine.
 - `InteractionManager`: `subject_key` = `track_id` khi có tracker, ngược lại = slot ổn định (largest face). Cooldown per-resident (không per-subject) → người rời rồi quay lại trong cooldown không retrigger.
 
----
+## Tasks
 
 - [x] 1. Cập nhật build cho SQLite  ✅ (commit `62a915e`)
-  - [x] Thêm `-lsqlite3` vào `LIBS` trong Makefile; nhóm `DB_SRCS` (`resident_db.cpp` + `match_engine.cpp` + `interaction.cpp`) vào `APP_SRCS_CPP`. `libsqlite3-dev` v3.40.1 đã cài trên Orange Pi.
-  - [x] Sửa `src/match_engine.h` thiếu `#include <cstddef>` (g++ 12.2 Orange Pi chặt hơn máy dev). Build sạch cả 5 binary; `ldd face_recog_app` có `libsqlite3.so.0`.
+  - [x] 1.1 Thêm `-lsqlite3` vào `LIBS` trong Makefile; nhóm `DB_SRCS` (`resident_db.cpp` + `match_engine.cpp` + `interaction.cpp`) vào `APP_SRCS_CPP`. `libsqlite3-dev` v3.40.1 đã cài trên Orange Pi.
+  - [x] 1.2 Sửa `src/match_engine.h` thiếu `#include <cstddef>` (g++ 12.2 Orange Pi chặt hơn máy dev). Build sạch cả 5 binary; `ldd face_recog_app` có `libsqlite3.so.0`.
   - _Requirements: R5, NFR build_
 
 - [x] 2. `MatchEngine` (multi-embedding) + unit test  ✅
@@ -91,23 +93,56 @@
     - _Requirements: R5.4_
   - _Ghi chú: action='unknown' chưa test live (không có người lạ đứng đủ lâu) nhưng đã cover bởi 48 unit test InteractionManager._
 
----
-
 ### Giai đoạn 2 — Chuyển enroll tools sang SQLite (làm sau khi Giai đoạn 1 ổn)
 
 - [x] 8. Bổ sung API ghi vào `ResidentDB`  ✅ (làm sớm cùng Task 3)
-  - [x] `upsert_resident(name, home_floor=0) -> id` (trùng name trả id cũ), `add_embedding(resident_id, source, vector)`, `delete_embeddings(resident_id)`.
-  - [x] Unit test round-trip cho 3 hàm (trong `tests/test_resident_db.cpp`).
+  - [x] 8.1 `upsert_resident(name, home_floor=0) -> id` (trùng name trả id cũ), `add_embedding(resident_id, source, vector)`, `delete_embeddings(resident_id)`.
+  - [x] 8.2 Unit test round-trip cho 3 hàm (trong `tests/test_resident_db.cpp`).
   - _Requirements: R6.1, R6.2_
 
 - [x] 9. Chuyển `enroll_faces` sang SQLite  ✅
-  - [x] Thay `FaceDB db.add()/db.save(fdb)` bằng `ResidentDB`: mỗi ảnh → `add_embedding(source='id_photo')` KHÔNG trung bình; `upsert_resident(name, home_floor=0)` 1 lần/người. CLI `--out <fdb>` → `--db <sqlite>` (+ `--schema`, default `db/schema.sql`). Makefile `ENROLL_SRCS_CPP` dùng `resident_db.cpp` (bỏ `face_db.cpp`), `-lsqlite3` sẵn trong LIBS. In số embedding/người + cảnh báo home_floor=0. Test: `faces/Cao Tien Sy` (11 jpg) → 11 embeddings, 1 resident.
+  - [x] 9.1 Thay `FaceDB db.add()/db.save(fdb)` bằng `ResidentDB`: mỗi ảnh → `add_embedding(source='id_photo')` KHÔNG trung bình; `upsert_resident(name, home_floor=0)` 1 lần/người. CLI `--out <fdb>` → `--db <sqlite>` (+ `--schema`, default `db/schema.sql`). Makefile `ENROLL_SRCS_CPP` dùng `resident_db.cpp` (bỏ `face_db.cpp`), `-lsqlite3` sẵn trong LIBS. In số embedding/người + cảnh báo home_floor=0. Test: `faces/Cao Tien Sy` (11 jpg) → 11 embeddings, 1 resident.
   - _Requirements: R6.1, R6.3_
 
 - [x] 10. Chuyển `add_person` sang SQLite  ✅
-  - [x] `--merge` = `add_embedding` (append); `--replace` = `delete_embeddings(resident_id)` rồi `add_embedding`; tạo resident (`upsert_resident`, home_floor=0) nếu chưa có; trùng tên không cờ → từ chối. CLI `--db <fdb>` → `--db <sqlite>` (+ `--schema`). KHÔNG trung bình (trước đây có). Test: no-flag từ chối (giữ 11); --merge 11→12; --replace 12→2; resident mới 'Test Person' id=2.
+  - [x] 10.2 `--merge` = `add_embedding` (append); `--replace` = `delete_embeddings(resident_id)` rồi `add_embedding`; tạo resident (`upsert_resident`, home_floor=0) nếu chưa có; trùng tên không cờ → từ chối. CLI `--db <fdb>` → `--db <sqlite>` (+ `--schema`). KHÔNG trung bình (trước đây có). Test: no-flag từ chối (giữ 11); --merge 11→12; --replace 12→2; resident mới 'Test Person' id=2.
   - _Requirements: R6.2, R6.3_
 
 - [x] 11. Kiểm thử Giai đoạn 2  ✅
-  - [x] enroll_faces → SQLite đúng residents + nhiều embeddings/người (11, không trung bình); add_person `--merge`/`--replace` đúng; `capture_person` KHÔNG đổi. Unit tests 84/84 pass (không hồi quy). End-to-end: enroll → set floor 5 + greeting → cabin load 11 embeddings → CONFIRMED sim=0.61 greeting 'anh Sy' home_floor=5, FPS 11.7.
+  - [x] 11.1 enroll_faces → SQLite đúng residents + nhiều embeddings/người (11, không trung bình); add_person `--merge`/`--replace` đúng; `capture_person` KHÔNG đổi. Unit tests 84/84 pass (không hồi quy). End-to-end: enroll → set floor 5 + greeting → cabin load 11 embeddings → CONFIRMED sim=0.61 greeting 'anh Sy' home_floor=5, FPS 11.7.
   - _Requirements: R6.1, R6.2, R6.4_
+
+## Notes
+
+- Task 1–11 đã xong. Task Dependency Graph ghi phụ thuộc logic giữa các task, không phải thứ tự commit thực tế (ví dụ task 1 được commit trước task 5).
+- Graph dựa trên include và API mà từng task dùng:
+  - `src/match_engine.cpp` (2.1) cần định nghĩa đầy đủ `EmbeddingRow` trong `src/resident_db.h` (3.2). `src/interaction.h` (5.1) include `match_engine.h` để dùng `MatchResult`.
+  - `load_active()` (3.2), async writer (3.3) và API ghi của task 8 cần `open()` (3.1). `close()` (3.4) flush và join writer thread của 3.3. Unit test 3.5 kiểm cả round-trip của task 8.
+  - `migrate_fdb` (4.1) gọi `upsert_resident`/`add_embedding`/`delete_embeddings` của task 8.
+  - Task 1 đưa `resident_db.cpp`, `match_engine.cpp`, `interaction.cpp` vào `DB_SRCS` và sửa `src/match_engine.h`, nên đặt sau 2.1, 3.1 và 5.1.
+  - Khâu nối `main.cpp`: default của các cờ CLI (6.1) theo `InteractionConfig` (5.1). 6.2 là chỗ đầu tiên `main.cpp` gọi `ResidentDB`/`MatchEngine`, nên cần task 1 đã link `DB_SRCS`. 6.3 dùng `log_event`/`touch_resident` (3.3). 6.4 gọi `close()` (3.4) để flush các event mà vòng lặp 6.3 đã đẩy vào queue.
+  - Test tích hợp 7.1 migrate `db/faces_all.fdb` bằng tool đã kiểm ở 4.3.
+- Giai đoạn 2 (task 9–11) đặt sau toàn bộ Giai đoạn 1, theo ghi chú "làm sau khi Giai đoạn 1 ổn". Task 8 thuộc Giai đoạn 2 nhưng làm sớm cùng task 3, nên nằm ở wave đầu.
+- Task 10 đặt sau task 9 vì test của task 10 bắt đầu từ 11 embedding mà test task 9 tạo ra (`faces/Cao Tien Sy`). Task 11 chạy lại 84 unit test nên cần cả 2.2, 3.5 và 5.2.
+- Một số task cùng wave sửa cùng file: 3.2, 3.3 và 8 (wave 1); 3.4 và 4.1 (wave 2). Tất cả đều sửa `src/resident_db.{h,cpp}`. Các task này đã xong; nếu phải làm lại thì chạy tuần tự.
+
+## Task Dependency Graph
+
+```json
+{
+  "waves": [
+    { "id": 0, "tasks": ["3.1"] },
+    { "id": 1, "tasks": ["3.2", "3.3", "8"] },
+    { "id": 2, "tasks": ["2.1", "3.4", "4.1"] },
+    { "id": 3, "tasks": ["2.2", "3.5", "4.2", "5.1"] },
+    { "id": 4, "tasks": ["1", "4.3", "5.2", "6.1"] },
+    { "id": 5, "tasks": ["6.2"] },
+    { "id": 6, "tasks": ["6.3"] },
+    { "id": 7, "tasks": ["6.4"] },
+    { "id": 8, "tasks": ["7.1", "7.2"] },
+    { "id": 9, "tasks": ["9"] },
+    { "id": 10, "tasks": ["10"] },
+    { "id": 11, "tasks": ["11"] }
+  ]
+}
+```

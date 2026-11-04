@@ -1,16 +1,23 @@
-# Tasks — Resident Hot Reload
+# Implementation Plan: Resident Hot Reload (resident-hot-reload)
+
+## Overview
 
 **Spec ID**: `resident-hot-reload`
+Yêu cầu: [requirements.md](requirements.md)
+Thiết kế: [design.md](design.md)
 
----
+Kế hoạch cho `face_recog_app` ở chế độ `--resident-db` tự nạp catalog cư dân mới sau khi `add_person`
+commit vào SQLite, không restart. Thứ tự đi từ enroll atomic (task 0), reader snapshot (task 1),
+fingerprint/candidate và poll state machine (task 2–3), reconcile cache (task 4), CLI và nối main
+loop (task 5–6), rồi validation không NPU (task 7), smoke trên Orange Pi (task 8) và tài liệu (task 9).
 
-## 📌 TRẠNG THÁI
+### 📌 TRẠNG THÁI
 
 **Đã triển khai code (1/10/2026).** Poll SQLite 1000 ms, atomic enroll, reader snapshot,
 candidate-build-then-swap và cache reconciliation đã build/test/smoke trên Orange Pi. Full suite
 315 checks pass; controlled smoke giữ nguyên PID và reload generation 1→2 trong ~0.6 s
-(`latency_ms=0.65`). Còn hai xác nhận field được đánh dấu `[~]`: người thật đứng trước camera
-trước/sau enroll và A/B FPS trong cùng điều kiện thermal; không chặn controlled rollout.
+(`latency_ms=0.65`). Còn hai xác nhận field chưa đóng (task 8.3 và 8.5, để `[ ]`): người thật đứng
+trước camera trước/sau enroll và A/B FPS trong cùng điều kiện thermal; không chặn controlled rollout.
 
 **Quyết định đã chốt:**
 - Chỉ bật trong `--resident-db`; `.fdb` giữ nguyên.
@@ -26,7 +33,7 @@ trước/sau enroll và A/B FPS trong cùng điều kiện thermal; không chặ
 - Không schema migration, không sửa Node/web để trigger reload.
 - Privacy R6: không log names/greeting/apartment/image path/vector.
 
----
+## Tasks
 
 - [x] 0. Atomic enroll write (`add_person` correctness prerequisite)
   - [x] 0.1 Sau khi extract embeddings xong, bọc upsert resident + optional delete + toàn bộ inserts
@@ -138,7 +145,7 @@ trước/sau enroll và A/B FPS trong cùng điều kiện thermal; không chặ
         capture không publish frame vẫn poll đúng cadence; reader busy không block ~5s.
     - _Requirements: R1.1–R1.4, R7.2, R8.2–R8.4_
 
-- [~] 8. Smoke test Orange Pi end-to-end (code path PASS; live-person field confirmation còn chờ)
+- [ ] 8. Smoke test Orange Pi end-to-end (code path PASS; live-person field confirmation còn chờ)
   - [x] 8.1 Đảm bảo chỉ một `face_recog_app`; dùng `timeout -k` nếu chạy benchmark tự động để không lặp
         lỗi smoke process sống sót.
     - _Requirements: R7.5_
@@ -146,14 +153,14 @@ trước/sau enroll và A/B FPS trong cùng điều kiện thermal; không chặ
         `add_person`; xác nhận add commit atomic, PID app không đổi, log generation tăng đúng một lần
         trong ~1 giây và không có generation zero/partial embeddings.
     - _Requirements: R3.1, acceptance 1–4, 10_
-  - [~] 8.3 Đặt B trước camera trước/sau enroll; xác nhận unknown track recognition lại ngay và match B
+  - [ ] 8.3 Đặt B trước camera trước/sau enroll; xác nhận unknown track recognition lại ngay và match B
         không cần restart; A vẫn match; không duplicate confirm chỉ do reload.
         - Automated coverage PASS: matcher mới match embedding vừa commit; unknown retry/selectivity/
           no-duplicate-confirm PASS. Còn xác nhận trực tiếp với người đứng trước camera.
     - _Requirements: R5, acceptance 4–5_
   - [x] 8.4 Test audit-only không reload; inject/recover bad candidate hoặc busy; app giữ generation cũ.
     - _Requirements: acceptance 6–7_
-  - [~] 8.5 Benchmark catalog không đổi trước/sau; ghi nhận poll overhead và NPU contention trong thời
+  - [ ] 8.5 Benchmark catalog không đổi trước/sau; ghi nhận poll overhead và NPU contention trong thời
         gian `add_person` riêng biệt.
         - Smoke 180 frames PASS, PID giữ nguyên, generation reload 0.65 ms, counters sạch. Không chạy
           thêm A/B NPU do thermal là biến nhiễu và yêu cầu tránh smoke lặp; fast path đã unit test.
@@ -167,9 +174,9 @@ trước/sau enroll và A/B FPS trong cùng điều kiện thermal; không chặ
   - [x] 9.3 Ghi runbook kiểm tra generation/counters, lỗi reload và rollback; nhắc privacy/no names.
     - _Requirements: R6, R8_
 
----
+## Notes
 
-## Thứ tự milestone/commit đề xuất
+### Thứ tự milestone/commit đề xuất
 
 1. **Atomic add_person batch** (Task 0) — correctness prerequisite trước khi poll.
 2. **Read-only DB snapshot primitives** (Task 1) — deterministic barrier tests, không NPU.
@@ -180,3 +187,51 @@ trước/sau enroll và A/B FPS trong cùng điều kiện thermal; không chặ
 7. **Docs** (Task 9).
 
 Mỗi milestone commit cục bộ riêng; user tự `git push`. Không commit DB, backup hoặc ảnh test.
+
+### Về Task Dependency Graph
+
+- Graph ghi phụ thuộc logic giữa các task, không phải thứ tự commit thực tế. Thứ tự commit theo mục
+  milestone ở trên.
+- Reader primitives: 1.3 delegate sang `load_active_snapshot()` (1.2). Test barrier/busy/reconnect
+  (1.4) cần cả `open_readonly()` (1.1) lẫn snapshot (1.2).
+- Catalog: fingerprint (2.1) và validation (2.2) đọc `EmbeddingRow` đã mở rộng ở 1.2. Build candidate
+  và diff (2.3) cần digest của 2.1 và validation của 2.2.
+- Reloader: 3.1 dùng `data_version()`/reopen của 1.1 và fingerprint của 2.1; 3.2 tạo candidate qua
+  2.3. Integration test 3.4 cần counters của 3.3 và mô phỏng commit enroll, nên đặt sau contract
+  atomic batch của Task 0 (0.3).
+- Helper reconcile (4.3, `src/resident_reconcile.cpp`) dùng `CatalogDiff` (2.3), Tracker API (4.1) và
+  `drop_sessions` (4.2). Test 4.4 kiểm cả ba.
+- Main loop: 6.1 dựng initial catalog bằng cùng path snapshot/validation (2.3) và chỉ mở reader khi
+  reload bật (5.2). 6.2 nối poll (3.2) với swap + reconcile (4.3); Task 0 là điều kiện đúng đắn trước
+  khi bật poll, nên 6.2 cũng đứng sau 0.3. 6.4 log counters của 3.3.
+- 7.1 (build không warning mới) đứng sau toàn bộ code task 0–6; 7.2 và 7.3 chạy sau khi build.
+- Smoke: 8.1 đứng trước mọi lần chạy NPU. 8.3, 8.4 và 8.5 dùng app và enroll đã dựng ở 8.2.
+- Docs 9.x mô tả behavior đã kiểm ở 8.2 và 8.4. Task 9 không chờ 8.3 và 8.5 vì hai xác nhận field
+  này không chặn controlled rollout.
+- Một số task cùng wave sửa cùng file: 1.1 và 1.2 (wave 0), 1.3 và 1.4 (wave 1) cùng sửa
+  `src/resident_db.{h,cpp}`; 2.2 và 3.1 (wave 2) cùng sửa `src/resident_catalog.{h,cpp}`; 6.3 và 6.4
+  (wave 6) cùng sửa `src/main.cpp`. Các task này đã xong; nếu phải làm lại thì chạy tuần tự.
+- 8.3, 8.4 và 8.5 cùng wave 11 nhưng đều chạy NPU. NPU chỉ có một core dùng chung với `add_person`,
+  nên phải chạy tuần tự, mỗi lần có `timeout -k` (8.1).
+
+## Task Dependency Graph
+
+```json
+{
+  "waves": [
+    { "id": 0, "tasks": ["0.1", "1.1", "1.2", "4.1", "4.2", "5.1"] },
+    { "id": 1, "tasks": ["0.2", "1.3", "1.4", "2.1", "5.2"] },
+    { "id": 2, "tasks": ["0.3", "2.2", "3.1", "5.3"] },
+    { "id": 3, "tasks": ["2.3"] },
+    { "id": 4, "tasks": ["2.4", "3.2", "4.3", "6.1"] },
+    { "id": 5, "tasks": ["3.3", "4.4", "6.2"] },
+    { "id": 6, "tasks": ["3.4", "6.3", "6.4"] },
+    { "id": 7, "tasks": ["7.1"] },
+    { "id": 8, "tasks": ["7.2", "7.3"] },
+    { "id": 9, "tasks": ["8.1"] },
+    { "id": 10, "tasks": ["8.2"] },
+    { "id": 11, "tasks": ["8.3", "8.4", "8.5"] },
+    { "id": 12, "tasks": ["9.1", "9.2", "9.3"] }
+  ]
+}
+```
