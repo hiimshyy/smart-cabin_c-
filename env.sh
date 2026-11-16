@@ -40,6 +40,8 @@ export FACE_PERSON_MODEL="$FACE_ROOT/model/person_det/yolov5s_rt_uint8_a733.nb"
 export FACE_TRACKER_MODE="${FACE_TRACKER_MODE:-byte}"
 export FACE_PERSON_THR="${FACE_PERSON_THR:-0.5}"
 export FACE_PERSON_LOW_THR="${FACE_PERSON_LOW_THR:-0.1}"
+# Ngưỡng tin cậy riêng cho cảnh báo động vật (chó/mèo), độc lập với person.
+export FACE_ANIMAL_THR="${FACE_ANIMAL_THR:-0.5}"
 export FACE_TRACK_LOST_MS="${FACE_TRACK_LOST_MS:-1200}"
 # This installation serves physical cabin/elevator 2.
 export FACE_CABIN_ID="${FACE_CABIN_ID:-2}"
@@ -167,6 +169,7 @@ face_cabin() {
         --tracker-mode "$FACE_TRACKER_MODE" \
         --person-thr "$FACE_PERSON_THR" \
         --person-low-thr "$FACE_PERSON_LOW_THR" \
+        --animal-thr "$FACE_ANIMAL_THR" \
         --track-lost-ms "$FACE_TRACK_LOST_MS" \
         --source "$url" --gst-latency "$lat" \
         "${preview_args[@]}" \
@@ -343,7 +346,8 @@ face_usb() {
         --recog-dim 512 --recog-bgr \
         --resident-db "$db" --cabin-id "$FACE_CABIN_ID" \
         --match-thr "$thr" \
-        --person-model "$FACE_PERSON_MODEL")
+        --person-model "$FACE_PERSON_MODEL" \
+        --animal-thr "$FACE_ANIMAL_THR")
 }
 
 # SCRFD-only (không tracker) — nhanh hơn, scene không occlusion. USB.
@@ -372,6 +376,7 @@ face_run_rtsp() {
         --recog-dim 512 --recog-bgr \
         --resident-db "$db" --match-thr "$thr" \
         --person-model "$FACE_PERSON_MODEL" \
+        --animal-thr "$FACE_ANIMAL_THR" \
         --source "$url" --gst-latency "$lat")
 }
 

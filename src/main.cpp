@@ -634,10 +634,19 @@ int main(int argc, char** argv) {
 
     std::vector<Detection> faces;
     std::vector<PersonDet> persons;
+    std::vector<AnimalDet> animals;
     std::vector<float>     emb;
     faces.reserve(16);
     persons.reserve(16);
+    animals.reserve(8);
     emb.reserve(cfg.recog_dim);
+
+    // Animal (cat/dog) alert state. Rate-limited per species so a resident
+    // pet lingering in frame does not flood the log; the alert channel to the
+    // IoT team is still TBD, so for now we only emit an operational warning.
+    constexpr double kAnimalAlertCooldownMs = 3000.0;
+    double           last_cat_alert_ms      = -1e12;
+    double           last_dog_alert_ms      = -1e12;
 
     cv::Mat frame, aligned;
     double  fps                 = 0.0;
@@ -817,8 +826,36 @@ int main(int argc, char** argv) {
             ++yolo_runs;
             float** youts = awnn_get_output_buffers(yolo_ctx);
             yolo.decode(youts, pre, cfg.person_decode_threshold(), /*nms=*/0.45f, persons);
+            // Cat/dog alert from the SAME YOLO outputs (no extra NPU run).
+            // Animals are NOT fed to the person tracker / SCRFD / recog.
+            yolo.decode_animals(youts, pre, cfg.animal_thr, /*nms=*/0.45f, animals);
             t_yolo = now_ms() - y0;
             tracker->update(persons, tracker_frame);
+
+            if (!animals.empty()) {
+                int   cat_n = 0, dog_n = 0;
+                float cat_best = 0.0f, dog_best = 0.0f;
+                for (const auto& d : animals) {
+                    if (d.class_id == YoloDecoder::kCocoCat) {
+                        ++cat_n;
+                        cat_best = std::max(cat_best, d.score);
+                    } else if (d.class_id == YoloDecoder::kCocoDog) {
+                        ++dog_n;
+                        dog_best = std::max(dog_best, d.score);
+                    }
+                }
+                const double tnow = tracker_frame.timestamp_ms;
+                if (dog_n > 0 && tnow - last_dog_alert_ms >= kAnimalAlertCooldownMs) {
+                    LOG_WARN("animal", "detected species=%s count=%d score=%.2f",
+                             coco_animal_name(YoloDecoder::kCocoDog), dog_n, dog_best);
+                    last_dog_alert_ms = tnow;
+                }
+                if (cat_n > 0 && tnow - last_cat_alert_ms >= kAnimalAlertCooldownMs) {
+                    LOG_WARN("animal", "detected species=%s count=%d score=%.2f",
+                             coco_animal_name(YoloDecoder::kCocoCat), cat_n, cat_best);
+                    last_cat_alert_ms = tnow;
+                }
+            }
         }
         // On skipped frames, tracker still ages — advance with empty detections?
         // No: we shouldn't kill tracks just because we skipped YOLO. Skip update.

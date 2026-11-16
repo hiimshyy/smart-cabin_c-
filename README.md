@@ -227,6 +227,24 @@ ACK cần chứa `requestId` và `success`; terminal sẽ log trạng thái `QUE
 echo "source $(pwd)/env.sh" >> ~/.bashrc
 ```
 
+## Cảnh báo động vật (chó/mèo)
+
+Model person YOLOv5s vốn là YOLOv5s COCO 80 lớp, nên AI Core tận dụng luôn kết quả
+inference đó để phát hiện **chó (lớp 16)** và **mèo (lớp 15)** — không tốn thêm lần
+chạy NPU. Mỗi ô lưới chỉ được tính là động vật khi lớp thắng (arg-max trên 80 lớp) là
+chó hoặc mèo, nên box người không bị nhầm thành động vật. NMS áp theo từng loài.
+
+Khi phát hiện, ứng dụng ghi log cảnh báo `[animal]` (vd `detected species=dog count=1
+score=0.82`), có cooldown 3 giây/loài để tránh spam. Động vật **không** đi vào person
+tracker / SCRFD / nhận dạng khuôn mặt.
+
+Ngưỡng tin cậy riêng, độc lập với person: `FACE_ANIMAL_THR` (mặc định `0.5`) hoặc cờ
+`--animal-thr F` khi chạy binary trực tiếp. Phát hiện động vật dùng chung nhịp inference
+với person (chỉ chạy ở frame có chạy YOLO).
+
+> Kênh đẩy cảnh báo ra ngoài (IoT/Socket.IO) sẽ bổ sung sau khi chốt contract với đội IoT;
+> hiện tại cảnh báo chỉ ghi vào log.
+
 ## Build
 
 ```bash

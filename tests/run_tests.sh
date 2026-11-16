@@ -26,6 +26,13 @@ g++ -std=c++17 -Isrc \
     -o "$OUT/test_app_config" && "$OUT/test_app_config" || fail=1
 
 echo ""
+echo "== YoloDecoder animals =="
+g++ -std=c++17 -Isrc -I/home/orangepi/ai-sdk -I/home/orangepi/ai-sdk/examples/libawnn_viplite \
+    $(pkg-config --cflags opencv4) \
+    tests/test_yolo_post.cpp src/yolo_post.cpp \
+    $(pkg-config --libs opencv4) -o "$OUT/test_yolo_post" && "$OUT/test_yolo_post" || fail=1
+
+echo ""
 echo "== Occupancy config =="
 g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
     tests/test_occupancy_config.cpp src/occupancy_config.cpp \

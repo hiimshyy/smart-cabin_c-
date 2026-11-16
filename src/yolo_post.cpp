@@ -40,21 +40,37 @@ inline float score_act(float x) {
     return sigmoid(x);
 }
 
-inline float iou(const PersonDet& a, const PersonDet& b) {
-    float xx1 = std::max(a.x1, b.x1);
-    float yy1 = std::max(a.y1, b.y1);
-    float xx2 = std::min(a.x2, b.x2);
-    float yy2 = std::min(a.y2, b.y2);
-    float w   = std::max(0.0f, xx2 - xx1);
-    float h   = std::max(0.0f, yy2 - yy1);
-    float inter = w * h;
-    float area_a = (a.x2 - a.x1) * (a.y2 - a.y1);
-    float area_b = (b.x2 - b.x1) * (b.y2 - b.y1);
+inline float iou_xyxy(float ax1, float ay1, float ax2, float ay2, float bx1, float by1, float bx2,
+                      float by2) {
+    float xx1    = std::max(ax1, bx1);
+    float yy1    = std::max(ay1, by1);
+    float xx2    = std::min(ax2, bx2);
+    float yy2    = std::min(ay2, by2);
+    float w      = std::max(0.0f, xx2 - xx1);
+    float h      = std::max(0.0f, yy2 - yy1);
+    float inter  = w * h;
+    float area_a = (ax2 - ax1) * (ay2 - ay1);
+    float area_b = (bx2 - bx1) * (by2 - by1);
     float uni    = area_a + area_b - inter;
     return (uni > 0) ? inter / uni : 0.0f;
 }
 
+inline float iou(const PersonDet& a, const PersonDet& b) {
+    return iou_xyxy(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1, b.x2, b.y2);
+}
+
 } // namespace
+
+const char* coco_animal_name(int class_id) {
+    switch (class_id) {
+    case YoloDecoder::kCocoCat:
+        return "cat";
+    case YoloDecoder::kCocoDog:
+        return "dog";
+    default:
+        return "animal";
+    }
+}
 
 bool YoloDecoder::init(Awnn_Context_t* ctx, int input_size) {
     if (!ctx || input_size != 640) {
@@ -213,6 +229,115 @@ void YoloDecoder::decode(float** outputs,
         for (size_t j = i + 1; j < cands.size(); ++j) {
             if (suppressed[j]) continue;
             if (iou(cands[i], cands[j]) > nms_thresh) suppressed[j] = 1;
+        }
+    }
+}
+
+void YoloDecoder::decode_animals(float** outputs, const PreInfo& pre, float score_thresh,
+                                 float nms_thresh, std::vector<AnimalDet>& out) const {
+    out.clear();
+    if (!initialized_ || !outputs) return;
+
+    std::vector<AnimalDet> cands;
+    cands.reserve(64);
+
+    for (int L = 0; L < kNumLevels; ++L) {
+        int          stride = kStrides[L];
+        int          gH     = input_size_ / stride;
+        int          gW     = input_size_ / stride;
+        const float* buf    = outputs[level_out_idx_[L]];
+        if (!buf) continue;
+
+        // Same memory layout as decode(): offset(gy, gx, c, a).
+        auto get = [&](int gy, int gx, int c, int a) -> float {
+            return buf[a * (kChannels * gH * gW) + c * (gH * gW) + gy * gW + gx];
+        };
+
+        for (int a = 0; a < kAnchorsPerLoc; ++a) {
+            float aw = kAnchors[L][a][0];
+            float ah = kAnchors[L][a][1];
+            for (int gy = 0; gy < gH; ++gy) {
+                for (int gx = 0; gx < gW; ++gx) {
+                    // Objectness first — early exit if low.
+                    float obj = score_act(get(gy, gx, 4, a));
+                    if (obj < score_thresh) continue;
+
+                    // Check cat/dog first so background and non-pet cells exit
+                    // without activating 80 logits.
+                    const float cat_score      = score_act(get(gy, gx, 5 + kCocoCat, a));
+                    const float dog_score      = score_act(get(gy, gx, 5 + kCocoDog, a));
+                    const int   best_cls       = (dog_score > cat_score) ? kCocoDog : kCocoCat;
+                    const float best_cls_score = (best_cls == kCocoDog) ? dog_score : cat_score;
+                    if (best_cls_score <= 0.0f) continue;
+
+                    float score = obj * best_cls_score;
+                    if (score < score_thresh) continue;
+
+                    // Arg-max over all 80 COCO classes. Only keep the cell if
+                    // cat/dog is the winning class; this prevents a person (or
+                    // any other object) from being reported as an animal just
+                    // because its cat/dog logit cleared threshold. Preserve
+                    // exact strict-`>` tie-breaking from a 0..79 scan.
+                    bool beaten = false;
+                    for (int c = 0; c < kNumClasses; ++c) {
+                        if (c == kCocoCat || c == kCocoDog) continue;
+                        const float v = score_act(get(gy, gx, 5 + c, a));
+                        if (c < best_cls ? (v >= best_cls_score) : (v > best_cls_score)) {
+                            beaten = true;
+                            break;
+                        }
+                    }
+                    if (beaten) continue;
+
+                    // Bbox decode (identical geometry to decode()).
+                    float rx = get(gy, gx, 0, a);
+                    float ry = get(gy, gx, 1, a);
+                    float rw = get(gy, gx, 2, a);
+                    float rh = get(gy, gx, 3, a);
+                    float sx = sigmoid(rx) * 2.0f - 0.5f;
+                    float sy = sigmoid(ry) * 2.0f - 0.5f;
+                    float sw = sigmoid(rw) * 2.0f;
+                    sw       = sw * sw;
+                    float sh = sigmoid(rh) * 2.0f;
+                    sh       = sh * sh;
+
+                    float cx = (gx + sx) * stride;
+                    float cy = (gy + sy) * stride;
+                    float bw = aw * sw;
+                    float bh = ah * sh;
+                    float x1 = cx - bw * 0.5f;
+                    float y1 = cy - bh * 0.5f;
+                    float x2 = cx + bw * 0.5f;
+                    float y2 = cy + bh * 0.5f;
+
+                    AnimalDet d;
+                    d.score    = score;
+                    d.class_id = best_cls;
+                    d.x1       = (x1 - pre.pad_x) / pre.scale;
+                    d.y1       = (y1 - pre.pad_y) / pre.scale;
+                    d.x2       = (x2 - pre.pad_x) / pre.scale;
+                    d.y2       = (y2 - pre.pad_y) / pre.scale;
+                    cands.push_back(d);
+                }
+            }
+        }
+    }
+
+    if (cands.empty()) return;
+
+    std::sort(cands.begin(), cands.end(),
+              [](const AnimalDet& a, const AnimalDet& b) { return a.score > b.score; });
+    std::vector<char> suppressed(cands.size(), 0);
+    for (size_t i = 0; i < cands.size(); ++i) {
+        if (suppressed[i]) continue;
+        out.push_back(cands[i]);
+        for (size_t j = i + 1; j < cands.size(); ++j) {
+            if (suppressed[j]) continue;
+            // Per-class NMS: only suppress overlaps of the same species.
+            if (cands[j].class_id != cands[i].class_id) continue;
+            if (iou_xyxy(cands[i].x1, cands[i].y1, cands[i].x2, cands[i].y2, cands[j].x1,
+                         cands[j].y1, cands[j].x2, cands[j].y2) > nms_thresh)
+                suppressed[j] = 1;
         }
     }
 }

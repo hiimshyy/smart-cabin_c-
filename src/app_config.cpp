@@ -61,6 +61,7 @@ void print_usage(const char* prog) {
         "    --person-model PATH   Enable YOLO person detection + tracker\n"
         "    --person-thr F        High person score threshold (default 0.5)\n"
         "    --person-low-thr F    Low ByteTrack score threshold (default 0.1)\n"
+        "    --animal-thr F        Cat/dog alert score threshold (default 0.5)\n"
         "    --person-every N      Only run YOLO every N frames (default 1)\n"
         "    --track-iou F         Min IoU for track association (default 0.3)\n"
         "    --track-max-miss N    Kill track after N missed frames (default 30)\n"
@@ -167,7 +168,17 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
             cfg.person_thr = (float)std::atof(argv[++i]);
         else if (sv("--person-low-thr"))
             cfg.person_low_thr = (float)std::atof(argv[++i]);
-        else if (sv("--person-every"))
+        else if (std::strcmp(a, "--animal-thr") == 0) {
+            double parsed = 0.0;
+            if (i + 1 >= argc || !parse_double_in_range(argv[i + 1], 0.0, 1.0, parsed) ||
+                static_cast<float>(parsed) <= 0.0f) {
+                std::fprintf(stderr, "invalid --animal-thr: require 0 < value <= 1\n");
+                res.invalid_args = true;
+                return res;
+            }
+            cfg.animal_thr = static_cast<float>(parsed);
+            ++i;
+        } else if (sv("--person-every"))
             cfg.person_every = std::max(1, std::atoi(argv[++i]));
         else if (sv("--track-iou"))
             cfg.track_iou = (float)std::atof(argv[++i]);
@@ -320,6 +331,9 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         std::fprintf(
             stderr,
             "invalid person thresholds: require 0 <= --person-low-thr < --person-thr <= 1\n");
+        res.invalid_args = true;
+    } else if (!std::isfinite(cfg.animal_thr) || cfg.animal_thr <= 0.0f || cfg.animal_thr > 1.0f) {
+        std::fprintf(stderr, "invalid --animal-thr: require 0 < value <= 1\n");
         res.invalid_args = true;
     } else if (!std::isfinite(cfg.track_iou) || cfg.track_iou < 0.0f || cfg.track_iou > 1.0f) {
         std::fprintf(stderr, "invalid --track-iou: require 0 <= value <= 1\n");

@@ -4,7 +4,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 unset FACE_IOT_WS FACE_EVENT_WS FACE_RECORD_DIR FACE_CABIN_ID FACE_CAMERA_SELECT \
-    FACE_CABIN_SOCKETIO
+    FACE_CABIN_SOCKETIO FACE_ANIMAL_THR
 source ./env.sh >/dev/null
 
 [ "$FACE_CABIN_LOG_DIR" = "$FACE_ROOT/logs" ]
@@ -12,6 +12,7 @@ source ./env.sh >/dev/null
 [ "$FACE_CABIN_ID" = "2" ]
 [ "$FACE_CAMERA_SELECT" = "#6" ]
 [ "$FACE_CABIN_SOCKETIO" = "0" ]
+[ "$FACE_ANIMAL_THR" = "0.5" ]
 [ -z "$FACE_IOT_WS" ]
 [ -z "$FACE_RECORD_DIR" ]
 
@@ -51,6 +52,7 @@ found_config=0
 found_state=0
 found_iot=0
 found_record=0
+found_animal_thr=0
 for ((i = 0; i < ${#ARGS[@]}; ++i)); do
     if [ "${ARGS[$i]}" = "--occupancy-config" ] &&
        [ "${ARGS[$((i + 1))]}" = "$MOCK/config dir/occupancy_cam7.json" ]; then
@@ -67,11 +69,16 @@ for ((i = 0; i < ${#ARGS[@]}; ++i)); do
     if [ "${ARGS[$i]}" = "--record-dir" ]; then
         found_record=1
     fi
+    if [ "${ARGS[$i]}" = "--animal-thr" ] &&
+       [ "${ARGS[$((i + 1))]}" = "0.5" ]; then
+        found_animal_thr=1
+    fi
 done
 [ "$found_config" -eq 1 ] || { echo "FAIL: occupancy config argv missing"; exit 1; }
 [ "$found_state" -eq 1 ] || { echo "FAIL: occupancy state argv missing"; exit 1; }
 [ "$found_iot" -eq 0 ] || { echo "FAIL: Socket.IO must be disabled by default"; exit 1; }
 [ "$found_record" -eq 0 ] || { echo "FAIL: recording should match disabled service default"; exit 1; }
+[ "$found_animal_thr" -eq 1 ] || { echo "FAIL: --animal-thr argv missing"; exit 1; }
 
 export FACE_CABIN_SOCKETIO=1
 export FACE_TEST_ARGV="$MOCK/service-argv"

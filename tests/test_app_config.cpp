@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -61,6 +62,28 @@ int main() {
     CHECK(bad_thr.result.invalid_args, "inverted person thresholds rejected");
     auto bad_mode = parse({"app", "--tracker-mode", "sort"});
     CHECK(bad_mode.result.invalid_args, "invalid tracker mode rejected");
+
+    CHECK(d.cfg.animal_thr == 0.5f, "default animal threshold is 0.5");
+    auto animal_ok = parse({"app", "--animal-thr", "0.65"});
+    CHECK(!animal_ok.result.invalid_args && std::fabs(animal_ok.cfg.animal_thr - 0.65f) < 1e-6f,
+          "valid --animal-thr parsed");
+    auto animal_one = parse({"app", "--animal-thr", "1.0"});
+    CHECK(!animal_one.result.invalid_args && animal_one.cfg.animal_thr == 1.0f,
+          "boundary --animal-thr 1.0 accepted");
+    CHECK(parse({"app", "--animal-thr", "0"}).result.invalid_args, "zero --animal-thr rejected");
+    CHECK(parse({"app", "--animal-thr", "-0.1"}).result.invalid_args,
+          "negative --animal-thr rejected");
+    CHECK(parse({"app", "--animal-thr", "1.5"}).result.invalid_args,
+          "above-1 --animal-thr rejected");
+    CHECK(parse({"app", "--animal-thr", "abc"}).result.invalid_args,
+          "nonnumeric --animal-thr rejected");
+    CHECK(parse({"app", "--animal-thr", "0.5abc"}).result.invalid_args,
+          "trailing-garbage --animal-thr rejected");
+    CHECK(parse({"app", "--animal-thr"}).result.invalid_args,
+          "missing --animal-thr value rejected");
+    auto animal_opt_tok = parse({"app", "--animal-thr", "--frames", "10"});
+    CHECK(animal_opt_tok.result.invalid_args && animal_opt_tok.cfg.max_frames == 0,
+          "option token cannot be consumed as --animal-thr");
     auto socketio =
         parse({"app", "--iot-ws", "ws://127.0.0.1:3000/socket.io/?EIO=4&transport=websocket",
                "--iot-device-code", "2026010900100098", "--iot-floor-address", "8193-2",
