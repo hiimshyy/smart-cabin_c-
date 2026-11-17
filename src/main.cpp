@@ -57,6 +57,7 @@
 #include "scrfd_post.h"
 #include "yolo_post.h"
 
+#include "animal_snapshot_writer.h"
 #include "app_config.h"
 #include "benchmark.h"
 #include "cabin_config.h"
@@ -793,9 +794,13 @@ int main(int argc, char** argv) {
     // Animal (cat/dog) alert state. Rate-limited per species so a resident
     // pet lingering in frame does not flood the log; the alert channel to the
     // IoT team is still TBD, so for now we only emit an operational warning.
-    constexpr double kAnimalAlertCooldownMs = 3000.0;
-    double           last_cat_alert_ms      = -1e12;
-    double           last_dog_alert_ms      = -1e12;
+    constexpr double           kAnimalAlertCooldownMs = 3000.0;
+    double                     last_cat_alert_ms      = -1e12;
+    double                     last_dog_alert_ms      = -1e12;
+    AnimalSnapshotWriterConfig animal_cfg;
+    animal_cfg.output_dir = (use_tracker && cfg.animal_dir) ? cfg.animal_dir : "";
+    AnimalSnapshotWriter animal_writer(std::move(animal_cfg));
+    animal_writer.start();
 
     cv::Mat frame, aligned;
     double  fps                 = 0.0;
@@ -1112,16 +1117,33 @@ int main(int argc, char** argv) {
                         dog_best = std::max(dog_best, d.score);
                     }
                 }
-                const double tnow = tracker_frame.timestamp_ms;
+                const double tnow          = tracker_frame.timestamp_ms;
+                bool         save_snapshot = false;
+                std::string  snap_species;
+                float        snap_score = 0.0f;
                 if (dog_n > 0 && tnow - last_dog_alert_ms >= kAnimalAlertCooldownMs) {
                     LOG_WARN("animal", "detected species=%s count=%d score=%.2f",
                              coco_animal_name(YoloDecoder::kCocoDog), dog_n, dog_best);
                     last_dog_alert_ms = tnow;
+                    save_snapshot     = true;
+                    snap_species      = coco_animal_name(YoloDecoder::kCocoDog);
+                    snap_score        = dog_best;
                 }
                 if (cat_n > 0 && tnow - last_cat_alert_ms >= kAnimalAlertCooldownMs) {
                     LOG_WARN("animal", "detected species=%s count=%d score=%.2f",
                              coco_animal_name(YoloDecoder::kCocoCat), cat_n, cat_best);
                     last_cat_alert_ms = tnow;
+                    if (!save_snapshot) {
+                        snap_species = coco_animal_name(YoloDecoder::kCocoCat);
+                        snap_score   = cat_best;
+                    } else {
+                        snap_species = "cat_dog";
+                        snap_score   = std::max(snap_score, cat_best);
+                    }
+                    save_snapshot = true;
+                }
+                if (save_snapshot) {
+                    animal_writer.enqueue(frame, animals, cfg.cabin_id, snap_species, snap_score);
                 }
             }
         }
@@ -1583,6 +1605,7 @@ int main(int argc, char** argv) {
         traffic_writer->close();
     }
 
+    animal_writer.close();
     event_recorder.close();
     system_metrics.stop();
 

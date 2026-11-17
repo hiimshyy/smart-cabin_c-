@@ -57,7 +57,8 @@ APP_ONLY_SRCS := $(SRC_DIR)/app_config.cpp \
                  $(SRC_DIR)/trip_assembler.cpp \
                  $(SRC_DIR)/traffic_db.cpp \
                  $(SRC_DIR)/visitor_gallery.cpp \
-                 $(SRC_DIR)/traffic_log_writer.cpp
+                 $(SRC_DIR)/traffic_log_writer.cpp \
+                 $(SRC_DIR)/animal_snapshot_writer.cpp
 
 APP_SRCS_CPP     := $(SRC_DIR)/main.cpp           $(COMMON_SRCS) $(RECOG_SRCS) $(DB_SRCS) $(APP_ONLY_SRCS)
 ENROLL_SRCS_CPP  := $(SRC_DIR)/enroll_faces.cpp   $(COMMON_SRCS) \

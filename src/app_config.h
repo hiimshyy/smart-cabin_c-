@@ -25,6 +25,7 @@ struct AppConfig {
     const char* iot_floor_address = "8193-2";
     const char* iot_request_id    = "ai-core";
     const char* record_dir        = nullptr; // Person-triggered raw video; null = disabled
+    const char* animal_dir        = "recordings/animals"; // Animal alert snapshots; "" = disabled
 
     int         cam_id                       = 0;
     int         max_frames                   = 0;

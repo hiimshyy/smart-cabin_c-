@@ -233,8 +233,9 @@ chạy NPU. Mỗi ô lưới chỉ được tính là động vật khi lớp th
 chó hoặc mèo, nên box người không bị nhầm thành động vật. NMS áp theo từng loài.
 
 Khi phát hiện, ứng dụng ghi log cảnh báo `[animal]` (vd `detected species=dog count=1
-score=0.82`), có cooldown 3 giây/loài để tránh spam. Động vật **không** đi vào person
-tracker / SCRFD / nhận dạng khuôn mặt.
+score=0.82`), có cooldown 3 giây/loài để tránh spam, đồng thời lưu ảnh snapshot kèm khung
+tại `recordings/animals/YYYY-MM-DD/` qua worker nền (có thể đổi bằng `--animal-dir DIR`,
+truyền `""` để tắt). Động vật **không** đi vào person tracker / SCRFD / nhận dạng khuôn mặt.
 
 Ngưỡng tin cậy riêng, độc lập với person: `FACE_ANIMAL_THR` (mặc định `0.8`) hoặc cờ
 `--animal-thr F` khi chạy binary trực tiếp. Phát hiện động vật dùng chung nhịp inference

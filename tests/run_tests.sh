@@ -33,6 +33,14 @@ g++ -std=c++17 -Isrc -I/home/orangepi/ai-sdk -I/home/orangepi/ai-sdk/examples/li
     $(pkg-config --libs opencv4) -o "$OUT/test_yolo_post" && "$OUT/test_yolo_post" || fail=1
 
 echo ""
+echo "== Animal snapshot writer =="
+g++ -std=c++17 -Isrc -I/home/orangepi/ai-sdk -I/home/orangepi/ai-sdk/examples/libawnn_viplite \
+    $(pkg-config --cflags opencv4) \
+    tests/test_animal_snapshot_writer.cpp src/animal_snapshot_writer.cpp src/yolo_post.cpp \
+    src/log/logger.cpp $(pkg-config --libs opencv4) -lpthread \
+    -o "$OUT/test_animal_snapshot_writer" && "$OUT/test_animal_snapshot_writer" || fail=1
+
+echo ""
 echo "== Occupancy config =="
 g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
     tests/test_occupancy_config.cpp src/occupancy_config.cpp \

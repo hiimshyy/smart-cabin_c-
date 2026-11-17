@@ -62,6 +62,10 @@ void print_usage(const char* prog) {
         "    --person-thr F        High person score threshold (default 0.5)\n"
         "    --person-low-thr F    Low ByteTrack score threshold (default 0.1)\n"
         "    --animal-thr F        Cat/dog alert score threshold (default 0.8)\n"
+        "    --animal-dir DIR      Directory for animal alert JPEGs (default recordings/animals; "
+        "\"\"=off)\n"
+        "    --animal-dir DIR      Directory for animal alert JPEGs\n"
+        "                          (default recordings/animals; \"\"=off)\n"
         "    --person-every N      Only run YOLO every N frames (default 1)\n"
         "    --track-iou F         Min IoU for track association (default 0.3)\n"
         "    --track-max-miss N    Kill track after N missed frames (default 30)\n"
@@ -192,6 +196,13 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
             }
             cfg.animal_thr = static_cast<float>(parsed);
             ++i;
+        } else if (std::strcmp(a, "--animal-dir") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "--animal-dir requires a path (or empty string to disable)\n");
+                res.invalid_args = true;
+                return res;
+            }
+            cfg.animal_dir = argv[++i];
         } else if (sv("--person-every"))
             cfg.person_every = std::max(1, std::atoi(argv[++i]));
         else if (sv("--track-iou"))
