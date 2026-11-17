@@ -37,7 +37,10 @@ DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
                $(SRC_DIR)/edge_client.cpp \
                $(SRC_DIR)/edge_json.cpp \
                $(SRC_DIR)/floor_call_coordinator.cpp \
-               $(SRC_DIR)/socketio_client.cpp
+               $(SRC_DIR)/socketio_client.cpp \
+               $(SRC_DIR)/elevator_registers.cpp \
+               $(SRC_DIR)/elevator_state.cpp \
+               $(SRC_DIR)/call_tracker.cpp
 
 # App-only modules extracted from main.cpp (spec main-cpp-refactor). Used ONLY
 # by face_recog_app — do NOT add to COMMON_SRCS (other tools don't need them).
@@ -51,7 +54,11 @@ APP_ONLY_SRCS := $(SRC_DIR)/app_config.cpp \
                  $(SRC_DIR)/system_metrics.cpp \
                  $(SRC_DIR)/occupancy_config.cpp \
                  $(SRC_DIR)/occupancy_state.cpp \
-                 $(SRC_DIR)/occupancy_counter.cpp
+                 $(SRC_DIR)/occupancy_counter.cpp \
+                 $(SRC_DIR)/trip_assembler.cpp \
+                 $(SRC_DIR)/traffic_db.cpp \
+                 $(SRC_DIR)/visitor_gallery.cpp \
+                 $(SRC_DIR)/traffic_log_writer.cpp
 
 APP_SRCS_CPP     := $(SRC_DIR)/main.cpp           $(COMMON_SRCS) $(RECOG_SRCS) $(DB_SRCS) $(APP_ONLY_SRCS)
 ENROLL_SRCS_CPP  := $(SRC_DIR)/enroll_faces.cpp   $(COMMON_SRCS) \
@@ -68,6 +75,18 @@ MIGRATE_SRCS_CPP := $(SRC_DIR)/migrate_fdb.cpp \
                     $(SRC_DIR)/face_db.cpp \
                     $(SRC_DIR)/resident_db.cpp \
                     $(SRC_DIR)/log/logger.cpp
+
+TRAFFIC_ADMIN_SRCS_CPP := $(SRC_DIR)/traffic_admin.cpp \
+                          $(SRC_DIR)/traffic_db.cpp \
+                          $(SRC_DIR)/trip_assembler.cpp \
+                          $(SRC_DIR)/elevator_state.cpp \
+                          $(SRC_DIR)/elevator_registers.cpp \
+                          $(SRC_DIR)/call_tracker.cpp \
+                          $(SRC_DIR)/floor_call_coordinator.cpp \
+                          $(SRC_DIR)/edge_json.cpp \
+                          $(SRC_DIR)/resident_db.cpp \
+                          $(SRC_DIR)/match_engine.cpp \
+                          $(SRC_DIR)/log/logger.cpp
 
 SDK_SRCS_C := $(AI_SDK)/examples/libawnn_viplite/awnn_lib.c \
               $(AI_SDK)/examples/libawnn_viplite/awnn_quantize.c
@@ -98,18 +117,19 @@ ENROLL_OBJS  := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(ENROLL_SRCS_CPP))
 CAPTURE_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CAPTURE_SRCS_CPP))
 ADD_OBJS     := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(ADD_SRCS_CPP))
 MIGRATE_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(MIGRATE_SRCS_CPP))
+TRAFFIC_ADMIN_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(TRAFFIC_ADMIN_SRCS_CPP))
 SDK_OBJS     := $(patsubst $(AI_SDK)/%.c,$(BUILD_DIR)/sdk_%.o,$(SDK_SRCS_C))
 
 # Header dependency tracking. Without .d files, changing a shared struct such
 # as EmbeddingRow can leave old and new object ABIs linked into one binary.
-ALL_OBJS := $(sort $(APP_OBJS) $(ENROLL_OBJS) $(CAPTURE_OBJS) $(ADD_OBJS) $(MIGRATE_OBJS) $(SDK_OBJS))
+ALL_OBJS := $(sort $(APP_OBJS) $(ENROLL_OBJS) $(CAPTURE_OBJS) $(ADD_OBJS) $(MIGRATE_OBJS) $(TRAFFIC_ADMIN_OBJS) $(SDK_OBJS))
 DEPS     := $(ALL_OBJS:.o=.d)
 -include $(DEPS)
 
 # ---- Rules ----
 .PHONY: all clean run format format-check lint
 
-all: $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb
+all: $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb traffic_admin
 
 $(TARGET): $(APP_OBJS) $(SDK_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
@@ -133,6 +153,10 @@ probe_models: $(BUILD_DIR)/probe_models.o $(SDK_OBJS)
 
 # No SDK_OBJS, no OpenCV/VIPhal — just sqlite3 + pthread.
 migrate_fdb: $(MIGRATE_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ -lsqlite3 -lpthread -lstdc++fs
+	@echo "==> Built $@"
+
+traffic_admin: $(TRAFFIC_ADMIN_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ -lsqlite3 -lpthread -lstdc++fs
 	@echo "==> Built $@"
 
@@ -161,7 +185,7 @@ lint:
 	clang-tidy $(APP_SRCS_CPP) -- $(CXXFLAGS) $(INCLUDES)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb
+	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb traffic_admin
 
 run: $(TARGET)
 	./$(TARGET) model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb

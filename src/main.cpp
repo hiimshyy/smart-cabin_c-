@@ -28,6 +28,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <thread>
 #include <utility>
@@ -59,8 +60,11 @@
 #include "app_config.h"
 #include "benchmark.h"
 #include "cabin_config.h"
+#include "call_tracker.h"
 #include "door_inference.h"
 #include "edge_client.h"
+#include "elevator_registers.h"
+#include "elevator_state.h"
 #include "event_video_recorder.h"
 #include "face_label.h"
 #include "floor_call_coordinator.h"
@@ -70,6 +74,8 @@
 #include "overlay.h"
 #include "socketio_client.h"
 #include "system_metrics.h"
+#include "traffic_log_writer.h"
+#include "trip_assembler.h"
 #include "video_io.h"
 #include <memory>
 
@@ -82,6 +88,44 @@ static double now_ms() {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
+
+static std::int64_t wall_now_ms() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+static std::string make_session_hex() {
+    std::random_device  rd;
+    const std::uint64_t val =
+        (static_cast<std::uint64_t>(rd()) << 32) ^ static_cast<std::uint64_t>(rd()) ^
+        static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+    char buf[20];
+    std::snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)(val ? val : 1ULL));
+    return std::string(buf);
+}
+
+struct TimestampedFloorDecision {
+    FloorCallDecision decision;
+    double            timestamp_ms = 0.0;
+};
+
+struct FloorDecisionInbox {
+    void push(TimestampedFloorDecision item) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (queue.size() >= 256) queue.pop_front();
+        queue.push_back(std::move(item));
+    }
+    void drain(std::vector<TimestampedFloorDecision>& out) {
+        out.clear();
+        std::lock_guard<std::mutex> lock(mtx);
+        while (!queue.empty()) {
+            out.push_back(std::move(queue.front()));
+            queue.pop_front();
+        }
+    }
+    std::mutex                           mtx;
+    std::deque<TimestampedFloorDecision> queue;
+};
 
 static std::atomic<bool> g_stop{false};
 static void              on_signal(int) {
@@ -282,6 +326,10 @@ int main(int argc, char** argv) {
     ResidentCatalogReloader               catalog_reloader;
     MatchEngine                           match_engine;
     InteractionManager                    interaction;
+    std::atomic<bool>                     register_capture_enabled{cfg.traffic_db_path != nullptr &&
+                                               cfg.traffic_db_path[0] != '\0'};
+    RegisterInbox                         register_inbox(256);
+    FloorDecisionInbox                    floor_decision_inbox;
     std::unique_ptr<EdgeClient>           edge;       // nullptr unless --edge-socket given
     std::unique_ptr<SocketIoClient>       iot_socket; // async direct floor command client
     std::shared_ptr<FloorCallCoordinator> floor_calls;
@@ -435,8 +483,11 @@ int main(int argc, char** argv) {
                 sc.reconnect_max_ms   = eff.reconnect_max_ms;
                 sc.command_max_age_ms = cfg.floor_command_ttl_ms;
                 sc.ack_timeout_ms     = cfg.floor_ack_timeout_ms;
-                sc.subscribe_door     = cfg.adaptive_inference && use_tracker;
-                iot_socket            = std::make_unique<SocketIoClient>(std::move(sc));
+                const bool subscribe_registers =
+                    (cfg.traffic_db_path != nullptr && cfg.traffic_db_path[0] != '\0');
+                sc.subscribe_door      = cfg.adaptive_inference && use_tracker;
+                sc.subscribe_registers = subscribe_registers;
+                iot_socket             = std::make_unique<SocketIoClient>(std::move(sc));
                 if (cfg.adaptive_inference && use_tracker) {
                     iot_socket->set_door_callback([&](const DoorRegisterSample& sample) {
                         const auto current_session = iot_socket->session();
@@ -446,6 +497,15 @@ int main(int argc, char** argv) {
                         }
                         if (door_session.load() == current_session && current_session != 0)
                             door_received_ms.store(now_ms());
+                    });
+                }
+                if (subscribe_registers) {
+                    iot_socket->set_register_callback([&](const std::string& message,
+                                                          std::uint64_t      session,
+                                                          double             received_ms) {
+                        if (register_capture_enabled.load()) {
+                            register_inbox.push(RawRegisterPacket{message, session, received_ms});
+                        }
                     });
                 }
                 if (!iot_socket->start()) {
@@ -465,13 +525,16 @@ int main(int argc, char** argv) {
                             return socket && socket->enqueue_floor(SocketIoFloorCommand{
                                                  command.request_id, command.floor, command.value});
                         });
-                    floor_calls->set_decision_callback([](const FloorCallDecision& d) {
+                    floor_calls->set_decision_callback([&](const FloorCallDecision& d) {
                         LOG_INFO("floor-call",
                                  "visit_id=%llu request_id=%s resident_id=%lld floor=%d "
                                  "state=%s reason=%s",
                                  (unsigned long long)d.visit_id, d.request_id.c_str(),
                                  (long long)d.resident_id, d.floor, floor_call_state_name(d.state),
                                  d.reason.empty() ? "-" : d.reason.c_str());
+                        if (register_capture_enabled.load()) {
+                            floor_decision_inbox.push(TimestampedFloorDecision{d, now_ms()});
+                        }
                     });
                     std::weak_ptr<FloorCallCoordinator> floor_calls_weak = floor_calls;
                     iot_socket->set_status_callback(
@@ -611,6 +674,92 @@ int main(int argc, char** argv) {
         }
     }
 
+    bool                                  traffic_enabled     = false;
+    const std::string                     traffic_session_hex = make_session_hex();
+    std::unique_ptr<ElevatorStateTracker> elevator_state;
+    std::unique_ptr<CallTracker>          call_tracker;
+    std::unique_ptr<TripAssembler>        trip_assembler;
+    std::unique_ptr<TrafficLogWriter>     traffic_writer;
+
+    if (cfg.traffic_db_path && cfg.traffic_db_path[0]) {
+        if (!occupancy_counter) {
+            LOG_WARN("traffic", "occupancy disabled — traffic module disabled");
+            register_capture_enabled.store(false);
+        } else {
+            const int secondary_slave = (cfg.elevator_slave == 2) ? 1 : 2;
+            if (!cfg.iot_ws || !cfg.iot_ws[0]) {
+                LOG_WARN("traffic", "Socket.IO disabled (--iot-ws not set) — floors will be NULL "
+                                    "(floor_unknown)");
+            }
+
+            ElevatorStateConfig ec;
+            ec.device_code     = cfg.iot_device_code ? cfg.iot_device_code : "";
+            ec.cabin_id        = cfg.cabin_id;
+            ec.primary_slave   = cfg.elevator_slave;
+            ec.secondary_slave = secondary_slave;
+            ec.floor_min       = cfg.traffic_floor_min;
+            ec.floor_max       = cfg.traffic_floor_max;
+            ec.run_timeout_ms  = static_cast<double>(cfg.traffic_run_timeout_ms);
+            ec.session_hex     = traffic_session_hex;
+            elevator_state     = std::make_unique<ElevatorStateTracker>(std::move(ec));
+
+            CallTrackerConfig cc;
+            cc.cabin_id           = cfg.cabin_id;
+            cc.primary_slave      = cfg.elevator_slave;
+            cc.secondary_slave    = secondary_slave;
+            cc.floor_min          = cfg.traffic_floor_min;
+            cc.floor_max          = cfg.traffic_floor_max;
+            cc.floor_tolerance_ms = static_cast<double>(cfg.traffic_floor_tolerance_ms);
+            cc.call_confirm_ms    = static_cast<double>(cfg.traffic_call_confirm_ms);
+            cc.session_hex        = traffic_session_hex;
+            call_tracker          = std::make_unique<CallTracker>(std::move(cc));
+
+            TripAssemblerConfig tc;
+            tc.cabin_id           = cfg.cabin_id;
+            tc.slave              = cfg.elevator_slave;
+            tc.visitor_reid       = cfg.traffic_visitor_reid;
+            tc.save_faces         = cfg.traffic_save_faces;
+            tc.floor_tolerance_ms = static_cast<double>(cfg.traffic_floor_tolerance_ms);
+            tc.cabin_capacity     = cfg.traffic_cabin_capacity;
+            tc.session_hex        = traffic_session_hex;
+            trip_assembler        = std::make_unique<TripAssembler>(std::move(tc));
+
+            TrafficLogWriterConfig wc;
+            wc.db_path                 = cfg.traffic_db_path;
+            wc.schema_sql_path         = "db/traffic_schema.sql";
+            wc.session_key             = traffic_session_hex;
+            wc.session_started_wall_ms = wall_now_ms();
+            wc.cabin_id                = cfg.cabin_id;
+            wc.elevator_slave          = cfg.elevator_slave;
+            wc.recog_dim               = cfg.recog_dim;
+            wc.visitor_reid            = cfg.traffic_visitor_reid;
+            wc.save_faces              = cfg.traffic_save_faces;
+            wc.traffic_retention_days  = cfg.traffic_retention_days;
+            wc.visitor_retention_days  = cfg.visitor_retention_days;
+            wc.face_retention_days     = cfg.face_retention_days;
+            wc.min_free_mb             = cfg.traffic_min_free_mb;
+            traffic_writer             = std::make_unique<TrafficLogWriter>(std::move(wc));
+
+            if (!traffic_writer->start()) {
+                LOG_ERROR("traffic", "TrafficLogWriter startup failed — disabling traffic module");
+                register_capture_enabled.store(false);
+                traffic_writer.reset();
+                trip_assembler.reset();
+                call_tracker.reset();
+                elevator_state.reset();
+            } else {
+                traffic_enabled = true;
+                LOG_INFO("traffic",
+                         "enabled session=%s slave=%d secondary=%d visitor_reid=%d save_faces=%d "
+                         "floors=%d-%d tol_ms=%d",
+                         traffic_session_hex.c_str(), cfg.elevator_slave, secondary_slave,
+                         cfg.traffic_visitor_reid ? 1 : 0, static_cast<int>(cfg.traffic_save_faces),
+                         cfg.traffic_floor_min, cfg.traffic_floor_max,
+                         cfg.traffic_floor_tolerance_ms);
+            }
+        }
+    }
+
     SystemMetrics system_metrics("/home/orangepi/face_recog_app", 30000);
     if (occupancy_counter) {
         system_metrics.set_occupancy(occupancy_counter->count(),
@@ -654,22 +803,135 @@ int main(int argc, char** argv) {
     double  last_report         = now_ms();
     int     frames_since_report = 0;
 
-    StageStat     s_cap, s_pre, s_yolo, s_scrfd, s_track, s_recog, s_draw, s_e2e;
-    double        run_start = now_ms();
-    uint64_t      last_seq  = 0;
-    UiScale       ui; // computed lazily on first frame
-    bool          ui_ready                 = false;
-    double        last_reload_error_log_ms = -1e12;
-    std::set<int> confirmed_track_ids;
-    const bool    adaptive =
+    StageStat                      s_cap, s_pre, s_yolo, s_scrfd, s_track, s_recog, s_draw, s_e2e;
+    double                         run_start = now_ms();
+    uint64_t                       last_seq  = 0;
+    UiScale                        ui; // computed lazily on first frame
+    bool                           ui_ready                 = false;
+    double                         last_reload_error_log_ms = -1e12;
+    double                         last_reg_invalid_warn_ms = -1e12;
+    std::vector<RawRegisterPacket> drained_reg_packets;
+    std::vector<TimestampedFloorDecision> drained_floor_decisions;
+    std::set<int>                         confirmed_track_ids;
+    const bool                            adaptive =
         cfg.adaptive_inference && use_resident_db && use_tracker && cfg.iot_ws && cfg.iot_ws[0];
     DoorInferenceScheduler door_scheduler;
     DoorInferenceState     previous_door_state      = DoorInferenceState::Degraded;
     bool                   door_state_logged        = false;
     double                 next_occupancy_update_ms = occupancy_counter ? now_ms() + 1000.0 : -1.0;
-    std::uint64_t          yolo_runs = 0, face_runs = 0, recog_runs = 0;
+    OccupancySnapshot      occ_update;
+    if (occupancy_counter) {
+        occ_update.count      = occupancy_counter->count();
+        occ_update.confidence = occupancy_counter->confidence();
+    }
+    std::uint64_t yolo_runs = 0, face_runs = 0, recog_runs = 0;
     LOG_INFO("scheduler", "door-gated inference=%s register=8472-2 bits=open:5,close:6",
              adaptive ? "enabled" : "disabled");
+
+    auto process_elevator_step = [&](const ElevatorStepResult& step_res, double step_ts) {
+        if (!traffic_enabled) return;
+        const auto&          pstate = elevator_state->primary_state();
+        const auto&          ptl    = elevator_state->primary_timeline();
+        const auto&          stl    = elevator_state->secondary_timeline();
+        const CallStepResult cres =
+            call_tracker->on_step(pstate, ptl.state(), ptl.recent_stops(), stl.recent_stops(),
+                                  step_res.gap_triggered, step_ts);
+        trip_assembler->on_auto_call_confirmations(cres.auto_confirmations);
+        trip_assembler->on_completed_calls(cres.completed_car_calls, cres.completed_hall_calls,
+                                           step_ts);
+        traffic_writer->enqueue_calls(cres);
+
+        int                 dummy_invalid = 0;
+        const std::uint16_t car_mask =
+            pstate.valid
+                ? filter_floor_mask(pstate.get(ElevatorReg::CAR_CALLS, 0), cfg.traffic_floor_min,
+                                    cfg.traffic_floor_max, dummy_invalid)
+                : 0;
+        trip_assembler->on_car_calls_mask(car_mask, pstate.valid);
+
+        const TripAssemblerOutput tout = trip_assembler->on_timeline_events(
+            step_res.primary_events, occ_update.count, occ_update.confidence, step_ts);
+        traffic_writer->enqueue_assembler_output(tout);
+    };
+
+    auto drain_traffic_inputs = [&](double step_ts) {
+        if (!traffic_enabled) return;
+        bool overflowed = false;
+        register_inbox.drain(drained_reg_packets, overflowed);
+        const std::string expected_code = cfg.iot_device_code ? cfg.iot_device_code : "";
+        for (const auto& pkt : drained_reg_packets) {
+            RegisterUpdate upd;
+            if (!parse_conn_data_message(pkt.message, expected_code, pkt.received_ms, pkt.session,
+                                         upd)) {
+                continue;
+            }
+            if (upd.invalid_values > 0 && pkt.received_ms - last_reg_invalid_warn_ms >= 5000.0) {
+                LOG_WARN("traffic", "ignored %d invalid register value(s) in CONN_DATA",
+                         upd.invalid_values);
+                last_reg_invalid_warn_ms = pkt.received_ms;
+            }
+            const ElevatorStepResult step_res = elevator_state->apply_update(upd);
+            process_elevator_step(step_res, pkt.received_ms);
+        }
+
+        const bool               sock_conn = iot_socket && iot_socket->connected();
+        const std::uint64_t      sock_sess = iot_socket ? iot_socket->session() : 0;
+        const ElevatorStepResult poll_res =
+            elevator_state->poll(step_ts, sock_conn, sock_sess, overflowed);
+        if (poll_res.gap_triggered || !poll_res.primary_events.empty() ||
+            !poll_res.secondary_events.empty()) {
+            process_elevator_step(poll_res, step_ts);
+        } else {
+            const CallStepResult cres =
+                call_tracker->poll(elevator_state->primary_timeline().recent_stops(),
+                                   elevator_state->secondary_timeline().recent_stops(), step_ts);
+            trip_assembler->on_auto_call_confirmations(cres.auto_confirmations);
+            trip_assembler->on_completed_calls(cres.completed_car_calls, cres.completed_hall_calls,
+                                               step_ts);
+            traffic_writer->enqueue_calls(cres);
+        }
+
+        floor_decision_inbox.drain(drained_floor_decisions);
+        for (const auto& fd : drained_floor_decisions) {
+            if (fd.decision.state == FloorCallState::Sent) {
+                call_tracker->on_auto_call_sent(fd.decision.request_id, fd.decision.floor,
+                                                fd.timestamp_ms);
+            }
+            trip_assembler->on_floor_call_decision(fd.decision, fd.timestamp_ms);
+        }
+    };
+
+    auto poll_and_publish_traffic = [&](double step_ts) {
+        if (!traffic_enabled) return;
+        floor_decision_inbox.drain(drained_floor_decisions);
+        for (const auto& fd : drained_floor_decisions) {
+            if (fd.decision.state == FloorCallState::Sent) {
+                call_tracker->on_auto_call_sent(fd.decision.request_id, fd.decision.floor,
+                                                fd.timestamp_ms);
+            }
+            trip_assembler->on_floor_call_decision(fd.decision, fd.timestamp_ms);
+        }
+        const TripAssemblerOutput pout = trip_assembler->poll(step_ts);
+        traffic_writer->enqueue_assembler_output(pout);
+
+        SystemTrafficSnapshot ts;
+        ts.enabled            = true;
+        ts.queue_size         = traffic_writer->queue_size();
+        ts.dropped            = traffic_writer->dropped_count();
+        ts.open_trips         = trip_assembler->open_trip_count();
+        ts.open_calls         = call_tracker->open_call_count();
+        const double last_msg = elevator_state->last_any_message_ms();
+        ts.register_age_ms =
+            last_msg >= 0.0
+                ? static_cast<std::int64_t>(std::llround(std::max(0.0, step_ts - last_msg)))
+                : -1;
+        ts.register_invalid =
+            elevator_state->register_invalid_count() + call_tracker->invalid_mask_bits_count();
+        ts.run_counter_mismatch = elevator_state->run_counter_mismatch_count();
+        ts.visitors_active      = traffic_writer->visitors_active();
+        ts.write_errors         = traffic_writer->write_error_count();
+        system_metrics.set_traffic(ts);
+    };
 
     while (true) {
         double     t0               = now_ms();
@@ -745,14 +1007,21 @@ int main(int argc, char** argv) {
             reload_overhead_ms = now_ms() - reload_start;
         }
 
+        drain_traffic_inputs(now_ms());
+
         if (!have_frame || frame.empty()) {
+            const double no_frame_now = now_ms();
             if (occupancy_counter) {
-                const OccupancySnapshot outage =
-                    occupancy_counter->update({}, 0, 0, now_ms(), false, false);
-                system_metrics.set_occupancy(outage.count,
-                                             outage.confidence == OccupancyConfidence::Uncertain);
-                next_occupancy_update_ms = now_ms() + 1000.0;
+                occ_update = occupancy_counter->update({}, 0, 0, no_frame_now, false, false);
+                system_metrics.set_occupancy(occ_update.count, occ_update.confidence ==
+                                                                   OccupancyConfidence::Uncertain);
+                next_occupancy_update_ms = no_frame_now + 1000.0;
+                if (traffic_enabled) {
+                    traffic_writer->enqueue_assembler_output(
+                        trip_assembler->on_occupancy(occ_update, no_frame_now));
+                }
             }
+            poll_and_publish_traffic(no_frame_now);
             continue;
         }
         // Keep stage timing semantically stable: polling affects wall-clock FPS
@@ -773,7 +1042,6 @@ int main(int argc, char** argv) {
         }
 
         FrameContext tracker_frame{frame_id, now_ms(), frame.cols, frame.rows};
-        if (tracker) tracker->predict(tracker_frame);
         if (adaptive && tracker) {
             std::set<int> live_ids;
             for (const auto& track : tracker->active_tracks())
@@ -791,8 +1059,7 @@ int main(int argc, char** argv) {
         if (adaptive) {
             const double seen_ms = door_received_ms.load();
             const bool   fresh   = iot_socket && iot_socket->connected() &&
-                               door_session.load() == iot_socket->session() && seen_ms >= 0.0 &&
-                               tracker_frame.timestamp_ms - seen_ms <= 5000.0;
+                               door_session.load() == iot_socket->session() && seen_ms >= 0.0;
             const DoorSignal signal = decode_door_register(door_register.load(), fresh);
             const auto before = summarize_door_tracks(tracker->active_tracks(), confirmed_track_ids,
                                                       use_resident_db);
@@ -819,6 +1086,7 @@ int main(int argc, char** argv) {
         double t_yolo = 0.0;
         persons.clear();
         if (run_person) {
+            if (tracker) tracker->predict(tracker_frame);
             void*  ins[] = {npu_input.data()};
             double y0    = now_ms();
             awnn_set_input_buffers(yolo_ctx, ins);
@@ -892,23 +1160,29 @@ int main(int argc, char** argv) {
         }
 
         // ---- Occupancy counting ----
-        OccupancySnapshot occ_update;
+        occ_update.events.clear();
         if (occupancy_counter && tracker) {
-            const bool tracking_unreliable =
-                adaptive && previous_door_state == DoorInferenceState::Degraded;
-            occ_update =
-                occupancy_counter->update(track_views, frame.cols, frame.rows,
-                                          tracker_frame.timestamp_ms, true, tracking_unreliable);
-            next_occupancy_update_ms = tracker_frame.timestamp_ms + 1000.0;
-            system_metrics.set_occupancy(occ_update.count,
-                                         occ_update.confidence == OccupancyConfidence::Uncertain);
-            for (const auto& ev : occ_update.events) {
-                LOG_INFO("occupancy", "%s track=%d count=%d confidence=%s",
-                         ev.direction == OccupancyEventDirection::Entry ? "ENTRY" : "EXIT",
-                         ev.track_id, occ_update.count,
-                         occ_update.confidence == OccupancyConfidence::Certain ? "certain"
-                                                                               : "uncertain");
+            if (run_person) {
+                const bool tracking_unreliable =
+                    adaptive && previous_door_state == DoorInferenceState::Degraded;
+                occ_update = occupancy_counter->update(track_views, frame.cols, frame.rows,
+                                                       tracker_frame.timestamp_ms, true,
+                                                       tracking_unreliable);
+                system_metrics.set_occupancy(occ_update.count, occ_update.confidence ==
+                                                                   OccupancyConfidence::Uncertain);
+                for (const auto& ev : occ_update.events) {
+                    LOG_INFO("occupancy", "%s track=%d count=%d confidence=%s",
+                             ev.direction == OccupancyEventDirection::Entry ? "ENTRY" : "EXIT",
+                             ev.track_id, occ_update.count,
+                             occ_update.confidence == OccupancyConfidence::Certain ? "certain"
+                                                                                   : "uncertain");
+                }
+                if (traffic_enabled) {
+                    traffic_writer->enqueue_assembler_output(
+                        trip_assembler->on_occupancy(occ_update, tracker_frame.timestamp_ms));
+                }
             }
+            next_occupancy_update_ms = tracker_frame.timestamp_ms + 1000.0;
         }
 
         // ---- Face → Track association + recognition scheduling ----
@@ -978,16 +1252,20 @@ int main(int argc, char** argv) {
                 // ---- Matching: resident-db (MatchEngine) or legacy (.fdb) ----
                 std::string name;
                 char        stat;
-                float       sim = 0.0f;
-                int64_t     rid = -1;
+                float       sim      = 0.0f;
+                int64_t     rid      = -1;
+                int64_t     best_rid = -1;
+                float       best_sim = -1.0f;
                 if (use_resident_db) {
                     if (match_engine.vector_count() == 0) {
                         face_labels[f].stat = 'D';
                         continue;
                     }
-                    MatchResult mr = match_engine.match(emb, eff.match_thr);
-                    sim            = mr.similarity;
-                    rid            = mr.resident_id;
+                    MatchResult raw_mr = match_engine.match(emb, -1.0f);
+                    best_rid           = raw_mr.resident_id;
+                    best_sim           = raw_mr.similarity;
+                    sim                = best_sim;
+                    rid = (best_rid >= 0 && best_sim >= eff.match_thr) ? best_rid : -1;
                     if (rid >= 0) {
                         auto it = resident_by_id.find(rid);
                         // Prefer greeting_name for the overlay; fall back to name.
@@ -1034,6 +1312,30 @@ int main(int argc, char** argv) {
                                                          ? refreshed->identity.display_name
                                                          : "unknown";
                         face_labels[f].sim         = refreshed->identity.similarity;
+                    }
+                    if (traffic_enabled && use_resident_db &&
+                        (rid < 0 || cfg.traffic_save_faces == TrafficSaveFaces::All)) {
+                        FaceSample fs;
+                        fs.embedding = emb;
+                        fs.quality =
+                            fd.score * std::min(1.0f, std::max(0.0f, fd.x2 - fd.x1) / 80.0f);
+                        if (rid < 0) {
+                            fs.best_resident_id  = best_rid;
+                            fs.best_resident_sim = best_sim;
+                        }
+                        if (trip_assembler->wants_crop_for_track(linked_track->id, fs.quality)) {
+                            fs.crop_w               = aligned.cols;
+                            fs.crop_h               = aligned.rows;
+                            const std::size_t bytes = aligned.total() * aligned.elemSize();
+                            if (aligned.isContinuous()) {
+                                fs.crop_bgr_112.assign(aligned.data, aligned.data + bytes);
+                            } else {
+                                cv::Mat cont = aligned.clone();
+                                fs.crop_bgr_112.assign(cont.data, cont.data + bytes);
+                            }
+                        }
+                        trip_assembler->on_face_sample(linked_track->id, std::move(fs),
+                                                       tracker_frame.timestamp_ms);
                     }
                 }
             }
@@ -1117,6 +1419,11 @@ int main(int argc, char** argv) {
                         floor_calls->on_confirmed(oc.subject_key, oc.resident_id, hf, oc.similarity,
                                                   tracker_frame.timestamp_ms);
                     }
+                    if (traffic_enabled && use_tracker) {
+                        trip_assembler->on_resident_confirmed(oc.subject_key, oc.resident_id,
+                                                              oc.similarity,
+                                                              tracker_frame.timestamp_ms);
+                    }
                     resident_db.log_event(ev);
                     resident_db.touch_resident(oc.resident_id);
                     // No PII (R7): log resident_id + floor only, never the name.
@@ -1147,6 +1454,7 @@ int main(int argc, char** argv) {
             }
         }
         double t5 = now_ms();
+        poll_and_publish_traffic(t5);
 
         ++frames_since_report;
         double       now                 = now_ms();
@@ -1252,6 +1560,27 @@ int main(int argc, char** argv) {
         ++frame_id;
         if (g_stop.load()) break;
         if (cfg.max_frames > 0 && frame_id >= cfg.max_frames) break;
+    }
+
+    if (traffic_enabled) {
+        register_capture_enabled.store(false);
+        const double stop_ms = now_ms();
+        drain_traffic_inputs(stop_ms);
+        const ElevatorStepResult esd = elevator_state->shutdown(stop_ms);
+        const CallStepResult     csd =
+            call_tracker->shutdown(elevator_state->primary_timeline().recent_stops(),
+                                   elevator_state->secondary_timeline().recent_stops(), stop_ms);
+        trip_assembler->on_auto_call_confirmations(csd.auto_confirmations);
+        trip_assembler->on_completed_calls(csd.completed_car_calls, csd.completed_hall_calls,
+                                           stop_ms);
+        traffic_writer->enqueue_calls(csd);
+        traffic_writer->enqueue_assembler_output(trip_assembler->on_timeline_events(
+            esd.primary_events, occ_update.count, occ_update.confidence, stop_ms));
+        traffic_writer->enqueue_assembler_output(trip_assembler->shutdown(stop_ms));
+        LOG_INFO("traffic", "flushing traffic writer (dropped=%llu errors=%llu)",
+                 (unsigned long long)traffic_writer->dropped_count(),
+                 (unsigned long long)traffic_writer->write_error_count());
+        traffic_writer->close();
     }
 
     event_recorder.close();

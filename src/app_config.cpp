@@ -93,6 +93,20 @@ void print_usage(const char* prog) {
         "    --floor-command-ttl-ms N    Drop unsent floor call after N ms (default 5000)\n"
         "    --floor-ack-timeout-ms N    Wait N ms for IoT command ACK (default 3000)\n"
         "    --floor-max-per-visit N     Maximum distinct floor calls per visit (default 16)\n"
+        "    --traffic-db PATH           SQLite traffic log DB path (disabled if not set)\n"
+        "    --elevator-slave N          INVT slave ID [1, 16] (default 2)\n"
+        "    --traffic-visitor-reid 0|1  Enable anonymous visitor re-ID (default 0)\n"
+        "    --traffic-save-faces M      off|visitors|all aligned 112x112 JPEGs (default off)\n"
+        "    --traffic-retention-days N  Traffic record retention days (default 730)\n"
+        "    --visitor-retention-days N  Visitor embedding retention days (default 90)\n"
+        "    --face-retention-days N     Saved face JPEG retention days (default 30)\n"
+        "    --traffic-min-free-mb N     Pause face JPEG saving below N MB free (default 4096)\n"
+        "    --traffic-floor-min N       Min valid floor index [0, 15] (default 0 = B)\n"
+        "    --traffic-floor-max N       Max valid floor index [0, 15] (default 9)\n"
+        "    --traffic-floor-tolerance-ms N Stop-floor match tolerance ms (default 10000)\n"
+        "    --traffic-run-timeout-ms N  Max silent Running duration before gap (default 60000)\n"
+        "    --traffic-call-confirm-ms N Auto call confirmation window ms (default 15000)\n"
+        "    --traffic-cabin-capacity N  Plausible cabin occupancy limit (default 15)\n"
         "    --no-preview          Disable OpenCV preview window (headless mode)\n"
         "    --windowed / --fullscreen\n"
         "    --log-level L         trace|debug|info|warn|error (default info)\n"
@@ -306,6 +320,127 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
                 return res;
             }
             ++i;
+        } else if (std::strcmp(a, "--traffic-db") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '\0' || argv[i + 1][0] == '-') {
+                std::fprintf(stderr, "--traffic-db requires a non-empty path\n");
+                res.invalid_args = true;
+                return res;
+            }
+            cfg.traffic_db_path = argv[++i];
+        } else if (std::strcmp(a, "--elevator-slave") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 1, 16, cfg.elevator_slave)) {
+                std::fprintf(stderr, "--elevator-slave requires an integer in [1, 16]\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--traffic-visitor-reid") == 0) {
+            int val = 0;
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 0, 1, val)) {
+                std::fprintf(stderr, "--traffic-visitor-reid requires 0 or 1\n");
+                res.invalid_args = true;
+                return res;
+            }
+            cfg.traffic_visitor_reid = (val != 0);
+            ++i;
+        } else if (std::strcmp(a, "--traffic-save-faces") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "--traffic-save-faces requires off|visitors|all\n");
+                res.invalid_args = true;
+                return res;
+            }
+            const char* mode = argv[++i];
+            if (std::strcmp(mode, "off") == 0) {
+                cfg.traffic_save_faces = TrafficSaveFaces::Off;
+            } else if (std::strcmp(mode, "visitors") == 0) {
+                cfg.traffic_save_faces = TrafficSaveFaces::Visitors;
+            } else if (std::strcmp(mode, "all") == 0) {
+                cfg.traffic_save_faces = TrafficSaveFaces::All;
+            } else {
+                std::fprintf(
+                    stderr, "invalid --traffic-save-faces: %s (expected off|visitors|all)\n", mode);
+                res.invalid_args = true;
+                return res;
+            }
+        } else if (std::strcmp(a, "--traffic-retention-days") == 0) {
+            if (i + 1 >= argc ||
+                !parse_int_in_range(argv[i + 1], 1, INT_MAX, cfg.traffic_retention_days)) {
+                std::fprintf(stderr, "--traffic-retention-days requires a positive integer\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--visitor-retention-days") == 0) {
+            if (i + 1 >= argc ||
+                !parse_int_in_range(argv[i + 1], 1, INT_MAX, cfg.visitor_retention_days)) {
+                std::fprintf(stderr, "--visitor-retention-days requires a positive integer\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--face-retention-days") == 0) {
+            if (i + 1 >= argc ||
+                !parse_int_in_range(argv[i + 1], 1, INT_MAX, cfg.face_retention_days)) {
+                std::fprintf(stderr, "--face-retention-days requires a positive integer\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--traffic-min-free-mb") == 0) {
+            if (i + 1 >= argc ||
+                !parse_int_in_range(argv[i + 1], 1, INT_MAX, cfg.traffic_min_free_mb)) {
+                std::fprintf(stderr, "--traffic-min-free-mb requires a positive integer\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--traffic-floor-min") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 0, 15, cfg.traffic_floor_min)) {
+                std::fprintf(stderr, "--traffic-floor-min requires an integer in [0, 15]\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--traffic-floor-max") == 0) {
+            if (i + 1 >= argc || !parse_int_in_range(argv[i + 1], 0, 15, cfg.traffic_floor_max)) {
+                std::fprintf(stderr, "--traffic-floor-max requires an integer in [0, 15]\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--traffic-floor-tolerance-ms") == 0) {
+            if (i + 1 >= argc ||
+                !parse_int_in_range(argv[i + 1], 0, INT_MAX, cfg.traffic_floor_tolerance_ms)) {
+                std::fprintf(stderr,
+                             "--traffic-floor-tolerance-ms requires a non-negative integer\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--traffic-run-timeout-ms") == 0) {
+            if (i + 1 >= argc ||
+                !parse_int_in_range(argv[i + 1], 1, INT_MAX, cfg.traffic_run_timeout_ms)) {
+                std::fprintf(stderr, "--traffic-run-timeout-ms requires a positive integer\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--traffic-call-confirm-ms") == 0) {
+            if (i + 1 >= argc ||
+                !parse_int_in_range(argv[i + 1], 1, INT_MAX, cfg.traffic_call_confirm_ms)) {
+                std::fprintf(stderr, "--traffic-call-confirm-ms requires a positive integer\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
+        } else if (std::strcmp(a, "--traffic-cabin-capacity") == 0) {
+            if (i + 1 >= argc ||
+                !parse_int_in_range(argv[i + 1], 1, INT_MAX, cfg.traffic_cabin_capacity)) {
+                std::fprintf(stderr, "--traffic-cabin-capacity requires a positive integer\n");
+                res.invalid_args = true;
+                return res;
+            }
+            ++i;
         } else if (sv("--gst-latency")) {
             cfg.gst_latency_ms     = std::atoi(argv[++i]);
             cfg.passed.gst_latency = true;
@@ -356,6 +491,13 @@ ParseResult parse_args(int argc, char** argv, AppConfig& cfg) {
         res.invalid_args = true;
     } else if (cfg.edge_socket && cfg.iot_ws) {
         std::fprintf(stderr, "--edge-socket and --iot-ws cannot be enabled together\n");
+        res.invalid_args = true;
+    } else if (cfg.traffic_floor_min > cfg.traffic_floor_max) {
+        std::fprintf(stderr,
+                     "invalid floor range: require --traffic-floor-min <= --traffic-floor-max\n");
+        res.invalid_args = true;
+    } else if (cfg.traffic_db_path && !cfg.occupancy_config_path) {
+        std::fprintf(stderr, "--traffic-db requires --occupancy-config\n");
         res.invalid_args = true;
     }
     return res;

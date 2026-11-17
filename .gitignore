@@ -16,6 +16,7 @@ tests/*.out
 /add_person
 /probe_models
 /migrate_fdb
+/traffic_admin
 
 # Runtime data (mỗi user có dataset riêng)
 faces/
@@ -29,6 +30,8 @@ logs/
 db/*.db
 db/*.db-wal
 db/*.db-shm
+db/traffic.db*
+db/traffic_faces/
 db/occupancy_state_cam*.json
 
 # Sensitive resident DB backups (metadata + biometric embeddings)

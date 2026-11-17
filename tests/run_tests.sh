@@ -172,6 +172,35 @@ g++ -std=c++17 -Isrc \
     tests/test_floor_call_coordinator.cpp src/floor_call_coordinator.cpp \
     -lpthread -o "$OUT/test_floor_call_coordinator" && "$OUT/test_floor_call_coordinator" || fail=1
 
+echo ""
+echo "== Elevator registers =="
+g++ -std=c++17 -Isrc \
+    tests/test_elevator_registers.cpp src/elevator_registers.cpp src/edge_json.cpp \
+    -o "$OUT/test_elevator_registers" && "$OUT/test_elevator_registers" || fail=1
+
+echo ""
+echo "== Elevator state =="
+g++ -std=c++17 -Isrc \
+    tests/test_elevator_state.cpp src/elevator_state.cpp src/elevator_registers.cpp \
+    src/edge_json.cpp src/log/logger.cpp -lpthread \
+    -o "$OUT/test_elevator_state" && "$OUT/test_elevator_state" || fail=1
+
+echo ""
+echo "== Call tracker =="
+g++ -std=c++17 -Isrc \
+    tests/test_call_tracker.cpp src/call_tracker.cpp src/elevator_state.cpp \
+    src/elevator_registers.cpp src/edge_json.cpp src/log/logger.cpp -lpthread \
+    -o "$OUT/test_call_tracker" && "$OUT/test_call_tracker" || fail=1
+
+echo ""
+echo "== Trip assembler =="
+g++ -std=c++17 -Isrc $(pkg-config --cflags opencv4) \
+    tests/test_trip_assembler.cpp src/trip_assembler.cpp src/elevator_state.cpp \
+    src/elevator_registers.cpp src/edge_json.cpp src/call_tracker.cpp \
+    src/floor_call_coordinator.cpp src/log/logger.cpp \
+    $(pkg-config --libs opencv4) -lpthread \
+    -o "$OUT/test_trip_assembler" && "$OUT/test_trip_assembler" || fail=1
+
 # ResidentDB test needs sqlite3.h + libsqlite3.
 # Prefer a system install; else fall back to a no-sudo local extract at
 # /tmp/sqlite_local (see tests/_setup_sqlite_local.sh).
@@ -230,6 +259,49 @@ if [ "$SQLITE_INC" != "MISSING" ]; then
         $SQLITE_LIB -lpthread \
         -o "$OUT/test_cabin_config" \
         && "$OUT/test_cabin_config" || fail=1
+
+    echo ""
+    echo "== Visitor gallery =="
+    g++ -std=c++17 -Isrc $SQLITE_INC $(pkg-config --cflags opencv4) \
+        tests/test_visitor_gallery.cpp src/visitor_gallery.cpp src/traffic_db.cpp \
+        src/resident_db.cpp src/match_engine.cpp src/trip_assembler.cpp \
+        src/elevator_state.cpp src/elevator_registers.cpp src/edge_json.cpp \
+        src/call_tracker.cpp src/floor_call_coordinator.cpp src/log/logger.cpp \
+        $SQLITE_LIB $(pkg-config --libs opencv4) -lpthread \
+        -o "$OUT/test_visitor_gallery" && "$OUT/test_visitor_gallery" || fail=1
+
+    echo ""
+    echo "== TrafficDB =="
+    g++ -std=c++17 -Isrc $SQLITE_INC $(pkg-config --cflags opencv4) \
+        tests/test_traffic_db.cpp src/traffic_db.cpp src/resident_db.cpp \
+        src/resident_enroll.cpp src/match_engine.cpp src/trip_assembler.cpp \
+        src/elevator_state.cpp src/elevator_registers.cpp src/edge_json.cpp \
+        src/call_tracker.cpp src/floor_call_coordinator.cpp src/log/logger.cpp \
+        $SQLITE_LIB -lopencv_core -lpthread \
+        -o "$OUT/test_traffic_db" \
+        && "$OUT/test_traffic_db" "$ROOT/db/traffic_schema.sql" "$ROOT/db/schema.sql" || fail=1
+
+    echo ""
+    echo "== TrafficLogWriter =="
+    g++ -std=c++17 -Isrc $SQLITE_INC $(pkg-config --cflags opencv4) \
+        tests/test_traffic_log_writer.cpp src/traffic_log_writer.cpp src/visitor_gallery.cpp \
+        src/traffic_db.cpp src/resident_db.cpp src/match_engine.cpp src/trip_assembler.cpp \
+        src/elevator_state.cpp src/elevator_registers.cpp src/edge_json.cpp \
+        src/call_tracker.cpp src/floor_call_coordinator.cpp src/log/logger.cpp \
+        $SQLITE_LIB $(pkg-config --libs opencv4) -lpthread \
+        -o "$OUT/test_traffic_log_writer" \
+        && "$OUT/test_traffic_log_writer" "$ROOT/db/traffic_schema.sql" || fail=1
+
+    echo ""
+    echo "== traffic_admin CLI =="
+    g++ -std=c++17 -Isrc $SQLITE_INC $(pkg-config --cflags opencv4) \
+        src/traffic_admin.cpp src/traffic_db.cpp src/trip_assembler.cpp \
+        src/elevator_state.cpp src/elevator_registers.cpp src/call_tracker.cpp \
+        src/floor_call_coordinator.cpp src/edge_json.cpp src/resident_db.cpp \
+        src/match_engine.cpp src/log/logger.cpp \
+        $SQLITE_LIB -lpthread \
+        -o "$OUT/traffic_admin" \
+        && bash tests/test_traffic_admin.sh "$OUT/traffic_admin" || fail=1
 else
     echo ""
     echo "== SQLite-dependent tests == FAILED (no sqlite3 headers/library)"

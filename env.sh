@@ -98,6 +98,14 @@ export FACE_OCCUPANCY_CONFIG_DIR="${FACE_OCCUPANCY_CONFIG_DIR:-$FACE_ROOT/config
 export FACE_OCCUPANCY_STATE_DIR="${FACE_OCCUPANCY_STATE_DIR:-$FACE_ROOT/db}"
 mkdir -p "$FACE_OCCUPANCY_CONFIG_DIR" 2>/dev/null || true
 
+# Elevator traffic log (opt-in: set FACE_TRAFFIC_DB="$FACE_DB_DIR/traffic.db" to enable).
+export FACE_TRAFFIC_DB="${FACE_TRAFFIC_DB-}"
+export FACE_ELEVATOR_SLAVE="${FACE_ELEVATOR_SLAVE:-$FACE_CABIN_ID}"
+export FACE_TRAFFIC_VISITOR_REID="${FACE_TRAFFIC_VISITOR_REID:-0}"
+export FACE_TRAFFIC_SAVE_FACES="${FACE_TRAFFIC_SAVE_FACES:-off}"
+export FACE_TRAFFIC_FLOOR_MIN="${FACE_TRAFFIC_FLOOR_MIN:-0}"
+export FACE_TRAFFIC_FLOOR_MAX="${FACE_TRAFFIC_FLOOR_MAX:-9}"
+
 # X11 display. Disable MIT-SHM because forwarded displays such as MobaXterm
 # cannot share local X11 memory segments with the application process.
 [ -z "$DISPLAY" ] && export DISPLAY=:0.0
@@ -122,6 +130,7 @@ face_cabin() {
     local socketio_args=()
     local inference_args=()
     local occupancy_args=()
+    local traffic_args=()
     local preview_args=()
     if [ "${FACE_CABIN_NO_PREVIEW:-0}" = "1" ]; then
         preview_args=(--no-preview)
@@ -146,6 +155,14 @@ face_cabin() {
     local occ_state="$FACE_OCCUPANCY_STATE_DIR/occupancy_state_cam$FACE_CABIN_ID.json"
     if [ -f "$occ_config" ]; then
         occupancy_args=(--occupancy-config "$occ_config" --occupancy-state "$occ_state")
+    fi
+    if [ -n "${FACE_TRAFFIC_DB:-}" ] && [ -f "$occ_config" ]; then
+        traffic_args=(--traffic-db "$FACE_TRAFFIC_DB"
+                      --elevator-slave "$FACE_ELEVATOR_SLAVE"
+                      --traffic-visitor-reid "$FACE_TRAFFIC_VISITOR_REID"
+                      --traffic-save-faces "$FACE_TRAFFIC_SAVE_FACES"
+                      --traffic-floor-min "$FACE_TRAFFIC_FLOOR_MIN"
+                      --traffic-floor-max "$FACE_TRAFFIC_FLOOR_MAX")
     fi
     # Chưa có URL tay -> tự lấy từ PostgreSQL (camera cấu hình ở web).
     if [ -z "$url" ]; then
@@ -176,6 +193,7 @@ face_cabin() {
         "${socketio_args[@]}" \
         "${inference_args[@]}" \
         "${occupancy_args[@]}" \
+        "${traffic_args[@]}" \
         "${record_args[@]}")
 }
 

@@ -360,6 +360,79 @@ static void test_callback_and_reconcile_persistence_contract() {
           "reconcile_empty schedules persistence");
 }
 
+static void test_occupant_lineage_and_same_id_ghost_recovery() {
+    std::printf("test_occupant_lineage_and_same_id_ghost_recovery\n");
+    OccupancyCounter counter(make_config(), OccupancyState{});
+    double           timestamp = 0.0;
+
+    // 1. Entry assigns monotonic non-zero occupant_id and preserves it across direct churn + ghost
+    // churn.
+    update(counter, {track(1, 0.50f, 0.35f)}, timestamp);
+    update(counter, {track(1, 0.50f, 0.50f)}, timestamp);
+    auto snap = update(counter, {track(1, 0.50f, 0.70f)}, timestamp);
+    CHECK(snap.events.size() == 1 && snap.events[0].occupant_id == 1 &&
+              snap.track_occupants.size() == 1 && snap.track_occupants[0].first == 1 &&
+              snap.track_occupants[0].second == 1,
+          "entry assigns occupant_id=1 and exposes track_occupants");
+
+    // Direct transfer 1 -> 2 keeps occupant_id=1.
+    snap = update(counter, {track(2, 0.51f, 0.70f)}, timestamp);
+    CHECK(snap.track_occupants.size() == 1 && snap.track_occupants[0].first == 2 &&
+              snap.track_occupants[0].second == 1,
+          "direct ID handoff preserves occupant_id");
+
+    // Ghost handoff 2 -> 3 keeps occupant_id=1.
+    update(counter, {}, timestamp);
+    snap = update(counter, {track(3, 0.51f, 0.70f)}, timestamp);
+    CHECK(snap.track_occupants.size() == 1 && snap.track_occupants[0].first == 3 &&
+              snap.track_occupants[0].second == 1,
+          "ghost ID handoff preserves occupant_id");
+
+    // Exit emits the same occupant_id=1 and removes slot from track_occupants.
+    update(counter, {track(3, 0.51f, 0.50f)}, timestamp);
+    snap = update(counter, {track(3, 0.51f, 0.35f)}, timestamp);
+    CHECK(snap.events.size() == 1 && snap.events[0].direction == OccupancyEventDirection::Exit &&
+              snap.events[0].occupant_id == 1 && snap.track_occupants.empty(),
+          "exit emits original occupant_id and clears track_occupants");
+
+    // 2. Two close tracks that go prediction-only (or briefly missing) and return under SAME track
+    // IDs
+    //    must recover their slots/occupant_ids even when moved > 0.05 and standing within 0.05 of
+    //    each other.
+    enter(counter, 10, timestamp);
+    snap = update(counter, {track(10, 0.50f, 0.70f), track(11, 0.51f, 0.35f)}, timestamp);
+    update(counter, {track(10, 0.50f, 0.70f), track(11, 0.51f, 0.50f)}, timestamp);
+    snap = update(counter, {track(10, 0.50f, 0.70f), track(11, 0.51f, 0.70f)}, timestamp);
+    CHECK(snap.count == 2 && snap.track_occupants.size() == 2,
+          "two tracks enter and receive distinct occupant_ids");
+
+    // Both tracks become predicted_only for one frame -> moved to ghosts_ with their track_ids.
+    update(counter, {track(10, 0.50f, 0.70f, true), track(11, 0.51f, 0.70f, true)}, timestamp);
+    // Track 10 exits quickly (displacement > 0.05) while track 11 stays nearby (< 0.05 from old
+    // pos).
+    snap = update(counter, {track(10, 0.50f, 0.35f), track(11, 0.51f, 0.70f)}, timestamp);
+    CHECK(snap.count == 1 && snap.events.size() == 1 &&
+              snap.events[0].direction == OccupancyEventDirection::Exit &&
+              snap.events[0].track_id == 10 && snap.events[0].occupant_id == 2,
+          "same-ID ghost recovery preserves slot across >0.05 move and nearby track");
+    snap = update(counter, {track(11, 0.51f, 0.35f)}, timestamp);
+    CHECK(snap.count == 0 && snap.events.size() == 1 &&
+              snap.events[0].direction == OccupancyEventDirection::Exit &&
+              snap.events[0].track_id == 11 && snap.events[0].occupant_id == 3,
+          "second track retains occupant_id and emits matching exit");
+
+    // 3. Restored slot from persisted state yields occupant_id=0 on Exit.
+    OccupancyState restored;
+    restored.count      = 1;
+    restored.confidence = OccupancyConfidence::Certain;
+    OccupancyCounter restored_counter(make_config(), restored);
+    double           ts2 = 0.0;
+    snap                 = exit_track(restored_counter, 70, ts2);
+    CHECK(snap.events.size() == 1 && snap.events[0].direction == OccupancyEventDirection::Exit &&
+              snap.events[0].occupant_id == 0,
+          "restored slot without observed entry emits occupant_id=0");
+}
+
 int main() {
     test_entry_exit_duplicate_and_abort();
     test_loss_prediction_outage_and_degraded();
@@ -370,6 +443,7 @@ int main() {
     test_skipped_zone_frame_crossing();
     test_unassigned_tracks_cannot_decrement_occupancy();
     test_callback_and_reconcile_persistence_contract();
+    test_occupant_lineage_and_same_id_ghost_recovery();
     std::printf("\n[test_occupancy_counter] %d checks, %d failed\n", checks, failed);
     return failed ? 1 : 0;
 }

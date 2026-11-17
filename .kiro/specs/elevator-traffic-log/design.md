@@ -74,32 +74,32 @@ Mọi state machine chạy trên frame thread và nhận timestamp từ bên ngo
 
 Quy đổi tầng: `floor_index = 8465 − 1`; bit `n` của mask gọi tầng là `floor_index = n`. Giá trị ngoài `[--traffic-floor-min, --traffic-floor-max]` bị bỏ qua và đếm vào metric `register_invalid`.
 
-Gateway quét mỗi slave khoảng 5,6 s và chỉ gửi giá trị đổi (xem kết quả ghi mẫu trong `requirements.md`). `ElevatorStateTracker` giữ, cho từng slave: `last_value` từng thanh ghi, `last_message_ms` và `session` của socket lúc nhận. Trạng thái có `valid = true` khi đã nhận snapshot đầy đủ trong session hiện tại. Trạng thái mất hiệu lực (`RegisterGap`) khi:
+Gateway quét mỗi slave khoảng 5,6 s và chỉ gửi giá trị đổi (xem kết quả ghi mẫu trong `requirements.md`). `ElevatorStateTracker` giữ, cho từng slave: `last_value` từng thanh ghi, `last_message_ms` và `session` của socket lúc nhận. Trạng thái của slave có `valid = true` ngay khi tích lũy đủ các thanh ghi cốt lõi (`8465`, `8480`, `8211`, `8215`, `8225`, và ít nhất một trong `8471`/`8472`) trong session hiện tại (không dựa vào `"Mode": "full"`, vì snapshot đầu tiên khi subscribe có `"Mode": "new"`). Trạng thái mất hiệu lực (`RegisterGap`) khi:
 
 - socket báo mất kết nối hoặc session tăng;
 - `RegisterInbox` tràn;
 - timeline đang `Running` và `now − last_message_ms > --traffic-run-timeout-ms`.
 
-Khi đứng yên, không có message là bình thường, nên không phát gap. Snapshot đầu tiên sau khi kết nối lại đặt `valid = true`. Lúc đó lệnh gọi đang bật được ghi với cờ `registration_unobserved`.
+Khi đứng yên, không có message là bình thường, nên không phát gap. Khi nhận đủ bộ thanh ghi cốt lõi trở lại sau khi kết nối lại, đặt `valid = true`. Lúc đó lệnh gọi đang bật được ghi với cờ `registration_unobserved`.
 
 Máy trạng thái `CabinTimeline`:
 
 - `Unknown` → `Stopped(floor)` khi trạng thái `valid`, bit2 = 0 và có tầng hợp lệ.
 - `Stopped` → `Running(from, dir)` khi bit2 = 1. Lúc này điểm dừng đóng và chuyến chạy mở; ghi `load_count`, `load_confidence` và mask `8211`.
 - `Running` → `Stopped(to)` khi bit2 = 0. Chuyến chạy đóng và điểm dừng mới mở.
-- Giờ cửa mở/đóng ưu tiên `8471` bit3/bit4 (trạng thái vật lý). Nếu không có thì dùng `8472` bit5/bit6.
+- `door_opened_at_ms` ghi nhận ở mốc thời gian đầu tiên trong điểm dừng có `(8471 & (1<<3)) != 0 || (8472 & (1<<5)) != 0`; `door_closed_at_ms` ghi nhận ở mốc đầu tiên sau `door_opened_at_ms` có `(8471 & (1<<4)) != 0 || (8472 & (1<<6)) != 0`.
 - `RegisterGap` ở bất kỳ trạng thái nào → `Unknown`. Bản ghi đang mở được đóng với cờ `register_gap`, tầng chưa biết thì để NULL.
 - Cờ chế độ đặc biệt được OR dần trong suốt khoảng thời gian của bản ghi.
 - Giá trị thô của `8471`, `8472`, `8480` lúc tới và lúc rời được lưu vào bản ghi điểm dừng để phân tích các bit chưa có trong tài liệu (`8471` bit7, `8480` bit8/bit10).
 - Thang 1 dùng cùng máy trạng thái nhưng chỉ xuất danh sách điểm dừng gần đây (vòng đệm 10 phút) cho `CallTracker`; không ghi DB trong v1.
-- Khi một chuyến chạy bắt đầu, timeline so `8448`/`8449` với giá trị lúc chuyến trước bắt đầu. Chênh lệch khác 1 được log warning và cộng vào metric `run_counter_mismatch`.
+- Khi một chuyến chạy kết thúc (`RunEnded`, bit2 chuyển `1 → 0`), timeline so bộ đếm 32-bit `(uint32(8449) << 16) | uint32(8448)` với giá trị lúc chuyến trước kết thúc (do `8448` thường tăng trễ một chu kỳ sau `RunStarted`). Chênh lệch khác 1 được log warning và cộng vào metric `run_counter_mismatch`.
 
 ### CallTracker
 
 Đầu vào là các lần đổi giá trị của `8211-2`, `8215-2`, `8225-2` theo thứ tự nhận, cùng sự kiện timeline của hai thang và quyết định gọi tầng tự động.
 
 - Bit 0 → 1: mở bản ghi với `registered_at`, `floor`, `kind` (`car`/`hall_up`/`hall_down`). Với lệnh gọi trong cabin, gán điểm dừng lúc đăng ký theo R14.2; gán nguồn `auto` nếu có lệnh gọi tự động tới cùng tầng đã `SENT` trong `--traffic-call-confirm-ms` trước đó. Khi khớp, quyết định gọi tầng tự động tương ứng được đánh dấu `register_confirmed`.
-- Bit 1 → 0: đóng bản ghi với `cleared_at`. Chờ tối đa `--traffic-floor-tolerance-ms` để timeline xác nhận điểm dừng phục vụ: lệnh gọi trong cabin cần điểm dừng của thang 2 ở đúng tầng; lệnh gọi ngoài xét thang 2 trước, rồi tới thang 1. Không có điểm dừng phù hợp → `cancelled`/`cleared_without_stop`.
+- Bit 1 → 0: đóng bản ghi với `cleared_at`. Chờ tối đa `--traffic-floor-tolerance-ms` (mặc định 10000 ms) để timeline xác nhận điểm dừng phục vụ tại đúng tầng có cửa mở mà `cleared_at` nằm trong `[stop.arrived_at - tol, stop.departed_at + tol]` (xét thang 2 trước, rồi tới thang 1 đối với gọi ngoài). Không có điểm dừng phù hợp → `cancelled`/`cleared_without_stop`.
 - Lệnh gọi tự động `SENT` mà không có bit `8211` tương ứng trong thời gian xác nhận → quyết định được đánh dấu `register_unconfirmed`.
 - Tối đa 64 bản ghi mở cho mỗi loại. Khi `RegisterGap`, mọi bản ghi mở được đóng với kết quả `register_gap`.
 
@@ -133,7 +133,7 @@ Trạng thái chính:
 - `open_trips` theo `occupant_id`, tối đa 64. Khi đầy, chuyến cũ nhất bị đóng với cờ `exit_unobserved`.
 - `track → occupant` cập nhật từ snapshot. Danh tính hoặc mẫu trên track có occupant được gắn vào chuyến của occupant đó.
 
-Gán tầng: Entry/Exit tại thời điểm `t` được gán vào điểm dừng có `[arrived - tol, departed + tol]` chứa `t` (`tol` = `--traffic-floor-tolerance-ms`, mặc định 6000, bằng khoảng một chu kỳ quét của gateway). Mốc `arrived`/`departed` là lúc nhận message, nên có thể trễ tới một chu kỳ so với thực tế. Nếu `t` rơi vào lúc cabin đang chạy nhưng gần một mép điểm dừng (do trễ video hoặc thanh ghi), assembler chờ timeline xác nhận điểm dừng kế tiếp tối đa `tol` rồi mới quyết định. Nếu vẫn không có điểm dừng phù hợp thì tầng để NULL và gắn `floor_unknown`. Chuyến chỉ được emit khi cả hai đầu đã được giải quyết hoặc đã hết thời gian chờ.
+Gán tầng: Entry/Exit tại thời điểm `t` được gán vào điểm dừng có `[arrived - tol, departed + tol]` chứa `t` (`tol` = `--traffic-floor-tolerance-ms`, mặc định 10000, bằng khoảng hai chu kỳ quét của gateway). Mốc `arrived`/`departed` là lúc nhận message, nên có thể trễ tới một chu kỳ so với thực tế. Nếu `t` rơi vào lúc cabin đang chạy nhưng gần một mép điểm dừng (do trễ video hoặc thanh ghi), assembler chờ timeline xác nhận điểm dừng kế tiếp tối đa `tol` rồi mới quyết định. Nếu vẫn không có điểm dừng phù hợp thì tầng để NULL và gắn `floor_unknown`. Chuyến chỉ được emit khi cả hai đầu đã được giải quyết hoặc đã hết thời gian chờ.
 
 Danh tính lúc đóng chuyến:
 
@@ -164,11 +164,11 @@ Khóa bản ghi: `<session_hex>-<seq>`, trong đó `session_hex` là số ngẫu
 ### TrafficLogWriter
 
 - Queue dạng `std::deque`, tối đa 1024 bản ghi, bỏ bản ghi cũ nhất khi đầy, đếm `dropped`.
-- Thứ tự xử lý: resolve visitor → ghi JPEG (nếu bật và disk guard cho phép) → insert trong một transaction cho mỗi lô ≤ 50 bản ghi.
+- Thứ tự xử lý: resolve visitor → ghi JPEG (`<db_dir>/traffic_faces/YYYY-MM-DD/<trip_key>.jpg`, quyền `0600`, nếu bật và disk guard cho phép) → insert trong một transaction cho mỗi lô ≤ 50 bản ghi.
 - Disk guard dùng `statvfs` trên thư mục DB và thư mục ảnh, kiểm tra mỗi 60 s.
 - Purge mỗi giờ: xóa bản ghi quá hạn theo lô 500 dòng mỗi transaction; chuyển visitor quá hạn sang `expired` và xóa embedding; xóa ảnh quá hạn hoặc vượt tổng dung lượng, cũ nhất trước.
 - `close()`: nhận các bản ghi `shutdown` từ assembler, flush, rồi join.
-- Metrics đưa vào `system_metrics`: `traffic_queue`, `traffic_dropped`, `open_trips`, `open_calls`, `register_age_ms`, `register_invalid`, `run_counter_mismatch`, `visitors_active`.
+- Metrics đưa vào `system_metrics`: `traffic_q`, `traffic_drop`, `open_trips`, `open_calls`, `reg_age_ms`, `reg_inv`, `run_mismatch`, `visitors`, `traffic_err`.
 
 ## Data Models
 
@@ -322,13 +322,13 @@ Các Property 1 đến 17 áp dụng cho logic thuần (`elevator_registers`, `E
 
 ### Property 4: Điều kiện mất dữ liệu
 
-*Với mọi* chuỗi sự kiện socket, `RegisterGap` được phát khi và chỉ khi xảy ra một trong ba điều kiện: mất kết nối hoặc session tăng; `RegisterInbox` tràn; timeline đang `Running` và `now − last_message_ms > --traffic-run-timeout-ms`. Sau gap, timeline ở `Unknown` cho tới khi nhận snapshot đầy đủ trong session hiện tại. Mọi bản ghi đang mở lúc gap được đóng với cờ hoặc kết quả `register_gap`, và tầng chưa biết để NULL.
+*Với mọi* chuỗi sự kiện socket, `RegisterGap` được phát khi và chỉ khi xảy ra một trong ba điều kiện: mất kết nối hoặc session tăng; `RegisterInbox` tràn; timeline đang `Running` và `now − last_message_ms > --traffic-run-timeout-ms`. Sau gap, timeline ở `Unknown` cho tới khi slave nhận đủ các thanh ghi cốt lõi trong session hiện tại. Mọi bản ghi đang mở lúc gap được đóng với cờ hoặc kết quả `register_gap`, và tầng chưa biết để NULL.
 
 **Validates: Requirements 1.2, 2.5, 13.2, 14.2**
 
 ### Property 5: Điểm dừng, chuyến chạy và giờ cửa
 
-*Với mọi* chuỗi giá trị thanh ghi không có gap, timeline của mỗi slave phát điểm dừng và chuyến chạy xen kẽ nhau. Mỗi chuyến chạy mở đúng lúc điểm dừng trước đóng (bit2 của `8480` chuyển 0 → 1) và đóng đúng lúc điểm dừng sau mở (bit2 chuyển 1 → 0); `from_floor` và `to_floor` bằng tầng của hai điểm dừng đó. Giờ cửa mở/đóng lấy từ `8471` bit3/bit4 nếu có, ngược lại từ `8472` bit5/bit6.
+*Với mọi* chuỗi giá trị thanh ghi không có gap, timeline của mỗi slave phát điểm dừng và chuyến chạy xen kẽ nhau. Mỗi chuyến chạy mở đúng lúc điểm dừng trước đóng (bit2 của `8480` chuyển 0 → 1) và đóng đúng lúc điểm dừng sau mở (bit2 chuyển 1 → 0); `from_floor` và `to_floor` bằng tầng của hai điểm dừng đó. `door_opened_at_ms` là mốc đầu tiên trong điểm dừng có `8471` bit3 hoặc `8472` bit5 bật; `door_closed_at_ms` là mốc đầu tiên sau `door_opened_at_ms` có `8471` bit4 hoặc `8472` bit6 bật.
 
 **Validates: Requirements 2.1, 2.2, 2.3**
 
@@ -340,7 +340,7 @@ Các Property 1 đến 17 áp dụng cho logic thuần (`elevator_registers`, `E
 
 ### Property 7: Đối chiếu bộ đếm chuyến chạy
 
-*Với mọi* chuyến chạy bắt đầu, nếu chênh lệch `8448`/`8449` so với lúc chuyến trước bắt đầu khác 1 thì timeline log warning và tăng `run_counter_mismatch` đúng một lần. Replay fixture `tests/fixtures/conn_data_20261103.jsonl` cho 12 chuyến chạy của thang 2, khớp chênh lệch 12 của `8448`.
+*Với mọi* chuyến chạy kết thúc (`RunEnded`), nếu chênh lệch bộ đếm 32-bit `(uint32(8449) << 16) | uint32(8448)` so với lúc chuyến trước kết thúc khác 1 thì timeline log warning và tăng `run_counter_mismatch` đúng một lần. Replay fixture `tests/fixtures/conn_data_20261103.jsonl` cho 12 chuyến chạy của thang 2, khớp chênh lệch 12 của `8448`.
 
 **Validates: Requirements 2.6**
 
@@ -352,7 +352,7 @@ Các Property 1 đến 17 áp dụng cho logic thuần (`elevator_registers`, `E
 
 ### *Property 9: Kết quả gọi tầng ngoài
 
-*Với mọi* lệnh gọi ngoài bị xóa, kết quả là `served` nếu thang 2 có điểm dừng ở đúng tầng và mở cửa trong `--traffic-floor-tolerance-ms` quanh giờ xóa; nếu không thì `served_by_car1` nếu thang 1 dừng ở tầng đó trong khoảng dung sai; nếu không nữa thì `cleared_without_stop`. Với kết quả `served`, `wait_ms = door_opened_at_ms − registered_at_ms`.
+*Với mọi* lệnh gọi ngoài bị xóa, kết quả là `served` nếu thang 2 có điểm dừng ở đúng tầng và mở cửa sao cho `cleared_at` nằm trong `[stop.arrived_at - tol, stop.departed_at + tol]`; nếu không thì `served_by_car1` nếu thang 1 có điểm dừng tương tự ở tầng đó; nếu không nữa thì `cleared_without_stop`. Với kết quả `served`, `wait_ms = door_opened_at_ms − registered_at_ms`.
 
 **Validates: Requirements R13.2**
 
@@ -440,7 +440,7 @@ Nguyên tắc: lỗi ở dữ liệu thanh ghi, occupancy hay lưu trữ không 
 | Socket.IO tắt hoặc không có dữ liệu thanh ghi | Log warning lúc khởi động; chuyến hành khách vẫn được ghi với tầng NULL và cờ `floor_unknown` (R11.3) |
 | Thiếu `--traffic-db` hoặc occupancy chưa bật | Không khởi tạo tính năng traffic |
 | Entry/Exit không nằm trong điểm dừng nào | Chờ tối đa `tol`; vẫn không có thì tầng NULL, cờ `floor_unknown` |
-| Entry/Exit nằm trong cửa sổ dung sai của hai điểm dừng liền nhau | **Chưa chốt:** quy tắc chọn điểm dừng |
+| Entry/Exit nằm trong cửa sổ dung sai của hai điểm dừng liền nhau | Ưu tiên điểm dừng có `[arrived_at, departed_at]` chứa `t`; nếu không có, chọn điểm dừng có khoảng cách thời gian tới `[arrived_at, departed_at]` nhỏ hơn (nếu bằng nhau: `Entry` chọn điểm dừng trước chuyến chạy, `Exit` chọn điểm dừng sau chuyến chạy) |
 | Exit có `occupant_id = 0` | Tạo chuyến chỉ có đầu ra, cờ `entry_unobserved` |
 | Entry không có Exit | Đóng khi occupancy reconcile về 0, khi tắt app, hoặc sau `max_trip_ms`; cờ `exit_unobserved` |
 | `open_trips` đầy (64) | Đóng chuyến cũ nhất với cờ `exit_unobserved` |
@@ -452,7 +452,7 @@ Nguyên tắc: lỗi ở dữ liệu thanh ghi, occupancy hay lưu trữ không 
 | Dung lượng trống dưới mức tới hạn (mặc định 1024 MB) | Ngừng ghi bản ghi mới và log error (R8.3) |
 | NTP chỉnh giờ | Chỉ ảnh hưởng các bản ghi enqueue sau đó, vì offset wall clock lấy lúc enqueue |
 | Tắt app (`SIGTERM`) | Đóng mọi bản ghi đang mở với `shutdown`, flush queue, rồi join worker (R9.2) |
-| Mở hoặc migrate `db/traffic.db` thất bại; insert hoặc purge lỗi | **Chưa chốt** trong thiết kế này |
+| Mở hoặc migrate `db/traffic.db` thất bại; insert hoặc purge lỗi | Mở/migrate lỗi lúc khởi động: log `ERROR` và tắt riêng module traffic (app chính vẫn chạy); `insert`/`purge` lỗi lúc chạy: rollback transaction lô hiện tại, log `WARN` có rate-limit (5 s) và tăng biến đếm lỗi trong `system_metrics` |
 
 ## Testing Strategy
 

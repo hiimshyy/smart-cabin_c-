@@ -245,11 +245,84 @@ với person (chỉ chạy ở frame có chạy YOLO).
 > Kênh đẩy cảnh báo ra ngoài (IoT/Socket.IO) sẽ bổ sung sau khi chốt contract với đội IoT;
 > hiện tại cảnh báo chỉ ghi vào log.
 
+## Nhật ký di chuyển thang máy (`elevator-traffic-log`)
+
+Tính năng thu thập dữ liệu di chuyển thang máy (điểm dừng, chuyến cabin, chuyến hành khách,
+gọi tầng trong cabin và gọi tầng ngoài) lưu cục bộ vào SQLite (`db/traffic.db`, schema
+`db/traffic_schema.sql`), tách biệt hoàn toàn với `db/residents.db`. Yêu cầu và thiết kế chi
+tiết ở `.kiro/specs/elevator-traffic-log/`.
+
+### Bật / tắt tính năng
+
+Mặc định `FACE_TRAFFIC_DB` rỗng (tắt). Cần bật bộ đếm người (`--occupancy-config`) và nên bật
+Socket.IO (`FACE_CABIN_SOCKETIO=1`) để lấy tầng từ thanh ghi INVT (`--elevator-slave`, mặc định `2`):
+
+```bash
+export FACE_CABIN_SOCKETIO=1
+export FACE_TRAFFIC_DB="$FACE_DB_DIR/traffic.db"
+export FACE_ELEVATOR_SLAVE=2
+# Nhận lại visitor qua nhiều chuyến và lưu ảnh mặt (mặc định TẮT):
+export FACE_TRAFFIC_VISITOR_REID=0
+export FACE_TRAFFIC_SAVE_FACES=off      # off | visitors | all
+source env.sh
+face_cabin
+```
+
+Nếu chạy binary trực tiếp, các cờ chính gồm `--traffic-db PATH`, `--elevator-slave N`,
+`--traffic-visitor-reid 0|1`, `--traffic-save-faces off|visitors|all`, `--traffic-floor-min 0`
+(`B=0`) .. `--traffic-floor-max 9`, `--traffic-floor-tolerance-ms 10000`,
+`--traffic-run-timeout-ms 60000`, `--traffic-call-confirm-ms 15000`, `--traffic-cabin-capacity 15`,
+và các tham số giữ dữ liệu (`--traffic-retention-days 730`, `--visitor-retention-days 90`,
+`--face-retention-days 30`, `--traffic-min-free-mb 4096`).
+
+### Export dữ liệu và sao lưu `traffic.db`
+
+```bash
+# Export CSV theo khoảng ngày (có thêm cột nhãn tầng B, 1..9):
+./traffic_admin --db db/traffic.db export --out-dir /mnt/usb/traffic_export \
+    --from 2026-11-01 --to 2026-11-30
+
+# Sao lưu nóng SQLite an toàn (trên thẻ nhớ hoặc USB):
+sqlite3 db/traffic.db ".backup '/mnt/usb/traffic_$(date +%F).db'"
+```
+
+### Xác minh danh tính và quản trị visitor (`traffic_admin`)
+
+```bash
+./traffic_admin --help
+./traffic_admin visitors list --status active --limit 20
+./traffic_admin visitors show 42
+./traffic_admin visitors suggest --resident-db db/residents.db --min-trips 2 --min-sim 0.30
+./traffic_admin visitors merge 45 42
+./traffic_admin visitors promote 42 --resident-id 7 --resident-db db/residents.db
+./traffic_admin visitors promote 43 --name "Nguyen Van A" --floor 7 --resident-db db/residents.db
+./traffic_admin visitors delete 44
+```
+
+Khi `promote`, các embedding của visitor được chép sang `db/residents.db` (`source='cabin'`) và
+ứng dụng chính tự nạp lại qua cơ chế hot-reload mà không cần khởi động lại.
+
+### Checklist pháp lý trước khi bật `--traffic-visitor-reid` và `--traffic-save-faces`
+
+Embedding và ảnh khuôn mặt của người chưa đăng ký là **dữ liệu sinh trắc học** thuộc nhóm dữ liệu
+cá nhân nhạy cảm theo **Luật Bảo vệ dữ liệu cá nhân số 91/2025/QH15** (hiệu lực từ `01/01/2026`).
+Trước khi đặt `FACE_TRAFFIC_VISITOR_REID=1` hoặc `FACE_TRAFFIC_SAVE_FACES=visitors|all` ở
+production, đơn vị vận hành phải hoàn tất:
+
+1. **Thông báo tại thang máy**: niêm yết rõ mục đích thu thập, phạm vi xử lý và đầu mối liên hệ.
+2. **Căn cứ pháp lý / sự đồng ý**: xác định rõ cơ sở xử lý dữ liệu sinh trắc học theo quy định của
+   tòa nhà và pháp luật hiện hành.
+3. **Thời hạn lưu & xóa dữ liệu**: rà soát `--visitor-retention-days` (mặc định 90 ngày) và
+   `--face-retention-days` (mặc định 30 ngày), thực hiện quy trình `visitors delete` khi có yêu cầu
+   xóa từ chủ thể dữ liệu.
+4. **Kiểm soát truy cập**: giữ `db/traffic.db` và ảnh JPEG ở quyền `0600`, không sao lưu/đẩy lên
+   mạng ngoài phạm vi cho phép, và giữ thông báo log không chứa PII.
+
 ## Build
 
 ```bash
-make -j4          # → face_recog_app, enroll_faces, capture_person, add_person
-make clean        # xóa build/ và 4 binary
+make -j4          # → face_recog_app, enroll_faces, capture_person, add_person, probe_models, migrate_fdb, traffic_admin
+make clean        # xóa build/ và 7 binary
 ```
 
 Yêu cầu:

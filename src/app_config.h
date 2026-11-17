@@ -2,7 +2,10 @@
 
 #include "tracker_types.h"
 
+#include <cstdint>
 #include <string>
+
+enum class TrafficSaveFaces : std::uint8_t { Off = 0, Visitors, All };
 
 // Application configuration parsed from the CLI (spec main-cpp-refactor,
 // Config_Module). Every field's default is byte-for-byte identical to the
@@ -61,6 +64,21 @@ struct AppConfig {
 
     const char* occupancy_config_path = nullptr; // counting-zone JSON config (disabled if null)
     const char* occupancy_state_path  = nullptr; // persistent occupancy state JSON
+
+    const char*      traffic_db_path            = nullptr; // traffic SQLite DB (disabled if null)
+    int              elevator_slave             = 2;
+    bool             traffic_visitor_reid       = false;
+    TrafficSaveFaces traffic_save_faces         = TrafficSaveFaces::Off;
+    int              traffic_retention_days     = 730;
+    int              visitor_retention_days     = 90;
+    int              face_retention_days        = 30;
+    int              traffic_min_free_mb        = 4096;
+    int              traffic_floor_min          = 0;
+    int              traffic_floor_max          = 9;
+    int              traffic_floor_tolerance_ms = 10000;
+    int              traffic_run_timeout_ms     = 60000;
+    int              traffic_call_confirm_ms    = 15000;
+    int              traffic_cabin_capacity     = 15;
 
     // The greedy fallback consumes only high-confidence detections. ByteTrack
     // needs the low tier for its second association pass.

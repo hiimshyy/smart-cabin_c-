@@ -18,6 +18,9 @@ Environment=FACE_CABIN_ID=2
 Environment="FACE_CAMERA_SELECT=#6"
 Environment=FACE_CABIN_SOCKETIO=1
 Environment=FACE_CABIN_NO_PREVIEW=1
+Environment=FACE_TRAFFIC_DB=/home/orangepi/face_recog_app/db/traffic.db
+Environment=FACE_TRAFFIC_VISITOR_REID=1
+Environment=FACE_TRAFFIC_SAVE_FACES=visitors
 
 ExecStart=/bin/bash -c 'source /home/orangepi/face_recog_app/env.sh && face_cabin'
 

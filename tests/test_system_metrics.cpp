@@ -67,6 +67,18 @@ int main() {
     metrics.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(1150));
     metrics.set_occupancy(4, true);
+    SystemTrafficSnapshot traffic;
+    traffic.enabled              = true;
+    traffic.queue_size           = 3;
+    traffic.dropped              = 1;
+    traffic.open_trips           = 2;
+    traffic.open_calls           = 1;
+    traffic.register_age_ms      = 420;
+    traffic.register_invalid     = 5;
+    traffic.run_counter_mismatch = 1;
+    traffic.visitors_active      = 7;
+    traffic.write_errors         = 2;
+    metrics.set_traffic(traffic);
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     metrics.stop();
     Logger::instance().flush();
@@ -84,15 +96,22 @@ int main() {
 
     bool               saw_disabled_sample = false;
     bool               saw_enabled_sample  = false;
+    bool               saw_traffic_sample  = false;
     std::istringstream lines(log);
     std::string        line;
     while (std::getline(lines, line)) {
         if (line.find("threads=") == std::string::npos) continue;
         if (line.find("occupancy=") == std::string::npos) saw_disabled_sample = true;
         if (line.find("occupancy=4?") != std::string::npos) saw_enabled_sample = true;
+        if (line.find("traffic_q=3") != std::string::npos &&
+            line.find("visitors=7") != std::string::npos &&
+            line.find("traffic_err=2") != std::string::npos) {
+            saw_traffic_sample = true;
+        }
     }
     CHECK(saw_disabled_sample, "system metrics omit occupancy until feature is enabled");
     CHECK(saw_enabled_sample, "system metrics include enabled occupancy state");
+    CHECK(saw_traffic_sample, "system metrics include enabled traffic counters");
     std::printf("\n[test_system_metrics] %d checks, %d failed\n", checks, failed);
     return failed ? 1 : 0;
 }

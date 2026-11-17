@@ -153,6 +153,104 @@ int main() {
     CHECK(parse({"app", "--occupancy-config", "config.json"}).result.invalid_args,
           "occupancy requires person tracker");
     CHECK(resolve_occupancy_state_path(d.cfg).empty(), "disabled occupancy has no state path");
+
+    CHECK(d.cfg.traffic_db_path == nullptr && d.cfg.elevator_slave == 2 &&
+              !d.cfg.traffic_visitor_reid && d.cfg.traffic_save_faces == TrafficSaveFaces::Off &&
+              d.cfg.traffic_retention_days == 730 && d.cfg.visitor_retention_days == 90 &&
+              d.cfg.face_retention_days == 30 && d.cfg.traffic_min_free_mb == 4096 &&
+              d.cfg.traffic_floor_min == 0 && d.cfg.traffic_floor_max == 9 &&
+              d.cfg.traffic_floor_tolerance_ms == 10000 && d.cfg.traffic_run_timeout_ms == 60000 &&
+              d.cfg.traffic_call_confirm_ms == 15000 && d.cfg.traffic_cabin_capacity == 15,
+          "traffic defaults match specification");
+
+    auto traffic_ok = parse({"app",
+                             "--person-model",
+                             "person.nb",
+                             "--occupancy-config",
+                             "config/cabin.json",
+                             "--traffic-db",
+                             "db/traffic.db",
+                             "--elevator-slave",
+                             "3",
+                             "--traffic-visitor-reid",
+                             "1",
+                             "--traffic-save-faces",
+                             "visitors",
+                             "--traffic-retention-days",
+                             "365",
+                             "--visitor-retention-days",
+                             "60",
+                             "--face-retention-days",
+                             "14",
+                             "--traffic-min-free-mb",
+                             "2048",
+                             "--traffic-floor-min",
+                             "1",
+                             "--traffic-floor-max",
+                             "12",
+                             "--traffic-floor-tolerance-ms",
+                             "8000",
+                             "--traffic-run-timeout-ms",
+                             "45000",
+                             "--traffic-call-confirm-ms",
+                             "12000",
+                             "--traffic-cabin-capacity",
+                             "20"});
+    CHECK(!traffic_ok.result.invalid_args && traffic_ok.cfg.traffic_db_path &&
+              std::string(traffic_ok.cfg.traffic_db_path) == "db/traffic.db" &&
+              traffic_ok.cfg.elevator_slave == 3 && traffic_ok.cfg.traffic_visitor_reid &&
+              traffic_ok.cfg.traffic_save_faces == TrafficSaveFaces::Visitors &&
+              traffic_ok.cfg.traffic_retention_days == 365 &&
+              traffic_ok.cfg.visitor_retention_days == 60 &&
+              traffic_ok.cfg.face_retention_days == 14 &&
+              traffic_ok.cfg.traffic_min_free_mb == 2048 && traffic_ok.cfg.traffic_floor_min == 1 &&
+              traffic_ok.cfg.traffic_floor_max == 12 &&
+              traffic_ok.cfg.traffic_floor_tolerance_ms == 8000 &&
+              traffic_ok.cfg.traffic_run_timeout_ms == 45000 &&
+              traffic_ok.cfg.traffic_call_confirm_ms == 12000 &&
+              traffic_ok.cfg.traffic_cabin_capacity == 20,
+          "traffic CLI options parsed");
+
+    auto traffic_all = parse({"app", "--traffic-save-faces", "all"});
+    CHECK(!traffic_all.result.invalid_args &&
+              traffic_all.cfg.traffic_save_faces == TrafficSaveFaces::All,
+          "traffic-save-faces all parsed");
+    CHECK(parse({"app", "--person-model", "person.nb", "--occupancy-config", "config/cabin.json",
+                 "--traffic-db", "db/traffic.db", "--traffic-floor-tolerance-ms", "0"})
+                  .result.invalid_args == false,
+          "zero floor tolerance ms allowed");
+    CHECK(parse({"app", "--traffic-db", "db/traffic.db"}).result.invalid_args,
+          "traffic-db requires occupancy-config");
+    CHECK(parse({"app", "--traffic-db", "--frames", "1"}).result.invalid_args,
+          "option token cannot be traffic-db path");
+    CHECK(parse({"app", "--elevator-slave", "0"}).result.invalid_args,
+          "elevator-slave below 1 rejected");
+    CHECK(parse({"app", "--elevator-slave", "17"}).result.invalid_args,
+          "elevator-slave above 16 rejected");
+    CHECK(parse({"app", "--traffic-visitor-reid", "2"}).result.invalid_args,
+          "traffic-visitor-reid outside 0|1 rejected");
+    CHECK(parse({"app", "--traffic-save-faces", "everyone"}).result.invalid_args,
+          "invalid traffic-save-faces mode rejected");
+    CHECK(parse({"app", "--traffic-retention-days", "0"}).result.invalid_args,
+          "non-positive traffic-retention-days rejected");
+    CHECK(parse({"app", "--visitor-retention-days", "0"}).result.invalid_args,
+          "non-positive visitor-retention-days rejected");
+    CHECK(parse({"app", "--face-retention-days", "0"}).result.invalid_args,
+          "non-positive face-retention-days rejected");
+    CHECK(parse({"app", "--traffic-min-free-mb", "0"}).result.invalid_args,
+          "non-positive traffic-min-free-mb rejected");
+    CHECK(
+        parse({"app", "--traffic-floor-min", "5", "--traffic-floor-max", "4"}).result.invalid_args,
+        "inverted traffic floor range rejected");
+    CHECK(parse({"app", "--traffic-floor-max", "16"}).result.invalid_args,
+          "traffic-floor-max above 15 rejected");
+    CHECK(parse({"app", "--traffic-run-timeout-ms", "0"}).result.invalid_args,
+          "non-positive traffic-run-timeout-ms rejected");
+    CHECK(parse({"app", "--traffic-call-confirm-ms", "0"}).result.invalid_args,
+          "non-positive traffic-call-confirm-ms rejected");
+    CHECK(parse({"app", "--traffic-cabin-capacity", "0"}).result.invalid_args,
+          "non-positive traffic-cabin-capacity rejected");
+
     std::printf("\n[test_app_config] %d checks, %d failed\n", checks, failed);
     return failed ? 1 : 0;
 }

@@ -63,7 +63,7 @@ Spec này mô tả tính năng **Nhật ký di chuyển thang máy** (tập dữ
 ### R3. Chuyến hành khách
 
 1. Mỗi Entry mở một chuyến gắn với một occupant lineage. Exit của cùng lineage đóng chuyến đó.
-2. Tầng vào là tầng của điểm dừng chứa thời điểm Entry. Tầng ra là tầng thực tế của điểm dừng chứa thời điểm Exit. Dung sai giữa video và thanh ghi bằng một chu kỳ gửi của gateway (`--traffic-floor-tolerance-ms`, mặc định 6000), vì mốc tới/rời điểm dừng có thể được nhận trễ tới một chu kỳ.
+2. Tầng vào là tầng của điểm dừng chứa thời điểm Entry. Tầng ra là tầng thực tế của điểm dừng chứa thời điểm Exit. Dung sai giữa video và thanh ghi bằng `--traffic-floor-tolerance-ms` (mặc định 10000 ms, tương ứng ~2 chu kỳ quét của gateway), vì mốc tới/rời điểm dừng và tắt bit gọi tầng có thể lệch từ một đến hai chu kỳ.
 3. Mỗi chuyến ghi: khóa chuyến, giờ vào, giờ ra, tầng vào, tầng ra, loại danh tính (`resident`/`visitor`/`unidentified`), `resident_id`, `visitor_id`, độ tương đồng, tầng đã gọi tự động và kết quả gọi, mask các tầng được bấm trong lúc người đó ở cabin, số chuyến cabin đã đi, gọi tầng ngoài đã được phục vụ ở điểm dừng lúc vào (nếu có, xem R13), mức tin cậy và cờ lý do.
 4. Exit không có Entry tương ứng (ví dụ count khôi phục sau restart) tạo chuyến chỉ có đầu ra: tầng vào để trống, mức tin cậy thấp, cờ `entry_unobserved`.
 5. Entry không có Exit được đóng khi occupancy được reconcile về 0, khi app tắt, hoặc sau `max_trip_ms` (mặc định 15 phút). Tầng ra để trống và gắn cờ `exit_unobserved`.
@@ -140,7 +140,7 @@ Spec này mô tả tính năng **Nhật ký di chuyển thang máy** (tập dữ
    - `--traffic-retention-days`, `--visitor-retention-days`, `--face-retention-days`
    - `--traffic-min-free-mb`
    - `--traffic-floor-min`, `--traffic-floor-max` (mặc định 0 và 9)
-   - `--traffic-floor-tolerance-ms` (mặc định 6000), `--traffic-run-timeout-ms` (mặc định 60000), `--traffic-call-confirm-ms` (mặc định 15000)
+   - `--traffic-floor-tolerance-ms` (mặc định 10000), `--traffic-run-timeout-ms` (mặc định 60000), `--traffic-call-confirm-ms` (mặc định 15000)
    - `--traffic-cabin-capacity` (mặc định 15)
 3. Tính năng cần occupancy đã bật. Nếu không có dữ liệu thanh ghi, chuyến hành khách vẫn được ghi với tầng để trống và cờ `floor_unknown`, kèm cảnh báo lúc khởi động.
 
@@ -163,7 +163,7 @@ Spec này mô tả tính năng **Nhật ký di chuyển thang máy** (tập dữ
 1. Đọc `8215` (chiều lên) và `8225` (chiều xuống). Mỗi bit chuyển 0 → 1 là một lệnh gọi được đăng ký. Bit chuyển 1 → 0 là lệnh gọi được xóa.
 2. Mỗi lệnh gọi ngoài ghi: khóa, tầng, chiều, giờ đăng ký, giờ xóa, điểm dừng đã phục vụ, thời gian chờ và kết quả.
    - Thời gian chờ = giờ cửa mở của điểm dừng phục vụ − giờ đăng ký.
-   - Điểm dừng phục vụ là điểm dừng của thang 2 tại đúng tầng đó, có cửa mở trong khoảng dung sai quanh giờ xóa.
+   - Điểm dừng phục vụ là điểm dừng của thang 2 tại đúng tầng đó có cửa mở mà `cleared_at` nằm trong khoảng `[arrived_at - tol, departed_at + tol]` (đợi tối đa `tol` sau khi xóa bit nếu cabin đang giảm tốc tiến vào tầng).
    - Kết quả: `served` (thang 2 phục vụ), `served_by_car1` (thang 1 dừng ở tầng đó trong khoảng dung sai), `cleared_without_stop` (bit tắt mà không thang nào dừng ở tầng đó), `register_gap`, `shutdown`.
    - Đăng ký và xóa lấy theo slave `-2`. Bản sao trên slave `-1` chỉ dùng để kiểm tra chéo.
 3. Lệnh gọi đã bật sẵn khi app bắt đầu theo dõi (snapshot đầu tiên hoặc sau khi mất dữ liệu) được ghi với cờ `registration_unobserved`. Bản ghi này không dùng để tính thời gian chờ.

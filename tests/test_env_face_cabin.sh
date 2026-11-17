@@ -4,7 +4,9 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 unset FACE_IOT_WS FACE_EVENT_WS FACE_RECORD_DIR FACE_CABIN_ID FACE_CAMERA_SELECT \
-    FACE_CABIN_SOCKETIO FACE_ANIMAL_THR
+    FACE_CABIN_SOCKETIO FACE_ANIMAL_THR FACE_TRAFFIC_DB FACE_ELEVATOR_SLAVE \
+    FACE_TRAFFIC_VISITOR_REID FACE_TRAFFIC_SAVE_FACES FACE_TRAFFIC_FLOOR_MIN \
+    FACE_TRAFFIC_FLOOR_MAX
 source ./env.sh >/dev/null
 
 [ "$FACE_CABIN_LOG_DIR" = "$FACE_ROOT/logs" ]
@@ -13,6 +15,12 @@ source ./env.sh >/dev/null
 [ "$FACE_CAMERA_SELECT" = "#6" ]
 [ "$FACE_CABIN_SOCKETIO" = "0" ]
 [ "$FACE_ANIMAL_THR" = "0.5" ]
+[ -z "$FACE_TRAFFIC_DB" ]
+[ "$FACE_ELEVATOR_SLAVE" = "2" ]
+[ "$FACE_TRAFFIC_VISITOR_REID" = "0" ]
+[ "$FACE_TRAFFIC_SAVE_FACES" = "off" ]
+[ "$FACE_TRAFFIC_FLOOR_MIN" = "0" ]
+[ "$FACE_TRAFFIC_FLOOR_MAX" = "9" ]
 [ -z "$FACE_IOT_WS" ]
 [ -z "$FACE_RECORD_DIR" ]
 
@@ -80,6 +88,18 @@ done
 [ "$found_record" -eq 0 ] || { echo "FAIL: recording should match disabled service default"; exit 1; }
 [ "$found_animal_thr" -eq 1 ] || { echo "FAIL: --animal-thr argv missing"; exit 1; }
 
+found_traffic=0
+for ((i = 0; i < ${#ARGS[@]}; ++i)); do
+    if [ "${ARGS[$i]}" = "--traffic-db" ]; then found_traffic=1; fi
+done
+[ "$found_traffic" -eq 0 ] || { echo "FAIL: --traffic-db must be disabled by default"; exit 1; }
+
+export FACE_TRAFFIC_DB="$MOCK/traffic db/traffic.db"
+export FACE_ELEVATOR_SLAVE=7
+export FACE_TRAFFIC_VISITOR_REID=1
+export FACE_TRAFFIC_SAVE_FACES=visitors
+export FACE_TRAFFIC_FLOOR_MIN=0
+export FACE_TRAFFIC_FLOOR_MAX=9
 export FACE_CABIN_SOCKETIO=1
 export FACE_TEST_ARGV="$MOCK/service-argv"
 SERVICE_OUT="$(face_cabin)"
@@ -89,13 +109,37 @@ if printf '%s' "$SERVICE_OUT" | grep -Eq 'rtsp://|fake-user|fake-secret|camera\.
 fi
 mapfile -t SERVICE_ARGS < "$FACE_TEST_ARGV"
 service_iot=0
+service_traffic_db=0
+service_slave=0
+service_reid=0
+service_faces=0
 for ((i = 0; i < ${#SERVICE_ARGS[@]}; ++i)); do
     if [ "${SERVICE_ARGS[$i]}" = "--iot-ws" ] &&
        [ "${SERVICE_ARGS[$((i + 1))]}" = "ws://127.0.0.1:3000" ]; then
         service_iot=1
     fi
+    if [ "${SERVICE_ARGS[$i]}" = "--traffic-db" ] &&
+       [ "${SERVICE_ARGS[$((i + 1))]}" = "$MOCK/traffic db/traffic.db" ]; then
+        service_traffic_db=1
+    fi
+    if [ "${SERVICE_ARGS[$i]}" = "--elevator-slave" ] &&
+       [ "${SERVICE_ARGS[$((i + 1))]}" = "7" ]; then
+        service_slave=1
+    fi
+    if [ "${SERVICE_ARGS[$i]}" = "--traffic-visitor-reid" ] &&
+       [ "${SERVICE_ARGS[$((i + 1))]}" = "1" ]; then
+        service_reid=1
+    fi
+    if [ "${SERVICE_ARGS[$i]}" = "--traffic-save-faces" ] &&
+       [ "${SERVICE_ARGS[$((i + 1))]}" = "visitors" ]; then
+        service_faces=1
+    fi
 done
 [ "$service_iot" -eq 1 ] || { echo "FAIL: production Socket.IO argv missing"; exit 1; }
+[ "$service_traffic_db" -eq 1 ] || { echo "FAIL: --traffic-db argv missing"; exit 1; }
+[ "$service_slave" -eq 1 ] || { echo "FAIL: --elevator-slave argv missing"; exit 1; }
+[ "$service_reid" -eq 1 ] || { echo "FAIL: --traffic-visitor-reid argv missing"; exit 1; }
+[ "$service_faces" -eq 1 ] || { echo "FAIL: --traffic-save-faces argv missing"; exit 1; }
 grep -q '^Environment=FACE_CABIN_SOCKETIO=1$' "$ROOT/face-recog-app.service"
 if grep -q '^Environment=FACE_IOT_WS=$' "$ROOT/face-recog-app.service"; then
     echo "FAIL: service unit must not erase EnvironmentFile Socket.IO endpoint"

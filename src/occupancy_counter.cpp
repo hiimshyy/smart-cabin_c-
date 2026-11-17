@@ -118,6 +118,18 @@ OccupancyCounter::OccupancyCounter(OccupancyConfig config, OccupancyState initia
     }
 }
 
+std::vector<std::pair<int, std::uint64_t>> OccupancyCounter::collect_track_occupants() const {
+    std::vector<std::pair<int, std::uint64_t>> out;
+    for (const auto& kv : tracks_) {
+        if (kv.second.occupancy_assigned) {
+            out.emplace_back(kv.first, kv.second.occupant_id);
+        }
+    }
+    std::sort(out.begin(), out.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return out;
+}
+
 void OccupancyCounter::set_uncertain(const char* /*reason*/) {
     confidence_ = OccupancyConfidence::Uncertain;
 }
@@ -164,6 +176,7 @@ bool OccupancyCounter::try_transfer_ghost(int track_id, float nx, float ny, doub
     state.entry_candidate    = ghost.entry_candidate;
     state.exit_candidate     = ghost.exit_candidate;
     state.occupancy_assigned = ghost.occupancy_assigned;
+    state.occupant_id        = ghost.occupant_id;
     state.start_proj         = ghost.start_proj;
     state.extremum_proj      = ghost.extremum_proj;
     state.last_nx            = nx;
@@ -189,6 +202,7 @@ void OccupancyCounter::handle_track_lost(const TrackState& state, double now_ms)
     ghost.entry_candidate    = state.entry_candidate;
     ghost.exit_candidate     = state.exit_candidate;
     ghost.occupancy_assigned = state.occupancy_assigned;
+    ghost.occupant_id        = state.occupant_id;
     ghost.start_proj         = state.start_proj;
     ghost.extremum_proj      = state.extremum_proj;
     ghost.last_nx            = state.last_nx;
@@ -208,6 +222,7 @@ OccupancySnapshot OccupancyCounter::update(const std::vector<TrackView>& tracks,
         set_uncertain("frame invalid / RTSP outage");
         snapshot.count               = count_;
         snapshot.confidence          = confidence_;
+        snapshot.track_occupants     = collect_track_occupants();
         snapshot.pipeline_unreliable = true;
         notify_if_changed(previous_count, previous_confidence);
         return snapshot;
@@ -216,6 +231,7 @@ OccupancySnapshot OccupancyCounter::update(const std::vector<TrackView>& tracks,
         set_uncertain("invalid counting-zone geometry");
         snapshot.count               = count_;
         snapshot.confidence          = confidence_;
+        snapshot.track_occupants     = collect_track_occupants();
         snapshot.pipeline_unreliable = true;
         notify_if_changed(previous_count, previous_confidence);
         return snapshot;
@@ -239,6 +255,32 @@ OccupancySnapshot OccupancyCounter::update(const std::vector<TrackView>& tracks,
             reliable_observations.push_back(
                 {track.id, foot_point_norm(track.box, frame_w, frame_h)});
         }
+    }
+
+    // Restore a track that temporarily went Lost/predicted_only under the SAME
+    // track.id before running spatial-only ghost/ambiguity matching.
+    for (const ReliableObservation& observation : reliable_observations) {
+        if (tracks_.find(observation.id) != tracks_.end()) continue;
+        auto git = std::find_if(ghosts_.begin(), ghosts_.end(), [&](const Ghost& ghost) {
+            return ghost.track_id == observation.id;
+        });
+        if (git == ghosts_.end()) continue;
+        const Ghost ghost = *git;
+        TrackState  state;
+        state.track_id           = ghost.track_id;
+        state.side               = ghost.side;
+        state.in_zone            = ghost.in_zone;
+        state.entry_candidate    = ghost.entry_candidate;
+        state.exit_candidate     = ghost.exit_candidate;
+        state.occupancy_assigned = ghost.occupancy_assigned;
+        state.occupant_id        = ghost.occupant_id;
+        state.start_proj         = ghost.start_proj;
+        state.extremum_proj      = ghost.extremum_proj;
+        state.last_nx            = ghost.last_nx;
+        state.last_ny            = ghost.last_ny;
+        state.last_seen_ms       = ghost.expired_at_ms - GHOST_TIMEOUT_MS;
+        tracks_.emplace(state.track_id, state);
+        ghosts_.erase(git);
     }
 
     std::vector<int> missing_ids;
@@ -440,15 +482,18 @@ OccupancySnapshot OccupancyCounter::update(const std::vector<TrackView>& tracks,
                 if (skipped_entry && !state.occupancy_assigned) {
                     ++count_;
                     state.occupancy_assigned = true;
+                    state.occupant_id        = next_occupant_id_++;
                     confidence_              = OccupancyConfidence::Certain;
-                    snapshot.events.push_back(
-                        {OccupancyEventDirection::Entry, track.id, timestamp_ms});
+                    snapshot.events.push_back({OccupancyEventDirection::Entry, track.id,
+                                               timestamp_ms, state.occupant_id});
                 } else if (skipped_exit && state.occupancy_assigned && count_ > 0) {
                     --count_;
-                    state.occupancy_assigned = false;
-                    confidence_              = OccupancyConfidence::Certain;
+                    const std::uint64_t exiting_occupant = state.occupant_id;
+                    state.occupancy_assigned             = false;
+                    state.occupant_id                    = 0;
+                    confidence_                          = OccupancyConfidence::Certain;
                     snapshot.events.push_back(
-                        {OccupancyEventDirection::Exit, track.id, timestamp_ms});
+                        {OccupancyEventDirection::Exit, track.id, timestamp_ms, exiting_occupant});
                 } else {
                     set_uncertain("skipped crossing has no matching occupancy assignment");
                 }
@@ -489,9 +534,10 @@ OccupancySnapshot OccupancyCounter::update(const std::vector<TrackView>& tracks,
                     if (!state.occupancy_assigned) {
                         ++count_;
                         state.occupancy_assigned = true;
+                        state.occupant_id        = next_occupant_id_++;
                         confidence_              = OccupancyConfidence::Certain;
-                        snapshot.events.push_back(
-                            {OccupancyEventDirection::Entry, track.id, timestamp_ms});
+                        snapshot.events.push_back({OccupancyEventDirection::Entry, track.id,
+                                                   timestamp_ms, state.occupant_id});
                     } else {
                         set_uncertain("entry observed for an already assigned track");
                     }
@@ -512,12 +558,15 @@ OccupancySnapshot OccupancyCounter::update(const std::vector<TrackView>& tracks,
                 if (displacement >= geometry.displacement_threshold) {
                     if (state.occupancy_assigned && count_ > 0) {
                         --count_;
-                        state.occupancy_assigned = false;
-                        confidence_              = OccupancyConfidence::Certain;
-                        snapshot.events.push_back(
-                            {OccupancyEventDirection::Exit, track.id, timestamp_ms});
+                        const std::uint64_t exiting_occupant = state.occupant_id;
+                        state.occupancy_assigned             = false;
+                        state.occupant_id                    = 0;
+                        confidence_                          = OccupancyConfidence::Certain;
+                        snapshot.events.push_back({OccupancyEventDirection::Exit, track.id,
+                                                   timestamp_ms, exiting_occupant});
                     } else {
                         state.occupancy_assigned = false;
+                        state.occupant_id        = 0;
                         set_uncertain("exit observed for an unassigned track");
                     }
                 } else {
@@ -540,6 +589,7 @@ OccupancySnapshot OccupancyCounter::update(const std::vector<TrackView>& tracks,
     if (tracking_unreliable) set_uncertain("tracking unreliable / door degraded");
     snapshot.count               = count_;
     snapshot.confidence          = confidence_;
+    snapshot.track_occupants     = collect_track_occupants();
     snapshot.pipeline_unreliable = tracking_unreliable || prediction_only_seen;
     notify_if_changed(previous_count, previous_confidence);
     return snapshot;

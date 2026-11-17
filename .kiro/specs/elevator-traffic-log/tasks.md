@@ -12,38 +12,38 @@ Thứ tự đi từ dưới lên: parse thanh ghi và timeline (giai đoạn 1),
   - [x] 0.1 Trả lời câu hỏi mở 1–5 (xem "Quyết định đã chốt" trong `requirements.md`).
   - [x] 0.2 Ghi mẫu `CONN_DATA` 10 phút bằng client chỉ đọc (03/11/2026, 14:49–14:59). Đã xác nhận định dạng, chu kỳ gửi (~5,6 s/slave, chỉ gửi giá trị đổi), cách quy đổi tầng (`8465 − 1` = bit `n`), gọi ngoài dùng chung cho nhóm thang, và phát hiện chuyến chạy khớp `8448`. Script và dữ liệu ở `.agents/tasks/elevator-traffic-log/`.
   - [ ] 0.3 (Giai đoạn 0b) Ghi mẫu dài hơn (gợi ý 2 giờ cao điểm buổi sáng), cũng chỉ đọc, để: quan sát ít nhất một lệnh gọi tự động `8193-2` làm bật bit `8211` tương ứng; xem có `8465 = 1` (tầng B) và `8465 = 10` (tầng 9); đo tỉ lệ Entry/Exit của bộ đếm so với số lệnh gọi trong cabin.
-  - [ ] 0.4 Chép bản ghi mẫu 10 phút thành fixture `tests/fixtures/conn_data_20261103.jsonl` (chỉ giá trị thanh ghi và device code).
+  - [x] 0.4 Chép bản ghi mẫu 10 phút thành fixture `tests/fixtures/conn_data_20261103.jsonl` (chỉ giá trị thanh ghi và device code).
 
-- [ ] 1. Thanh ghi, timeline, lệnh gọi
-  - [ ] 1.1 Viết `src/elevator_registers.h/.cpp` + `tests/test_elevator_registers.cpp`: parser nhiều thanh ghi và nhiều slave, quy đổi tầng, decode bit, từ chối giá trị sai.
-  - [ ] 1.2 Sửa `socketio_client`: `RegisterCallback` mang session, subscribe khi bật door hoặc traffic, giữ nguyên `DoorCallback` và test hiện có.
-  - [ ] 1.3 Viết `src/elevator_state.h/.cpp` + `tests/test_elevator_state.cpp`: `ElevatorStateTracker`, `RegisterInbox`, `CabinTimeline` cho từng slave; quy tắc gap (session, inbox tràn, `run_timeout`); so khớp `8448`; replay fixture.
-  - [ ] 1.4 Viết `src/call_tracker.h/.cpp` + `tests/test_call_tracker.cpp`: gọi trong cabin (R14), gọi ngoài (R13) có phân bổ cho thang 1, xác nhận lệnh gọi tự động; replay fixture.
+- [x] 1. Thanh ghi, timeline, lệnh gọi
+  - [x] 1.1 Viết `src/elevator_registers.h/.cpp` + `tests/test_elevator_registers.cpp`: parser nhiều thanh ghi và nhiều slave, quy đổi tầng, decode bit, từ chối giá trị sai.
+  - [x] 1.2 Sửa `socketio_client`: `RegisterCallback` mang session, subscribe khi bật door hoặc traffic, giữ nguyên `DoorCallback` và test hiện có.
+  - [x] 1.3 Viết `src/elevator_state.h/.cpp` + `tests/test_elevator_state.cpp`: `ElevatorStateTracker`, `RegisterInbox`, `CabinTimeline` cho từng slave; quy tắc gap (session, inbox tràn, `run_timeout`); so khớp `8448`; replay fixture.
+  - [x] 1.4 Viết `src/call_tracker.h/.cpp` + `tests/test_call_tracker.cpp`: gọi trong cabin (R14), gọi ngoài (R13) có phân bổ cho thang 1, xác nhận lệnh gọi tự động; replay fixture.
 
-- [ ] 2. Lineage của occupancy
-  - [ ] 2.1 Thêm `occupant_id` vào `OccupancyEvent`, `TrackState`, `Ghost`; thêm `track_occupants` vào `OccupancySnapshot`. Bổ sung test lineage. Toàn bộ `test_occupancy_counter` hiện có phải pass mà không sửa assertion.
+- [x] 2. Lineage của occupancy
+  - [x] 2.1 Thêm `occupant_id` vào `OccupancyEvent`, `TrackState`, `Ghost`; thêm `track_occupants` vào `OccupancySnapshot`. Bổ sung test lineage. Toàn bộ `test_occupancy_counter` hiện có phải pass mà không sửa assertion.
 
-- [ ] 3. Ghép chuyến
-  - [ ] 3.1 Viết `src/trip_assembler.h/.cpp` + `tests/test_trip_assembler.cpp`: gán tầng có dung sai 6 s, gắn gọi ngoài/gọi trong cabin, danh tính trước Entry, `identity_conflict`, `load_implausible`, timeout/reconcile/shutdown, giới hạn bộ nhớ.
+- [x] 3. Ghép chuyến
+  - [x] 3.1 Viết `src/trip_assembler.h/.cpp` + `tests/test_trip_assembler.cpp`: gán tầng có dung sai 10 s, gắn gọi ngoài/gọi trong cabin, danh tính trước Entry, `identity_conflict`, `load_implausible`, timeout/reconcile/shutdown, giới hạn bộ nhớ.
 
-- [ ] 4. Lưu trữ
-  - [ ] 4.1 Viết `db/traffic_schema.sql`, `src/traffic_db.h/.cpp` + `tests/test_traffic_db.cpp`: schema (gồm `car_calls`, `hall_calls`), insert theo lô, purge, export CSV có nhãn tầng, thao tác admin và audit.
-  - [ ] 4.2 Viết `src/visitor_gallery.h/.cpp` + `tests/test_visitor_gallery.cpp`.
-  - [ ] 4.3 Viết `src/traffic_log_writer.h/.cpp` + `tests/test_traffic_log_writer.cpp`: queue drop-oldest, disk guard, JPEG `0600`, flush khi tắt.
+- [x] 4. Lưu trữ
+  - [x] 4.1 Viết `db/traffic_schema.sql`, `src/traffic_db.h/.cpp` + `tests/test_traffic_db.cpp`: schema (gồm `car_calls`, `hall_calls`), insert theo lô, purge, export CSV có nhãn tầng, thao tác admin và audit.
+  - [x] 4.2 Viết `src/visitor_gallery.h/.cpp` + `tests/test_visitor_gallery.cpp`.
+  - [x] 4.3 Viết `src/traffic_log_writer.h/.cpp` + `tests/test_traffic_log_writer.cpp`: queue drop-oldest, disk guard, JPEG `0600`, flush khi tắt.
 
-- [ ] 5. Tích hợp
-  - [ ] 5.1 Thêm tham số CLI vào `app_config` và `env.sh`; cập nhật `test_app_config` và `test_env_face_cabin.sh`.
-  - [ ] 5.2 Tích hợp `main.cpp`: thứ tự frame boundary như trong design, nhánh không có frame, `match(emb, -1)` để lấy resident gần nhất, inbox cho floor-call decision, metrics, shutdown.
-  - [ ] 5.3 Cập nhật `Makefile` (binary `traffic_admin`), `tests/run_tests.sh`, `.gitignore` (nếu thêm đường dẫn mới).
+- [x] 5. Tích hợp
+  - [x] 5.1 Thêm tham số CLI vào `app_config` và `env.sh`; cập nhật `test_app_config` và `test_env_face_cabin.sh`.
+  - [x] 5.2 Tích hợp `main.cpp`: thứ tự frame boundary như trong design, nhánh không có frame, `match(emb, -1)` để lấy resident gần nhất, inbox cho floor-call decision, metrics, shutdown.
+  - [x] 5.3 Cập nhật `Makefile` (binary `traffic_admin`), `tests/run_tests.sh`, `.gitignore` (nếu thêm đường dẫn mới).
 
-- [ ] 6. Công cụ quản trị
-  - [ ] 6.1 Viết `src/traffic_admin.cpp`: `visitors list|show`, `merge`, `delete`, `promote` (resident mới hoặc có sẵn), `suggest`, `export`. Có xác nhận và audit. Test các lệnh ghi trên DB tạm. Người dùng là quản lý hoặc dev, nên mỗi lệnh có `--help` và ví dụ.
+- [x] 6. Công cụ quản trị
+  - [x] 6.1 Viết `src/traffic_admin.cpp`: `visitors list|show`, `merge`, `delete`, `promote` (resident mới hoặc có sẵn), `suggest`, `export`. Có xác nhận và audit. Test các lệnh ghi trên DB tạm. Người dùng là quản lý hoặc dev, nên mỗi lệnh có `--help` và ví dụ.
 
 - [ ] 7. Kiểm chứng
   - [ ] 7.1 Hiệu chỉnh `visitor_match_thr` trên các recording đã có: đo tỉ lệ gộp nhầm và tách nhầm, chốt giá trị mặc định.
-  - [ ] 7.2 Chạy `bash tests/run_tests.sh`, `make -j4`, `make format-check` và clang-tidy cho các file đã sửa.
+  - [x] 7.2 Chạy `bash tests/run_tests.sh`, `make -j4`, `make format-check` và clang-tidy cho các file đã sửa.
   - [ ] 7.3 Live test 1 ngày: đối chiếu số chuyến cabin với chênh lệch `8448`/`8449`; kiểm tra tầng vào/ra thủ công trên ít nhất 20 chuyến hành khách; kiểm tra thời gian chờ trên ít nhất 10 lệnh gọi ngoài.
-  - [ ] 7.4 Viết hướng dẫn vận hành trong `README.md`: bật/tắt tính năng, export, sao lưu `traffic.db`, xác minh danh tính, checklist pháp lý trước khi bật nhận lại visitor và lưu ảnh.
+  - [x] 7.4 Viết hướng dẫn vận hành trong `README.md`: bật/tắt tính năng, export, sao lưu `traffic.db`, xác minh danh tính, checklist pháp lý trước khi bật nhận lại visitor và lưu ảnh.
 
 ## Notes
 

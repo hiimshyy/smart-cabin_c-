@@ -230,6 +230,16 @@ SystemOccupancySnapshot SystemMetrics::occupancy_snapshot() const {
             (packed & UNCERTAIN_BIT) != 0};
 }
 
+void SystemMetrics::set_traffic(const SystemTrafficSnapshot& snapshot) {
+    std::lock_guard<std::mutex> lock(traffic_mtx_);
+    traffic_snapshot_ = snapshot;
+}
+
+SystemTrafficSnapshot SystemMetrics::traffic_snapshot() const {
+    std::lock_guard<std::mutex> lock(traffic_mtx_);
+    return traffic_snapshot_;
+}
+
 void SystemMetrics::worker_loop() {
     HostSample previous;
     bool       have_previous = read_host(storage_path_, previous);
@@ -294,6 +304,22 @@ void SystemMetrics::worker_loop() {
             message_len +=
                 std::snprintf(message + message_len, sizeof(message) - message_len,
                               " occupancy=%d%s", occupancy.count, occupancy.uncertain ? "?" : "");
+        }
+        const SystemTrafficSnapshot traffic = traffic_snapshot();
+        if (traffic.enabled && message_len < static_cast<int>(sizeof(message))) {
+            const int added = std::snprintf(
+                message + message_len, sizeof(message) - message_len,
+                " traffic_q=%zu traffic_drop=%llu open_trips=%zu open_calls=%zu "
+                "reg_age_ms=%lld reg_inv=%llu run_mismatch=%llu visitors=%llu traffic_err=%llu",
+                traffic.queue_size, (unsigned long long)traffic.dropped, traffic.open_trips,
+                traffic.open_calls, (long long)traffic.register_age_ms,
+                (unsigned long long)traffic.register_invalid,
+                (unsigned long long)traffic.run_counter_mismatch,
+                (unsigned long long)traffic.visitors_active,
+                (unsigned long long)traffic.write_errors);
+            if (added > 0) {
+                message_len = std::min<int>(sizeof(message) - 1, message_len + added);
+            }
         }
         if (memory_high) {
             message_len +=
