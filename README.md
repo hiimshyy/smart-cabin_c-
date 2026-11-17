@@ -17,10 +17,8 @@ KHÔNG trung bình), `home_floor`, `greeting_name`, và audit log `match_events`
 Quy trình khởi tạo (sau `source env.sh`):
 
 ```bash
-# Cách A — enroll từ folder ảnh thẳng vào SQLite (mỗi ảnh 1 embedding):
+# Enroll từ folder ảnh thẳng vào SQLite (mỗi ảnh 1 embedding):
 face_enroll faces db/residents.db
-# Cách B — migrate từ .fdb cũ:
-face_migrate db/faces_all.fdb db/residents.db
 
 face_set_floor "Cao Tien Sy" 7 "anh Sy"   # điền tầng + tên chào
 face_cabin                                 # chạy realtime vận hành
@@ -321,8 +319,8 @@ production, đơn vị vận hành phải hoàn tất:
 ## Build
 
 ```bash
-make -j4          # → face_recog_app, enroll_faces, capture_person, add_person, probe_models, migrate_fdb, traffic_admin
-make clean        # xóa build/ và 7 binary
+make -j4          # → face_recog_app, enroll_faces, capture_person, add_person, probe_models, traffic_admin
+make clean        # xóa build/ và 6 binary
 ```
 
 Yêu cầu:

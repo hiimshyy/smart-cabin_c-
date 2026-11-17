@@ -26,10 +26,8 @@
 #   face_bench_lite [N]          — bench SCRFD-only (USB)
 #   face_bench_rtsp URL [N]      — bench RTSP
 #
-#   --- Legacy / 1 lần ---
-#   face_migrate [FDB] [DB]      — import .fdb cũ → SQLite (đã migrate xong; giữ để khôi phục)
-#
-#   face_ls                      — liệt kê DB (.fdb + .db) và enroll folders
+#   --- Tiện ích ---
+#   face_ls                      — liệt kê DB (.db) và enroll folders
 #   face_help                    — in help này
 
 # ---- Path setup ----
@@ -435,23 +433,8 @@ face_bench_rtsp() {
 }
 
 # ============================================================
-#  Legacy / 1 lần
+#  Tiện ích
 # ============================================================
-
-# Import .fdb cũ → SQLite residents.db. ĐÃ migrate xong; giữ lại để khôi phục
-# hoặc nhập một .fdb khác. Enroll/add hiện ghi thẳng SQLite, KHÔNG cần .fdb.
-face_migrate() {
-    if [ -z "$1" ]; then
-        echo "Usage: face_migrate FDB [DB]   (legacy — .fdb đã migrate xong)"
-        echo "Example: face_migrate db/faces_all.fdb $FACE_RESIDENT_DB"
-        return 1
-    fi
-    local fdb="$1"
-    local db="${2:-$FACE_RESIDENT_DB}"
-    shift 2 2>/dev/null
-    (cd "$FACE_ROOT" && ./migrate_fdb --fdb "$fdb" --db "$db" \
-        --schema "$FACE_SCHEMA" "$@")
-}
 
 face_ls() {
     echo "DB files in $FACE_DB_DIR:"
@@ -504,9 +487,8 @@ face_help() {
    face_bench_lite [N]            Bench SCRFD-only (USB)
    face_bench_rtsp URL [N]        Bench RTSP
 
- ── Legacy / 1 lần ──
-   face_migrate FDB [DB]          Import .fdb cũ → SQLite (đã migrate xong)
-   face_ls                        Liệt kê DB (.fdb+.db) và enroll folders
+ ── Tiện ích ──
+   face_ls                        Liệt kê DB (.db) và enroll folders
 
  ── Model default ──
    detect: model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb (SCRFD)

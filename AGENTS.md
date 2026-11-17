@@ -5,7 +5,7 @@ This file provides guidance to the AI agent when working with code in this repos
 ## Build and test
 
 - Run all commands from the repo root: model paths, `db/schema.sql`, `logs/`, `recordings/` are relative.
-- `make -j4` builds six binaries: `face_recog_app`, `enroll_faces`, `capture_person`, `add_person`, `probe_models`, `migrate_fdb`. `AI_SDK` is hardcoded to `/home/orangepi/ai-sdk`.
+- `make -j4` builds six binaries: `face_recog_app`, `enroll_faces`, `capture_person`, `add_person`, `probe_models`, `traffic_admin`. `AI_SDK` is hardcoded to `/home/orangepi/ai-sdk`.
 - `bash tests/run_tests.sh` builds and runs all tests (custom harness, no framework). Each test is a standalone `main()` registered manually in that script; outputs go to `/tmp/scabin_tests`. To run one test, copy its `g++` block from `run_tests.sh`.
 - SQLite-backed tests take `db/schema.sql` as `argv[1]` and are skipped (as failures) without sqlite3 headers; fallback is `bash tests/_setup_sqlite_local.sh`.
 - Style tooling: `make format-check` (clang-format, config in `.clang-format`) and `make lint` (clang-tidy on app sources, config in `.clang-tidy`). Neither is part of `all`; both need `clang-format`/`clang-tidy` installed via apt. Format only files you touched — never reformat the whole repo inside a feature change. Full `make lint` takes minutes, so lint the changed file during iteration (`clang-tidy <file>.cpp -- -std=c++17 -Isrc $(pkg-config --cflags opencv4)`).

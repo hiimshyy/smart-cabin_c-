@@ -15,7 +15,6 @@ tests/*.out
 /capture_person
 /add_person
 /probe_models
-/migrate_fdb
 /traffic_admin
 
 # Runtime data (mỗi user có dataset riêng)

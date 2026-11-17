@@ -27,8 +27,7 @@ RECOG_SRCS  := $(SRC_DIR)/face_align.cpp \
                $(SRC_DIR)/face_db.cpp
 
 # Resident data layer (spec resident-db-layer): SQLite wrapper +
-# multi-embedding matcher. Linked into the realtime app; migrate_fdb
-# reuses these too. Requires libsqlite3-dev (apt: libsqlite3-dev).
+# multi-embedding matcher. Linked into the realtime app. Requires libsqlite3-dev.
 DB_SRCS     := $(SRC_DIR)/resident_db.cpp \
                $(SRC_DIR)/resident_catalog.cpp \
                $(SRC_DIR)/match_engine.cpp \
@@ -68,13 +67,6 @@ CAPTURE_SRCS_CPP := $(SRC_DIR)/capture_person.cpp $(COMMON_SRCS)
 ADD_SRCS_CPP     := $(SRC_DIR)/add_person.cpp     $(COMMON_SRCS) \
                     $(SRC_DIR)/face_align.cpp $(SRC_DIR)/face_recog.cpp \
                     $(SRC_DIR)/resident_db.cpp $(SRC_DIR)/resident_enroll.cpp
-
-# migrate_fdb: one-way .fdb -> SQLite importer. Needs only face_db (pure I/O)
-# + resident_db (sqlite3). NO NPU/AI SDK, NO OpenCV — builds on a dev machine.
-MIGRATE_SRCS_CPP := $(SRC_DIR)/migrate_fdb.cpp \
-                    $(SRC_DIR)/face_db.cpp \
-                    $(SRC_DIR)/resident_db.cpp \
-                    $(SRC_DIR)/log/logger.cpp
 
 TRAFFIC_ADMIN_SRCS_CPP := $(SRC_DIR)/traffic_admin.cpp \
                           $(SRC_DIR)/traffic_db.cpp \
@@ -116,20 +108,19 @@ APP_OBJS     := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(APP_SRCS_CPP))
 ENROLL_OBJS  := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(ENROLL_SRCS_CPP))
 CAPTURE_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CAPTURE_SRCS_CPP))
 ADD_OBJS     := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(ADD_SRCS_CPP))
-MIGRATE_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(MIGRATE_SRCS_CPP))
 TRAFFIC_ADMIN_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(TRAFFIC_ADMIN_SRCS_CPP))
 SDK_OBJS     := $(patsubst $(AI_SDK)/%.c,$(BUILD_DIR)/sdk_%.o,$(SDK_SRCS_C))
 
 # Header dependency tracking. Without .d files, changing a shared struct such
 # as EmbeddingRow can leave old and new object ABIs linked into one binary.
-ALL_OBJS := $(sort $(APP_OBJS) $(ENROLL_OBJS) $(CAPTURE_OBJS) $(ADD_OBJS) $(MIGRATE_OBJS) $(TRAFFIC_ADMIN_OBJS) $(SDK_OBJS))
+ALL_OBJS := $(sort $(APP_OBJS) $(ENROLL_OBJS) $(CAPTURE_OBJS) $(ADD_OBJS) $(TRAFFIC_ADMIN_OBJS) $(SDK_OBJS))
 DEPS     := $(ALL_OBJS:.o=.d)
 -include $(DEPS)
 
 # ---- Rules ----
 .PHONY: all clean run format format-check lint
 
-all: $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb traffic_admin
+all: $(TARGET) enroll_faces capture_person add_person probe_models traffic_admin
 
 $(TARGET): $(APP_OBJS) $(SDK_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
@@ -149,11 +140,6 @@ add_person: $(ADD_OBJS) $(SDK_OBJS)
 
 probe_models: $(BUILD_DIR)/probe_models.o $(SDK_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
-	@echo "==> Built $@"
-
-# No SDK_OBJS, no OpenCV/VIPhal — just sqlite3 + pthread.
-migrate_fdb: $(MIGRATE_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^ -lsqlite3 -lpthread -lstdc++fs
 	@echo "==> Built $@"
 
 traffic_admin: $(TRAFFIC_ADMIN_OBJS)
@@ -185,7 +171,7 @@ lint:
 	clang-tidy $(APP_SRCS_CPP) -- $(CXXFLAGS) $(INCLUDES)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person probe_models migrate_fdb traffic_admin
+	rm -rf $(BUILD_DIR) $(TARGET) enroll_faces capture_person add_person probe_models traffic_admin
 
 run: $(TARGET)
 	./$(TARGET) model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb
