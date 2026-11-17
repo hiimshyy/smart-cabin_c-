@@ -323,12 +323,14 @@ int main(int argc, char** argv) {
     // Resident-DB (operational) mode plumbing. When resident_db_path is set,
     // matching goes through MatchEngine (multi-embedding) instead of the .fdb
     // FaceDB, interaction sessions are tracked, and match_events are logged.
-    ResidentDB                            resident_db;
-    ResidentCatalogReloader               catalog_reloader;
-    MatchEngine                           match_engine;
-    InteractionManager                    interaction;
-    std::atomic<bool>                     register_capture_enabled{cfg.traffic_db_path != nullptr &&
-                                               cfg.traffic_db_path[0] != '\0'};
+    ResidentDB              resident_db;
+    ResidentCatalogReloader catalog_reloader;
+    MatchEngine             match_engine;
+    InteractionManager      interaction;
+    std::atomic<bool>       register_capture_enabled{
+        (cfg.traffic_db_path != nullptr && cfg.traffic_db_path[0] != '\0') ||
+        (cfg.iot_ws != nullptr && cfg.iot_ws[0] != '\0')};
+    std::atomic<bool>                     traffic_capture_enabled{false};
     RegisterInbox                         register_inbox(256);
     FloorDecisionInbox                    floor_decision_inbox;
     std::unique_ptr<EdgeClient>           edge;       // nullptr unless --edge-socket given
@@ -476,19 +478,20 @@ int main(int argc, char** argv) {
             // inference thread; confirmed outcomes only enqueue a home_floor value.
             if (cfg.iot_ws && cfg.iot_ws[0]) {
                 SocketIoConfig sc;
-                sc.endpoint           = cfg.iot_ws;
-                sc.device_code        = cfg.iot_device_code;
-                sc.floor_address      = cfg.iot_floor_address;
-                sc.request_id         = cfg.iot_request_id;
-                sc.reconnect_min_ms   = eff.reconnect_min_ms;
-                sc.reconnect_max_ms   = eff.reconnect_max_ms;
-                sc.command_max_age_ms = cfg.floor_command_ttl_ms;
-                sc.ack_timeout_ms     = cfg.floor_ack_timeout_ms;
-                const bool subscribe_registers =
-                    (cfg.traffic_db_path != nullptr && cfg.traffic_db_path[0] != '\0');
-                sc.subscribe_door      = cfg.adaptive_inference && use_tracker;
-                sc.subscribe_registers = subscribe_registers;
-                iot_socket             = std::make_unique<SocketIoClient>(std::move(sc));
+                sc.endpoint                    = cfg.iot_ws;
+                sc.device_code                 = cfg.iot_device_code;
+                sc.floor_address               = cfg.iot_floor_address;
+                sc.request_id                  = cfg.iot_request_id;
+                sc.reconnect_min_ms            = eff.reconnect_min_ms;
+                sc.reconnect_max_ms            = eff.reconnect_max_ms;
+                sc.command_max_age_ms          = cfg.floor_command_ttl_ms;
+                sc.ack_timeout_ms              = cfg.floor_ack_timeout_ms;
+                const bool has_iot_ws          = (cfg.iot_ws && cfg.iot_ws[0]);
+                const bool subscribe_registers = has_iot_ws || (cfg.traffic_db_path != nullptr &&
+                                                                cfg.traffic_db_path[0] != '\0');
+                sc.subscribe_door              = cfg.adaptive_inference && use_tracker;
+                sc.subscribe_registers         = subscribe_registers;
+                iot_socket                     = std::make_unique<SocketIoClient>(std::move(sc));
                 if (cfg.adaptive_inference && use_tracker) {
                     iot_socket->set_door_callback([&](const DoorRegisterSample& sample) {
                         const auto current_session = iot_socket->session();
@@ -533,7 +536,7 @@ int main(int argc, char** argv) {
                                  (unsigned long long)d.visit_id, d.request_id.c_str(),
                                  (long long)d.resident_id, d.floor, floor_call_state_name(d.state),
                                  d.reason.empty() ? "-" : d.reason.c_str());
-                        if (register_capture_enabled.load()) {
+                        if (traffic_capture_enabled.load()) {
                             floor_decision_inbox.push(TimestampedFloorDecision{d, now_ms()});
                         }
                     });
@@ -685,7 +688,6 @@ int main(int argc, char** argv) {
     if (cfg.traffic_db_path && cfg.traffic_db_path[0]) {
         if (!occupancy_counter) {
             LOG_WARN("traffic", "occupancy disabled — traffic module disabled");
-            register_capture_enabled.store(false);
         } else {
             const int secondary_slave = (cfg.elevator_slave == 2) ? 1 : 2;
             if (!cfg.iot_ws || !cfg.iot_ws[0]) {
@@ -743,7 +745,6 @@ int main(int argc, char** argv) {
 
             if (!traffic_writer->start()) {
                 LOG_ERROR("traffic", "TrafficLogWriter startup failed — disabling traffic module");
-                register_capture_enabled.store(false);
                 traffic_writer.reset();
                 trip_assembler.reset();
                 call_tracker.reset();
@@ -760,6 +761,8 @@ int main(int argc, char** argv) {
             }
         }
     }
+    traffic_capture_enabled.store(traffic_enabled);
+    register_capture_enabled.store(traffic_enabled || (iot_socket != nullptr));
 
     SystemMetrics system_metrics("/home/orangepi/face_recog_app", 30000);
     if (occupancy_counter) {
@@ -808,14 +811,17 @@ int main(int argc, char** argv) {
     double  last_report         = now_ms();
     int     frames_since_report = 0;
 
-    StageStat                      s_cap, s_pre, s_yolo, s_scrfd, s_track, s_recog, s_draw, s_e2e;
-    double                         run_start = now_ms();
-    uint64_t                       last_seq  = 0;
-    UiScale                        ui; // computed lazily on first frame
-    bool                           ui_ready                 = false;
-    double                         last_reload_error_log_ms = -1e12;
-    double                         last_reg_invalid_warn_ms = -1e12;
-    std::vector<RawRegisterPacket> drained_reg_packets;
+    StageStat          s_cap, s_pre, s_yolo, s_scrfd, s_track, s_recog, s_draw, s_e2e;
+    double             run_start = now_ms();
+    uint64_t           last_seq  = 0;
+    UiScale            ui; // computed lazily on first frame
+    bool               ui_ready                 = false;
+    double             last_reload_error_log_ms = -1e12;
+    double             last_reg_invalid_warn_ms = -1e12;
+    CabinFloorTracker  cabin_floor_tracker;
+    SlaveRegisterState floor_call_reg_state;
+    floor_call_reg_state.slave = cfg.elevator_slave;
+    std::vector<RawRegisterPacket>        drained_reg_packets;
     std::vector<TimestampedFloorDecision> drained_floor_decisions;
     std::set<int>                         confirmed_track_ids;
     const bool                            adaptive =
@@ -860,7 +866,13 @@ int main(int argc, char** argv) {
     };
 
     auto drain_traffic_inputs = [&](double step_ts) {
-        if (!traffic_enabled) return;
+        if (!traffic_enabled && !iot_socket) return;
+        const bool sock_conn = iot_socket && iot_socket->connected();
+        if (!sock_conn) {
+            cabin_floor_tracker.reset();
+            floor_call_reg_state       = SlaveRegisterState{};
+            floor_call_reg_state.slave = cfg.elevator_slave;
+        }
         bool overflowed = false;
         register_inbox.drain(drained_reg_packets, overflowed);
         const std::string expected_code = cfg.iot_device_code ? cfg.iot_device_code : "";
@@ -875,11 +887,54 @@ int main(int argc, char** argv) {
                          upd.invalid_values);
                 last_reg_invalid_warn_ms = pkt.received_ms;
             }
-            const ElevatorStepResult step_res = elevator_state->apply_update(upd);
-            process_elevator_step(step_res, pkt.received_ms);
+            bool touched_primary = false;
+            for (const auto& entry : upd.values) {
+                if (entry.slave == cfg.elevator_slave) {
+                    floor_call_reg_state.regs[entry.reg] = entry.value;
+                    floor_call_reg_state.valid           = true;
+                    floor_call_reg_state.session         = upd.session;
+                    floor_call_reg_state.last_message_ms = upd.received_ms;
+                    touched_primary                      = true;
+                }
+            }
+            if (touched_primary && floor_call_reg_state.valid) {
+                int        cur_floor = -1;
+                const bool has_floor =
+                    floor_call_reg_state.has(ElevatorReg::FLOOR) &&
+                    decode_floor_8465(floor_call_reg_state.get(ElevatorReg::FLOOR), eff.floors_min,
+                                      eff.floors_max, cur_floor);
+                bool status_up   = false;
+                bool status_down = false;
+                if (floor_call_reg_state.has(ElevatorReg::STATUS)) {
+                    const StatusRegister8480 st =
+                        decode_status_8480(floor_call_reg_state.get(ElevatorReg::STATUS));
+                    status_up   = st.up;
+                    status_down = st.down;
+                }
+                int        dummy_invalid = 0;
+                const bool has_hall_up   = floor_call_reg_state.has(ElevatorReg::HALL_CALLS_UP);
+                const std::uint16_t hall_up =
+                    has_hall_up
+                        ? filter_floor_mask(floor_call_reg_state.get(ElevatorReg::HALL_CALLS_UP),
+                                            eff.floors_min, eff.floors_max, dummy_invalid)
+                        : 0;
+                const bool has_hall_down = floor_call_reg_state.has(ElevatorReg::HALL_CALLS_DOWN);
+                const std::uint16_t hall_down =
+                    has_hall_down
+                        ? filter_floor_mask(floor_call_reg_state.get(ElevatorReg::HALL_CALLS_DOWN),
+                                            eff.floors_min, eff.floors_max, dummy_invalid)
+                        : 0;
+                cabin_floor_tracker.update(has_floor, cur_floor, status_up, status_down, hall_up,
+                                           has_hall_up, hall_down, has_hall_down, pkt.received_ms);
+            }
+            if (traffic_enabled) {
+                const ElevatorStepResult step_res = elevator_state->apply_update(upd);
+                process_elevator_step(step_res, pkt.received_ms);
+            }
         }
 
-        const bool               sock_conn = iot_socket && iot_socket->connected();
+        if (!traffic_enabled) return;
+
         const std::uint64_t      sock_sess = iot_socket ? iot_socket->session() : 0;
         const ElevatorStepResult poll_res =
             elevator_state->poll(step_ts, sock_conn, sock_sess, overflowed);
@@ -1433,13 +1488,18 @@ int main(int argc, char** argv) {
                     ev.resident_id = oc.resident_id;
                     ev.action      = "matched";
                     auto it        = resident_by_id.find(oc.resident_id);
-                    int  hf        = (it != resident_by_id.end()) ? it->second.home_floor : 0;
+                    int  hf =
+                        (it != resident_by_id.end()) ? it->second.home_floor : HOME_FLOOR_UNSET;
+                    int sf = (it != resident_by_id.end()) ? it->second.secondary_floor
+                                                          : SECONDARY_FLOOR_UNSET;
                     // A queue admission is not evidence that the board accepted a
                     // floor.  FloorCallCoordinator emits the later transport state.
                     ev.floor_selected = 0;
                     if (floor_calls) {
-                        floor_calls->on_confirmed(oc.subject_key, oc.resident_id, hf, oc.similarity,
-                                                  tracker_frame.timestamp_ms);
+                        const CabinFloorContext floor_ctx =
+                            cabin_floor_tracker.snapshot(tracker_frame.timestamp_ms);
+                        floor_calls->on_confirmed(oc.subject_key, oc.resident_id, hf, sf, floor_ctx,
+                                                  oc.similarity, tracker_frame.timestamp_ms);
                     }
                     if (traffic_enabled && use_tracker) {
                         trip_assembler->on_resident_confirmed(oc.subject_key, oc.resident_id,
@@ -1449,9 +1509,11 @@ int main(int argc, char** argv) {
                     resident_db.log_event(ev);
                     resident_db.touch_resident(oc.resident_id);
                     // No PII (R7): log resident_id + floor only, never the name.
-                    LOG_INFO("event", "CONFIRMED resident_id=%lld sim=%.2f home_floor=%d%s%s",
-                             (long long)oc.resident_id, oc.similarity, hf,
-                             hf <= HOME_FLOOR_UNSET ? " [no floor -> greet only]" : "",
+                    LOG_INFO("event",
+                             "CONFIRMED resident_id=%lld sim=%.2f home_floor=%d "
+                             "secondary_floor=%d%s%s",
+                             (long long)oc.resident_id, oc.similarity, hf, sf,
+                             (hf < 0 && sf < 0) ? " [no floor -> greet only]" : "",
                              floor_calls ? " [floor decision delegated]" : "");
                     // Notify Edge Core (spec edge-core-uds, 0x1001). 20002 = ext_id,
                     // fallback to_string(resident_id) (R7.3). name goes on the socket
@@ -1585,6 +1647,7 @@ int main(int argc, char** argv) {
     }
 
     if (traffic_enabled) {
+        traffic_capture_enabled.store(false);
         register_capture_enabled.store(false);
         const double stop_ms = now_ms();
         drain_traffic_inputs(stop_ms);

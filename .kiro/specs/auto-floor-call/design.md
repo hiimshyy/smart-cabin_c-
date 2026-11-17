@@ -148,6 +148,33 @@ on_confirmed(identity):
 
 Resident decision được ghi trước khi trả về để hai recognition gần nhau không thể cùng qua gate.
 
+#### Chọn tầng đích với `secondary_floor` và tầng hầm `B`
+
+Quy ước index tầng thống nhất trên `residents` (`home_floor`, `secondary_floor`), `FloorCallCoordinator` và thanh ghi `8193-2`:
+
+- `-1` (`HOME_FLOOR_UNSET` / `SECONDARY_FLOOR_UNSET`): chưa đăng ký tầng cho chiều tương ứng.
+- `0`: tầng hầm `"B"`, mã hóa bit `0` (`2^0 = 1` trên `8193-2`). `cabins.floors_min` mặc định là `0`.
+- `1..62`: tầng nổi (`2^floor`).
+
+`CabinFloorTracker` theo dõi các gói `CONN_DATA` của `elevator_slave`:
+- `8465`: tầng hiện tại của cabin (`decode_floor_8465`, 1-based → 0-based).
+- `8215` (`HALL_CALLS_UP`) và `8225` (`HALL_CALLS_DOWN`): hướng gọi tầng tại `current_floor`, lưu nhớ tối đa `15000 ms` sau khi bit tắt (vì bit Hall Call có thể tắt khi cửa mở).
+- `8480` (`STATUS`): dự phòng chiều `up/down` khi không có Hall Call gần nhất ở `current_floor`.
+
+Quy tắc `FloorCallCoordinator::select_target_floor(home_floor, secondary_floor, context)`:
+
+1. Nếu cả `home_floor < 0` và `secondary_floor < 0` → `SUPPRESSED` (`no_floor`).
+2. Nếu chưa xác định được `current_floor` từ `CONN_DATA` (ví dụ mới khởi động hoặc mất kết nối Socket.IO) → fallback gọi `home_floor` (nếu `home_floor >= 0`), ngược lại `SUPPRESSED` (`no_floor`).
+3. Nếu `current_floor >= home_floor`:
+   - Có `secondary_floor >= 0` và `current_floor > secondary_floor` → gọi `secondary_floor` (đi xuống).
+   - Ngược lại → `SUPPRESSED` (`already_at_floor` nếu `current_floor == home_floor`, hoặc `no_secondary_floor` nếu `current_floor > home_floor`).
+4. Nếu `current_floor <= secondary_floor` hoặc chưa có `secondary_floor`:
+   - Gọi `home_floor` (nếu `home_floor >= 0`), ngược lại `SUPPRESSED` (`no_floor` / `already_at_floor`).
+5. Nếu ở tầng trung gian (`secondary_floor < current_floor < home_floor`):
+   - Hướng `Down` → gọi `secondary_floor`.
+   - Hướng `Up` → gọi `home_floor`.
+   - Chưa rõ hướng (thang đứng yên không có Hall Call): nếu `current_floor <= 1` (tầng B hoặc tầng 1) thì gọi `home_floor` (lên), ngược lại từ tầng 2 trở lên ưu tiên gọi `secondary_floor` (xuống).
+
 #### Thứ tự deterministic
 
 Main gom các outcome trong cùng một frame rồi sort theo:

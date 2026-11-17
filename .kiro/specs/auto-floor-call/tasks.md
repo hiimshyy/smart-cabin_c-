@@ -106,6 +106,12 @@ Thứ tự đi từ hợp đồng IoT Core (task 0), logic thuần có unit test
   - [ ] 9.4 Mở rộng same-floor, sau đó multi-floor.
   - [ ] 9.5 Đặt rollback bằng config: tắt `floor_call_enabled`, không cần build lại.
 
+- [x] 10. Hỗ trợ `secondary_floor` (gọi tầng xuống) & tầng hầm `B`
+  - [x] 10.1 Nâng cấp schema SQLite version 4: `residents.secondary_floor DEFAULT -1`, `HOME_FLOOR_UNSET = -1`, `cabins.floors_min DEFAULT 0`.
+  - [x] 10.2 Mở rộng `FloorCallCoordinator` (`select_target_floor`, `CabinFloorTracker`) và cho phép mã hóa tầng `0` (`"B"` -> `value=1`) trên `SocketIoClient`.
+  - [x] 10.3 Cập nhật `ResidentCatalog`, `ResidentEnroll`, `add_person --secondary-floor`, `overlay.cpp` và nối luồng `CONN_DATA` trong `main.cpp`.
+  - [x] 10.4 Bổ sung unit test cho `ResidentDB` v4, `ResidentEnroll`, `ResidentCatalog`, `SocketIoClient` (`B=0`) và `FloorCallCoordinator` (`secondary_floor` + `CabinFloorTracker`).
+
 ## Notes
 
 ### Thứ tự triển khai đề xuất

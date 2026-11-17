@@ -10,12 +10,12 @@
 #include <string>
 #include <vector>
 
-#include "resident_db.h"   // CabinRow, CabinPatch
+#include "resident_db.h" // CabinRow, CabinPatch
 
 // Config already resolved + validated, ready to build CamConfig /
 // InteractionConfig / match_threshold in main.
 struct CabinConfig {
-    std::string rtsp_url;               // camera_urls[0]; "" => use USB cam
+    std::string rtsp_url; // camera_urls[0]; "" => use USB cam
     bool        use_stream       = false;
     int         gst_latency_ms   = 100;
     float       match_thr        = 0.35f;
@@ -24,7 +24,7 @@ struct CabinConfig {
     double      unknown_after_ms = 2000.0;
     int         reconnect_min_ms = 500;
     int         reconnect_max_ms = 10000;
-    int         floors_min       = 1;
+    int         floors_min       = 0;
     int         floors_max       = 30;
     std::string elevator_endpoint;
 };
@@ -33,14 +33,22 @@ struct CabinConfig {
 // CLI value overrides DB only when truly supplied (not when it merely equals a
 // default). Values are read only when the matching flag is true.
 struct CliOverrides {
-    bool        has_source        = false;  std::string source_val;      // rtsp url or ""
-    bool        has_gst_latency   = false;  int    gst_latency_val   = 100;
-    bool        has_match_thr     = false;  float  match_thr_val     = 0.35f;
-    bool        has_confirm_streak= false;  int    confirm_streak_val= 5;
-    bool        has_cooldown      = false;  double cooldown_val      = 3000.0;
-    bool        has_unknown_after = false;  double unknown_after_val = 2000.0;
-    bool        has_reconnect_min = false;  int    reconnect_min_val = 500;
-    bool        has_reconnect_max = false;  int    reconnect_max_val = 10000;
+    bool        has_source = false;
+    std::string source_val; // rtsp url or ""
+    bool        has_gst_latency    = false;
+    int         gst_latency_val    = 100;
+    bool        has_match_thr      = false;
+    float       match_thr_val      = 0.35f;
+    bool        has_confirm_streak = false;
+    int         confirm_streak_val = 5;
+    bool        has_cooldown       = false;
+    double      cooldown_val       = 3000.0;
+    bool        has_unknown_after  = false;
+    double      unknown_after_val  = 2000.0;
+    bool        has_reconnect_min  = false;
+    int         reconnect_min_val  = 500;
+    bool        has_reconnect_max  = false;
+    int         reconnect_max_val  = 10000;
 };
 
 // Parse a camera_urls JSON array string, returning the first element (v1 uses
@@ -55,8 +63,7 @@ bool is_allowed_camera_url(const std::string& url);
 // Resolve effective config: precedence CLI > DB (when db.found) > def, then
 // validate/clamp per R4 (logs a warning on each clamp). `def` supplies the
 // compile-in defaults.
-CabinConfig resolve_cabin_config(const CliOverrides& cli,
-                                 const CabinRow& db,
+CabinConfig resolve_cabin_config(const CliOverrides& cli, const CabinRow& db,
                                  const CabinConfig& def);
 
 // Validate a REST PATCH payload before it is written to the DB. Returns the

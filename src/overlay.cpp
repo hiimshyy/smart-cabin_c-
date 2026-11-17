@@ -7,6 +7,22 @@
 
 #include <opencv2/imgproc.hpp>
 
+namespace {
+
+std::string format_floor_tag(int home_floor, int secondary_floor) {
+    auto fmt = [](int floor) -> std::string {
+        return floor == 0 ? std::string("B") : std::to_string(floor);
+    };
+    if (home_floor >= 0 && secondary_floor >= 0) {
+        return "F" + fmt(home_floor) + "/" + fmt(secondary_floor);
+    }
+    if (home_floor >= 0) return "F" + fmt(home_floor);
+    if (secondary_floor >= 0) return "F?/" + fmt(secondary_floor);
+    return "F?";
+}
+
+} // namespace
+
 // Moved verbatim from main.cpp (spec main-cpp-refactor). UiScale::compute is a
 // pure numeric function; the two overlay branches and the HUD bar keep every
 // cv:: call, color, thickness, font scale, and label snprintf format
@@ -47,16 +63,16 @@ void draw_tracker_overlay(cv::Mat& frame, const std::vector<TrackView>& tracks,
             // In resident-db mode, append the home floor (or a marker
             // when unregistered) so the operator sees the destination.
             if (use_resident_db) {
-                int  hf  = -999;
+                int  hf  = HOME_FLOOR_UNSET;
+                int  sf  = SECONDARY_FLOOR_UNSET;
                 auto rit = resident_by_id.find(t.identity.resident_id);
-                if (rit != resident_by_id.end()) hf = rit->second.home_floor;
-                if (hf > HOME_FLOOR_UNSET) {
-                    std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f F%d", t.id,
-                                  t.identity.display_name.c_str(), t.identity.similarity, hf);
-                } else {
-                    std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f F?", t.id,
-                                  t.identity.display_name.c_str(), t.identity.similarity);
+                if (rit != resident_by_id.end()) {
+                    hf = rit->second.home_floor;
+                    sf = rit->second.secondary_floor;
                 }
+                const std::string tag = format_floor_tag(hf, sf);
+                std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f %s", t.id,
+                              t.identity.display_name.c_str(), t.identity.similarity, tag.c_str());
             } else {
                 std::snprintf(lbl, sizeof(lbl), "#%d %s %.2f", t.id,
                               t.identity.display_name.c_str(), t.identity.similarity);
@@ -99,12 +115,11 @@ void draw_scrfd_overlay(cv::Mat& frame, const std::vector<Detection>& faces,
             // resident-db mode: append home floor for the matched person.
             if (use_resident_db && L.resident_id >= 0) {
                 auto rit = resident_by_id.find(L.resident_id);
-                int  hf  = (rit != resident_by_id.end()) ? rit->second.home_floor : 0;
-                if (hf > HOME_FLOOR_UNSET) {
-                    std::snprintf(lbl, sizeof(lbl), "%s %.2f F%d", L.name.c_str(), L.sim, hf);
-                } else {
-                    std::snprintf(lbl, sizeof(lbl), "%s %.2f F?", L.name.c_str(), L.sim);
-                }
+                int  hf = (rit != resident_by_id.end()) ? rit->second.home_floor : HOME_FLOOR_UNSET;
+                int  sf = (rit != resident_by_id.end()) ? rit->second.secondary_floor
+                                                        : SECONDARY_FLOOR_UNSET;
+                const std::string tag = format_floor_tag(hf, sf);
+                std::snprintf(lbl, sizeof(lbl), "%s %.2f %s", L.name.c_str(), L.sim, tag.c_str());
             } else {
                 std::snprintf(lbl, sizeof(lbl), "%s %.2f", L.name.c_str(), L.sim);
             }

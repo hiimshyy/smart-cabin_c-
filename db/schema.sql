@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS residents (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL,                    -- full legal name
     apartment       TEXT,                                 -- "12A05"
-    home_floor      INTEGER NOT NULL,                    -- destination on match
+    home_floor      INTEGER NOT NULL DEFAULT -1,         -- primary destination (-1 = unset, 0 = B)
+    secondary_floor INTEGER NOT NULL DEFAULT -1,         -- downward destination (-1 = unset, 0 = B)
     language        TEXT    NOT NULL DEFAULT 'vi'
                     CHECK (language IN ('vi','en')),
     greeting_name   TEXT,                                 -- "bác Nga" / "Mr. Smith"
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS cabins (
     location           TEXT,                               -- 'Tower A, ground floor'
     camera_urls        TEXT    NOT NULL,                  -- JSON array ["rtsp://...", ...]
     elevator_endpoint  TEXT,                               -- 'gpio:...' or 'modbus://...'
-    floors_min         INTEGER NOT NULL DEFAULT 1,
+    floors_min         INTEGER NOT NULL DEFAULT 0,
     floors_max         INTEGER NOT NULL DEFAULT 30,
     -- schema_version 2: cabin runtime config (spec cabin-runtime-config, Nhóm A).
     -- Defaults MUST equal the compile-in CLI defaults (precedence CLI>DB>default).
@@ -119,14 +120,16 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 -- A freshly created DB from this file already has all schema_version 2 columns
--- (cabins runtime config + residents.ext_id) and the schema_version 3 role set
--- (12 org roles, snake_case). Existing older DBs are upgraded at runtime by
--- ResidentDB::apply_migrations().
+-- (cabins runtime config + residents.ext_id), the schema_version 3 role set
+-- (12 org roles, snake_case), and schema_version 4 (residents.secondary_floor
+-- + floors_min = 0 for Basement 'B'). Existing older DBs are upgraded at
+-- runtime by ResidentDB::apply_migrations().
 INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 INSERT OR IGNORE INTO schema_version (version) VALUES (3);
+INSERT OR IGNORE INTO schema_version (version) VALUES (4);
 
 -- --------------------------------------------------------------------------
 -- Default cabin (for single-cabin dev/test)
 -- --------------------------------------------------------------------------
 INSERT OR IGNORE INTO cabins (id, name, location, camera_urls, floors_min, floors_max)
-VALUES (1, 'Dev cabin', 'test building', '["rtsp://127.0.0.1/dev"]', 1, 30);
+VALUES (1, 'Dev cabin', 'test building', '["rtsp://127.0.0.1/dev"]', 0, 30);

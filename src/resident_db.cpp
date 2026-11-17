@@ -4,6 +4,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -17,7 +18,7 @@ namespace {
 
 bool exec_sql(sqlite3* db, const char* sql) {
     char* err = nullptr;
-    int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    int   rc  = sqlite3_exec(db, sql, nullptr, nullptr, &err);
     if (rc != SQLITE_OK) {
         LOG_ERROR("db", "SQL error: %s", err ? err : sqlite3_errmsg(db));
         if (err) sqlite3_free(err);
@@ -29,13 +30,41 @@ bool exec_sql(sqlite3* db, const char* sql) {
 // Poll-path transaction control must not log every second on a persistent DB
 // error; the main loop owns rate-limited db-reload reporting.
 bool exec_sql_quiet(sqlite3* db, const char* sql) {
-    char* err = nullptr;
-    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    char*     err = nullptr;
+    const int rc  = sqlite3_exec(db, sql, nullptr, nullptr, &err);
     if (err) sqlite3_free(err);
     return rc == SQLITE_OK;
 }
 
-}  // namespace
+} // namespace
+
+bool parse_floor_value(const std::string& text, int& out_floor) {
+    size_t start = 0;
+    while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start]))) {
+        ++start;
+    }
+    size_t end = text.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+    }
+    const std::string trimmed = text.substr(start, end - start);
+    if (trimmed.empty() || trimmed == "-1") {
+        out_floor = -1;
+        return true;
+    }
+    if (trimmed == "B" || trimmed == "b") {
+        out_floor = 0;
+        return true;
+    }
+    int acc = 0;
+    for (unsigned char c : trimmed) {
+        if (!std::isdigit(c)) return false;
+        acc = acc * 10 + static_cast<int>(c - '0');
+        if (acc > 62) return false;
+    }
+    out_floor = acc;
+    return true;
+}
 
 // --------------------------------------------------------------------------
 ResidentDB::~ResidentDB() {
@@ -45,8 +74,7 @@ ResidentDB::~ResidentDB() {
 // --------------------------------------------------------------------------
 // Task 3.1 — open()
 // --------------------------------------------------------------------------
-bool ResidentDB::open(const std::string& db_path,
-                      const std::string& schema_sql_path,
+bool ResidentDB::open(const std::string& db_path, const std::string& schema_sql_path,
                       bool spawn_writer) {
     if (db_) {
         LOG_ERROR("db", "already open");
@@ -56,15 +84,16 @@ bool ResidentDB::open(const std::string& db_path,
 
     int rc = sqlite3_open(db_path.c_str(), &db_);
     if (rc != SQLITE_OK) {
-        LOG_ERROR("db", "cannot open %s: %s",
-                  db_path.c_str(), sqlite3_errmsg(db_));
-        if (db_) { sqlite3_close(db_); db_ = nullptr; }
+        LOG_ERROR("db", "cannot open %s: %s", db_path.c_str(), sqlite3_errmsg(db_));
+        if (db_) {
+            sqlite3_close(db_);
+            db_ = nullptr;
+        }
         return false;
     }
 
     // WAL for concurrent read while writer thread commits; FK enforcement.
-    if (!exec_sql(db_, "PRAGMA journal_mode=WAL;") ||
-        !exec_sql(db_, "PRAGMA foreign_keys=ON;") ||
+    if (!exec_sql(db_, "PRAGMA journal_mode=WAL;") || !exec_sql(db_, "PRAGMA foreign_keys=ON;") ||
         !exec_sql(db_, "PRAGMA busy_timeout=5000;")) {
         sqlite3_close(db_);
         db_ = nullptr;
@@ -73,8 +102,7 @@ bool ResidentDB::open(const std::string& db_path,
 
     if (!has_tables()) {
         if (!apply_schema(schema_sql_path)) {
-            LOG_ERROR("db", "failed to apply schema from %s",
-                      schema_sql_path.c_str());
+            LOG_ERROR("db", "failed to apply schema from %s", schema_sql_path.c_str());
             sqlite3_close(db_);
             db_ = nullptr;
             return false;
@@ -106,20 +134,22 @@ bool ResidentDB::open_readonly(const std::string& db_path, int busy_timeout_ms) 
         LOG_ERROR("db", "already open");
         return false;
     }
-    int rc = sqlite3_open_v2(db_path.c_str(), &db_,
-                             SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+    int rc = sqlite3_open_v2(db_path.c_str(), &db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
                              nullptr);
     if (rc != SQLITE_OK) {
         LOG_ERROR("db-reload", "cannot open catalog reader: %s",
                   db_ ? sqlite3_errmsg(db_) : "sqlite open failed");
-        if (db_) { sqlite3_close(db_); db_ = nullptr; }
+        if (db_) {
+            sqlite3_close(db_);
+            db_ = nullptr;
+        }
         return false;
     }
     read_only_ = true;
     sqlite3_busy_timeout(db_, std::max(0, busy_timeout_ms));
     if (!exec_sql(db_, "PRAGMA query_only=ON;")) {
         sqlite3_close(db_);
-        db_ = nullptr;
+        db_        = nullptr;
         read_only_ = false;
         return false;
     }
@@ -134,7 +164,7 @@ bool ResidentDB::data_version(int64_t& value) const {
     bool ok = false;
     if (sqlite3_step(st) == SQLITE_ROW) {
         value = sqlite3_column_int64(st, 0);
-        ok = true;
+        ok    = true;
     }
     sqlite3_finalize(st);
     return ok;
@@ -142,9 +172,8 @@ bool ResidentDB::data_version(int64_t& value) const {
 
 bool ResidentDB::has_tables() const {
     sqlite3_stmt* st = nullptr;
-    const char* q =
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name='residents' LIMIT 1;";
+    const char*   q  = "SELECT name FROM sqlite_master "
+                       "WHERE type='table' AND name='residents' LIMIT 1;";
     if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) return false;
     bool found = (sqlite3_step(st) == SQLITE_ROW);
     sqlite3_finalize(st);
@@ -168,7 +197,7 @@ bool ResidentDB::apply_schema(const std::string& schema_sql_path) {
 // --------------------------------------------------------------------------
 int ResidentDB::current_schema_version() const {
     sqlite3_stmt* st = nullptr;
-    const char* q = "SELECT MAX(version) FROM schema_version;";
+    const char*   q  = "SELECT MAX(version) FROM schema_version;";
     if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) return 0;
     int v = 0;
     if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
@@ -184,17 +213,20 @@ namespace {
 // that already defines the v2 columns). Any other error is fatal.
 bool exec_allow_dup_column(sqlite3* db, const char* sql) {
     char* err = nullptr;
-    int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
-    if (rc == SQLITE_OK) { if (err) sqlite3_free(err); return true; }
+    int   rc  = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (rc == SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return true;
+    }
     std::string msg = err ? err : sqlite3_errmsg(db);
     if (err) sqlite3_free(err);
     if (msg.find("duplicate column name") != std::string::npos) {
-        return true;   // column already present — fine
+        return true; // column already present — fine
     }
     LOG_ERROR("db", "migration SQL error: %s", msg.c_str());
     return false;
 }
-}  // namespace
+} // namespace
 
 bool ResidentDB::apply_migrations() {
     int cur = current_schema_version();
@@ -220,11 +252,9 @@ bool ResidentDB::apply_migrations() {
             }
         }
         // Partial unique index is created with IF NOT EXISTS (no dup issue).
-        if (!exec_sql(db_,
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_residents_ext_id "
-                "ON residents(ext_id) WHERE ext_id IS NOT NULL;") ||
-            !exec_sql(db_,
-                "INSERT OR IGNORE INTO schema_version (version) VALUES (2);")) {
+        if (!exec_sql(db_, "CREATE UNIQUE INDEX IF NOT EXISTS idx_residents_ext_id "
+                           "ON residents(ext_id) WHERE ext_id IS NOT NULL;") ||
+            !exec_sql(db_, "INSERT OR IGNORE INTO schema_version (version) VALUES (2);")) {
             exec_sql(db_, "ROLLBACK;");
             return false;
         }
@@ -253,8 +283,10 @@ bool ResidentDB::apply_migrations() {
             "    language        TEXT    NOT NULL DEFAULT 'vi' CHECK (language IN ('vi','en')),\n"
             "    greeting_name   TEXT,\n"
             "    role            TEXT    NOT NULL DEFAULT 'staff'\n"
-            "                    CHECK (role IN ('chairman','vice_president','deputy_general_director',\n"
-            "                                    'head','director','manager','specialist','team_leader',\n"
+            "                    CHECK (role IN "
+            "('chairman','vice_president','deputy_general_director',\n"
+            "                                    "
+            "'head','director','manager','specialist','team_leader',\n"
             "                                    'sales','engineer','staff','intern',\n"
             "                                    'vip','guest_regular')),\n"
             "    active          INTEGER NOT NULL DEFAULT 1,\n"
@@ -271,10 +303,10 @@ bool ResidentDB::apply_migrations() {
             "   consent_at,created_at,updated_at,last_seen_at,match_count,notes,ext_id)\n"
             "SELECT id,name,apartment,home_floor,language,greeting_name,\n"
             "  CASE lower(COALESCE(role,''))\n"
-            "    WHEN 'resident'      THEN 'staff'\n"   // legacy default -> staff
+            "    WHEN 'resident'      THEN 'staff'\n" // legacy default -> staff
             "    WHEN 'staff'         THEN 'staff'\n"
-            "    WHEN 'vip'           THEN 'vip'\n"      // keep VIP
-            "    WHEN 'guest_regular' THEN 'guest_regular'\n"  // keep guest
+            "    WHEN 'vip'           THEN 'vip'\n"           // keep VIP
+            "    WHEN 'guest_regular' THEN 'guest_regular'\n" // keep guest
             "    WHEN 'chairman' THEN 'chairman'\n"
             "    WHEN 'vice_president' THEN 'vice_president'\n"
             "    WHEN 'deputy_general_director' THEN 'deputy_general_director'\n"
@@ -286,7 +318,7 @@ bool ResidentDB::apply_migrations() {
             "    WHEN 'sales' THEN 'sales'\n"
             "    WHEN 'engineer' THEN 'engineer'\n"
             "    WHEN 'intern' THEN 'intern'\n"
-            "    ELSE 'staff'\n"                          // unknown -> staff
+            "    ELSE 'staff'\n" // unknown -> staff
             "  END,\n"
             "  active,consent_at,created_at,updated_at,last_seen_at,match_count,notes,ext_id\n"
             "FROM residents;\n"
@@ -294,7 +326,8 @@ bool ResidentDB::apply_migrations() {
             "ALTER TABLE residents_new RENAME TO residents;\n"
             "CREATE INDEX IF NOT EXISTS idx_residents_active    ON residents(active);\n"
             "CREATE INDEX IF NOT EXISTS idx_residents_apartment ON residents(apartment);\n"
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_residents_ext_id ON residents(ext_id) WHERE ext_id IS NOT NULL;\n"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_residents_ext_id ON residents(ext_id) WHERE "
+            "ext_id IS NOT NULL;\n"
             "INSERT OR IGNORE INTO schema_version (version) VALUES (3);\n"
             "COMMIT;\n"
             "PRAGMA foreign_keys=ON;\n";
@@ -306,6 +339,22 @@ bool ResidentDB::apply_migrations() {
         }
         LOG_INFO("db", "schema now at version %d", current_schema_version());
     }
+
+    // ---- version 4: secondary_floor + floors_min = 0 for Basement 'B' -----
+    if (cur < 4) {
+        LOG_INFO("db", "migrating schema %d -> 4 (secondary_floor, floors_min=0)", cur);
+        if (!exec_sql(db_, "BEGIN;")) return false;
+        if (!exec_allow_dup_column(
+                db_,
+                "ALTER TABLE residents ADD COLUMN secondary_floor INTEGER NOT NULL DEFAULT -1;") ||
+            !exec_sql(db_, "UPDATE cabins SET floors_min = 0 WHERE floors_min = 1;") ||
+            !exec_sql(db_, "INSERT OR IGNORE INTO schema_version (version) VALUES (4);")) {
+            exec_sql(db_, "ROLLBACK;");
+            return false;
+        }
+        if (!exec_sql(db_, "COMMIT;")) return false;
+        LOG_INFO("db", "schema now at version %d", current_schema_version());
+    }
     return true;
 }
 
@@ -314,17 +363,16 @@ bool ResidentDB::apply_migrations() {
 // --------------------------------------------------------------------------
 CabinRow ResidentDB::load_cabin(int64_t id) const {
     CabinRow row;
-    row.id = id;
+    row.id           = id;
     sqlite3_stmt* st = nullptr;
-    const char* q =
-        "SELECT name, location, camera_urls, elevator_endpoint, "
-        "       floors_min, floors_max, gst_latency_ms, match_thr, "
-        "       confirm_streak, cooldown_ms, unknown_after_ms, "
-        "       reconnect_min_ms, reconnect_max_ms "
-        "FROM cabins WHERE id = ? LIMIT 1;";
+    const char*   q  = "SELECT name, location, camera_urls, elevator_endpoint, "
+                       "       floors_min, floors_max, gst_latency_ms, match_thr, "
+                       "       confirm_streak, cooldown_ms, unknown_after_ms, "
+                       "       reconnect_min_ms, reconnect_max_ms "
+                       "FROM cabins WHERE id = ? LIMIT 1;";
     if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) {
         LOG_WARN("db", "load_cabin prepare failed: %s", sqlite3_errmsg(db_));
-        return row;   // found=false
+        return row; // found=false
     }
     sqlite3_bind_int64(st, 1, id);
     if (sqlite3_step(st) == SQLITE_ROW) {
@@ -356,23 +404,37 @@ bool ResidentDB::update_cabin_config(int64_t id, const CabinPatch& patch) {
     std::vector<std::string> sets;
     // For bound params we keep a parallel list of (type, value) via lambdas at
     // bind time; simpler: build "col=?" and bind in the same order.
-    struct Bind { char kind; int64_t i; double d; std::string s; };
+    struct Bind {
+        char        kind;
+        int64_t     i;
+        double      d;
+        std::string s;
+    };
     std::vector<Bind> binds;
-    auto add_int  = [&](const char* col, int v)         { sets.push_back(std::string(col) + "=?"); binds.push_back({'i', v, 0, {}}); };
-    auto add_real = [&](const char* col, double v)      { sets.push_back(std::string(col) + "=?"); binds.push_back({'d', 0, v, {}}); };
-    auto add_text = [&](const char* col, const std::string& v) { sets.push_back(std::string(col) + "=?"); binds.push_back({'s', 0, 0, v}); };
+    auto              add_int = [&](const char* col, int v) {
+        sets.push_back(std::string(col) + "=?");
+        binds.push_back({'i', v, 0, {}});
+    };
+    auto add_real = [&](const char* col, double v) {
+        sets.push_back(std::string(col) + "=?");
+        binds.push_back({'d', 0, v, {}});
+    };
+    auto add_text = [&](const char* col, const std::string& v) {
+        sets.push_back(std::string(col) + "=?");
+        binds.push_back({'s', 0, 0, v});
+    };
 
-    if (patch.has_camera_urls)       add_text("camera_urls",       patch.camera_urls);
+    if (patch.has_camera_urls) add_text("camera_urls", patch.camera_urls);
     if (patch.has_elevator_endpoint) add_text("elevator_endpoint", patch.elevator_endpoint);
-    if (patch.has_floors_min)        add_int ("floors_min",        patch.floors_min);
-    if (patch.has_floors_max)        add_int ("floors_max",        patch.floors_max);
-    if (patch.has_gst_latency_ms)    add_int ("gst_latency_ms",    patch.gst_latency_ms);
-    if (patch.has_match_thr)         add_real("match_thr",         patch.match_thr);
-    if (patch.has_confirm_streak)    add_int ("confirm_streak",    patch.confirm_streak);
-    if (patch.has_cooldown_ms)       add_int ("cooldown_ms",       patch.cooldown_ms);
-    if (patch.has_unknown_after_ms)  add_int ("unknown_after_ms",  patch.unknown_after_ms);
-    if (patch.has_reconnect_min_ms)  add_int ("reconnect_min_ms",  patch.reconnect_min_ms);
-    if (patch.has_reconnect_max_ms)  add_int ("reconnect_max_ms",  patch.reconnect_max_ms);
+    if (patch.has_floors_min) add_int("floors_min", patch.floors_min);
+    if (patch.has_floors_max) add_int("floors_max", patch.floors_max);
+    if (patch.has_gst_latency_ms) add_int("gst_latency_ms", patch.gst_latency_ms);
+    if (patch.has_match_thr) add_real("match_thr", patch.match_thr);
+    if (patch.has_confirm_streak) add_int("confirm_streak", patch.confirm_streak);
+    if (patch.has_cooldown_ms) add_int("cooldown_ms", patch.cooldown_ms);
+    if (patch.has_unknown_after_ms) add_int("unknown_after_ms", patch.unknown_after_ms);
+    if (patch.has_reconnect_min_ms) add_int("reconnect_min_ms", patch.reconnect_min_ms);
+    if (patch.has_reconnect_max_ms) add_int("reconnect_max_ms", patch.reconnect_max_ms);
 
     if (sets.empty()) {
         LOG_WARN("db", "update_cabin_config: empty patch, nothing to do");
@@ -393,9 +455,12 @@ bool ResidentDB::update_cabin_config(int64_t id, const CabinPatch& patch) {
     }
     int idx = 1;
     for (const auto& b : binds) {
-        if      (b.kind == 'i') sqlite3_bind_int64(st, idx, b.i);
-        else if (b.kind == 'd') sqlite3_bind_double(st, idx, b.d);
-        else                    sqlite3_bind_text(st, idx, b.s.c_str(), -1, SQLITE_TRANSIENT);
+        if (b.kind == 'i')
+            sqlite3_bind_int64(st, idx, b.i);
+        else if (b.kind == 'd')
+            sqlite3_bind_double(st, idx, b.d);
+        else
+            sqlite3_bind_text(st, idx, b.s.c_str(), -1, SQLITE_TRANSIENT);
         ++idx;
     }
     sqlite3_bind_int64(st, idx, id);
@@ -412,17 +477,17 @@ bool ResidentDB::update_cabin_config(int64_t id, const CabinPatch& patch) {
 // --------------------------------------------------------------------------
 // Active catalog snapshot (resident-hot-reload)
 // --------------------------------------------------------------------------
-bool ResidentDB::load_active(std::vector<Resident>& residents,
+bool ResidentDB::load_active(std::vector<Resident>&     residents,
                              std::vector<EmbeddingRow>& embeddings) {
     return load_active_snapshot(residents, embeddings);
 }
 
-bool ResidentDB::load_active_snapshot(std::vector<Resident>& residents,
+bool ResidentDB::load_active_snapshot(std::vector<Resident>&     residents,
                                       std::vector<EmbeddingRow>& embeddings) {
     if (!db_) return false;
     std::lock_guard<std::mutex> db_lock(db_mtx_);
-    std::vector<Resident> tmp_residents;
-    std::vector<EmbeddingRow> tmp_embeddings;
+    std::vector<Resident>       tmp_residents;
+    std::vector<EmbeddingRow>   tmp_embeddings;
 
     if (!exec_sql_quiet(db_, "BEGIN;")) return false;
     bool ok = true;
@@ -430,27 +495,28 @@ bool ResidentDB::load_active_snapshot(std::vector<Resident>& residents,
     // Active residents in stable order. Runtime fingerprint intentionally
     // excludes last_seen_at/match_count/audit-only fields.
     sqlite3_stmt* st = nullptr;
-    const char* rq =
-        "SELECT id,name,apartment,home_floor,language,greeting_name,role,ext_id "
-        "FROM residents WHERE active=1 ORDER BY id;";
+    const char*   rq = "SELECT id,name,apartment,home_floor,secondary_floor,"
+                       "language,greeting_name,role,ext_id "
+                       "FROM residents WHERE active=1 ORDER BY id;";
     if (sqlite3_prepare_v2(db_, rq, -1, &st, nullptr) != SQLITE_OK) {
         ok = false;
     } else {
         int rc = SQLITE_ROW;
         while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
             Resident r;
-            r.id = sqlite3_column_int64(st, 0);
+            r.id     = sqlite3_column_int64(st, 0);
             auto txt = [&](int c) -> std::string {
                 const unsigned char* p = sqlite3_column_text(st, c);
                 return p ? reinterpret_cast<const char*>(p) : std::string();
             };
-            r.name = txt(1);
-            r.apartment = txt(2);
-            r.home_floor = sqlite3_column_int(st, 3);
-            r.language = txt(4);
-            r.greeting_name = txt(5);
-            r.role = txt(6);
-            r.ext_id = txt(7);
+            r.name            = txt(1);
+            r.apartment       = txt(2);
+            r.home_floor      = sqlite3_column_int(st, 3);
+            r.secondary_floor = sqlite3_column_int(st, 4);
+            r.language        = txt(5);
+            r.greeting_name   = txt(6);
+            r.role            = txt(7);
+            r.ext_id          = txt(8);
             tmp_residents.push_back(std::move(r));
         }
         if (rc != SQLITE_DONE) ok = false;
@@ -466,47 +532,51 @@ bool ResidentDB::load_active_snapshot(std::vector<Resident>& residents,
     // dim and exact blob length so the catalog validator can reject malformed
     // rows rather than silently truncating trailing bytes.
     if (ok) {
-        const char* eq =
-            "SELECT e.id,e.resident_id,e.source,e.dim,length(e.vector), "
-            "       typeof(e.dim),typeof(e.vector), "
-            "       CASE WHEN typeof(e.dim)='integer' AND e.dim BETWEEN 1 AND 4096 "
-            "                  AND typeof(e.vector)='blob' "
-            "                  AND length(e.vector)=e.dim*4 "
-            "            THEN e.vector ELSE NULL END "
-            "FROM embeddings e JOIN residents r ON r.id=e.resident_id "
-            "WHERE r.active=1 ORDER BY e.resident_id,e.id;";
+        const char* eq = "SELECT e.id,e.resident_id,e.source,e.dim,length(e.vector), "
+                         "       typeof(e.dim),typeof(e.vector), "
+                         "       CASE WHEN typeof(e.dim)='integer' AND e.dim BETWEEN 1 AND 4096 "
+                         "                  AND typeof(e.vector)='blob' "
+                         "                  AND length(e.vector)=e.dim*4 "
+                         "            THEN e.vector ELSE NULL END "
+                         "FROM embeddings e JOIN residents r ON r.id=e.resident_id "
+                         "WHERE r.active=1 ORDER BY e.resident_id,e.id;";
         if (sqlite3_prepare_v2(db_, eq, -1, &st, nullptr) != SQLITE_OK) {
             ok = false;
         } else {
             int rc = SQLITE_ROW;
             while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
                 EmbeddingRow e;
-                e.id = sqlite3_column_int64(st, 0);
-                e.resident_id = sqlite3_column_int64(st, 1);
+                e.id                     = sqlite3_column_int64(st, 0);
+                e.resident_id            = sqlite3_column_int64(st, 1);
                 const unsigned char* src = sqlite3_column_text(st, 2);
-                e.source = src ? reinterpret_cast<const char*>(src) : std::string();
-                auto col_is = [&](int col, const char* expected) {
+                e.source                 = src ? reinterpret_cast<const char*>(src) : std::string();
+                auto col_is              = [&](int col, const char* expected) {
                     const unsigned char* v = sqlite3_column_text(st, col);
                     return v && std::strcmp(reinterpret_cast<const char*>(v), expected) == 0;
                 };
                 const bool dim_is_integer = col_is(5, "integer");
-                e.declared_dim = sqlite3_column_int64(st, 3);
-                e.blob_nbytes = sqlite3_column_type(st, 4) == SQLITE_NULL
-                                  ? 0 : sqlite3_column_int64(st, 4);
+                e.declared_dim            = sqlite3_column_int64(st, 3);
+                e.blob_nbytes =
+                    sqlite3_column_type(st, 4) == SQLITE_NULL ? 0 : sqlite3_column_int64(st, 4);
                 e.blob_valid = col_is(6, "blob");
                 // The SQL CASE returns payload column 7 only after these
                 // metadata guards pass, preventing SQLite from materializing an
                 // unbounded corrupt BLOB into this process.
                 constexpr int64_t MAX_SAFE_EMBEDDING_DIM = 4096;
-                e.metadata_valid = dim_is_integer && e.declared_dim > 0 &&
-                    e.declared_dim <= MAX_SAFE_EMBEDDING_DIM && e.blob_valid &&
-                    e.blob_nbytes == e.declared_dim * (int64_t)sizeof(float) &&
-                    sqlite3_column_type(st, 7) != SQLITE_NULL;
+                e.metadata_valid                         = dim_is_integer && e.declared_dim > 0 &&
+                                   e.declared_dim <= MAX_SAFE_EMBEDDING_DIM && e.blob_valid &&
+                                   e.blob_nbytes == e.declared_dim * (int64_t)sizeof(float) &&
+                                   sqlite3_column_type(st, 7) != SQLITE_NULL;
                 if (e.metadata_valid) {
                     const void* blob = sqlite3_column_blob(st, 7);
                     e.vector.resize((size_t)e.declared_dim);
-                    if (blob) std::memcpy(e.vector.data(), blob, (size_t)e.blob_nbytes);
-                    else { e.blob_valid = false; e.metadata_valid = false; e.vector.clear(); }
+                    if (blob)
+                        std::memcpy(e.vector.data(), blob, (size_t)e.blob_nbytes);
+                    else {
+                        e.blob_valid     = false;
+                        e.metadata_valid = false;
+                        e.vector.clear();
+                    }
                 }
                 tmp_embeddings.push_back(std::move(e));
             }
@@ -537,7 +607,7 @@ void ResidentDB::log_event(const MatchEvent& ev) {
     if (!db_) return;
     {
         std::lock_guard<std::mutex> lk(q_mtx_);
-        WriteJob j;
+        WriteJob                    j;
         j.kind  = WriteJob::Kind::Event;
         j.event = ev;
         queue_.push_back(std::move(j));
@@ -549,7 +619,7 @@ void ResidentDB::touch_resident(int64_t resident_id) {
     if (!db_ || resident_id < 0) return;
     {
         std::lock_guard<std::mutex> lk(q_mtx_);
-        WriteJob j;
+        WriteJob                    j;
         j.kind        = WriteJob::Kind::Touch;
         j.resident_id = resident_id;
         queue_.push_back(std::move(j));
@@ -585,15 +655,13 @@ void ResidentDB::flush_jobs(std::vector<WriteJob>& jobs) {
     if (!db_ || jobs.empty()) return;
     std::lock_guard<std::mutex> db_lock(db_mtx_);
 
-    const char* ins_event =
-        "INSERT INTO match_events "
-        "(cabin_id, resident_id, similarity, liveness_score, action, "
-        " floor_selected, latency_ms) "
-        "VALUES (?,?,?,?,?,?,?);";
-    const char* upd_touch =
-        "UPDATE residents "
-        "SET last_seen_at=CURRENT_TIMESTAMP, match_count=match_count+1 "
-        "WHERE id=?;";
+    const char* ins_event = "INSERT INTO match_events "
+                            "(cabin_id, resident_id, similarity, liveness_score, action, "
+                            " floor_selected, latency_ms) "
+                            "VALUES (?,?,?,?,?,?,?);";
+    const char* upd_touch = "UPDATE residents "
+                            "SET last_seen_at=CURRENT_TIMESTAMP, match_count=match_count+1 "
+                            "WHERE id=?;";
 
     sqlite3_stmt* st_event = nullptr;
     sqlite3_stmt* st_touch = nullptr;
@@ -611,14 +679,18 @@ void ResidentDB::flush_jobs(std::vector<WriteJob>& jobs) {
             const MatchEvent& e = j.event;
             sqlite3_reset(st_event);
             sqlite3_bind_int(st_event, 1, e.cabin_id);
-            if (e.resident_id >= 0) sqlite3_bind_int64(st_event, 2, e.resident_id);
-            else                    sqlite3_bind_null (st_event, 2);
+            if (e.resident_id >= 0)
+                sqlite3_bind_int64(st_event, 2, e.resident_id);
+            else
+                sqlite3_bind_null(st_event, 2);
             sqlite3_bind_double(st_event, 3, e.similarity);
-            if (e.liveness_score >= 0) sqlite3_bind_double(st_event, 4, e.liveness_score);
-            else                       sqlite3_bind_null  (st_event, 4);
+            if (e.liveness_score >= 0)
+                sqlite3_bind_double(st_event, 4, e.liveness_score);
+            else
+                sqlite3_bind_null(st_event, 4);
             sqlite3_bind_text(st_event, 5, e.action.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int (st_event, 6, e.floor_selected);
-            sqlite3_bind_int (st_event, 7, e.latency_ms);
+            sqlite3_bind_int(st_event, 6, e.floor_selected);
+            sqlite3_bind_int(st_event, 7, e.latency_ms);
             if (sqlite3_step(st_event) != SQLITE_DONE) {
                 LOG_ERROR("db", "insert event failed: %s", sqlite3_errmsg(db_));
             }
@@ -642,7 +714,7 @@ void ResidentDB::flush_jobs(std::vector<WriteJob>& jobs) {
 int64_t ResidentDB::find_resident(const std::string& name) const {
     if (!db_) return -1;
     sqlite3_stmt* st = nullptr;
-    const char* q = "SELECT id FROM residents WHERE name=? LIMIT 1;";
+    const char*   q  = "SELECT id FROM residents WHERE name=? LIMIT 1;";
     if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) return -1;
     sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
     int64_t id = -1;
@@ -653,8 +725,8 @@ int64_t ResidentDB::find_resident(const std::string& name) const {
 
 bool ResidentDB::remove_resident(int64_t resident_id) {
     if (!db_ || resident_id < 0) return false;
-    sqlite3_stmt* st = nullptr;
-    const char* del = "DELETE FROM residents WHERE id=?;";
+    sqlite3_stmt* st  = nullptr;
+    const char*   del = "DELETE FROM residents WHERE id=?;";
     if (sqlite3_prepare_v2(db_, del, -1, &st, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_int64(st, 1, resident_id);
     int rc = sqlite3_step(st);
@@ -665,11 +737,17 @@ bool ResidentDB::remove_resident(int64_t resident_id) {
 // Transaction helpers for batching synchronous writes (offline tools).
 // IMMEDIATE acquires the single SQLite writer reservation up front, so an
 // enroll batch either starts before any mutation or fails cleanly.
-bool ResidentDB::begin()    { return db_ && !read_only_ && exec_sql(db_, "BEGIN IMMEDIATE;"); }
-bool ResidentDB::commit()   { return db_ && exec_sql(db_, "COMMIT;"); }
-bool ResidentDB::rollback() { return db_ && exec_sql(db_, "ROLLBACK;"); }
+bool ResidentDB::begin() {
+    return db_ && !read_only_ && exec_sql(db_, "BEGIN IMMEDIATE;");
+}
+bool ResidentDB::commit() {
+    return db_ && exec_sql(db_, "COMMIT;");
+}
+bool ResidentDB::rollback() {
+    return db_ && exec_sql(db_, "ROLLBACK;");
+}
 
-int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor) {
+int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor, int secondary_floor) {
     if (!db_) return -1;
 
     // Try to find existing by name.
@@ -679,15 +757,15 @@ int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor) {
     }
 
     // Insert new.
-    sqlite3_stmt* st = nullptr;
-    const char* ins =
-        "INSERT INTO residents (name, home_floor) VALUES (?,?);";
+    sqlite3_stmt* st  = nullptr;
+    const char*   ins = "INSERT INTO residents (name, home_floor, secondary_floor) VALUES (?,?,?);";
     if (sqlite3_prepare_v2(db_, ins, -1, &st, nullptr) != SQLITE_OK) {
         LOG_ERROR("db", "prepare upsert failed: %s", sqlite3_errmsg(db_));
         return -1;
     }
     sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int (st, 2, home_floor);
+    sqlite3_bind_int(st, 2, home_floor);
+    sqlite3_bind_int(st, 3, secondary_floor);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
@@ -703,7 +781,7 @@ int64_t ResidentDB::upsert_resident(const std::string& name, int home_floor) {
 int64_t ResidentDB::find_by_ext_id(const std::string& ext_id) const {
     if (!db_ || ext_id.empty()) return -1;
     sqlite3_stmt* st = nullptr;
-    const char* q = "SELECT id FROM residents WHERE ext_id = ? LIMIT 1;";
+    const char*   q  = "SELECT id FROM residents WHERE ext_id = ? LIMIT 1;";
     if (sqlite3_prepare_v2(db_, q, -1, &st, nullptr) != SQLITE_OK) return -1;
     sqlite3_bind_text(st, 1, ext_id.c_str(), -1, SQLITE_TRANSIENT);
     int64_t id = -1;
@@ -712,27 +790,26 @@ int64_t ResidentDB::find_by_ext_id(const std::string& ext_id) const {
     return id;
 }
 
-int64_t ResidentDB::upsert_resident_by_ext_id(const std::string& ext_id,
-                                              const std::string& name,
-                                              int home_floor,
-                                              const std::string& role) {
+int64_t ResidentDB::upsert_resident_by_ext_id(const std::string& ext_id, const std::string& name,
+                                              int home_floor, const std::string& role,
+                                              int secondary_floor) {
     if (!db_ || ext_id.empty()) return -1;
 
     int64_t existing = find_by_ext_id(ext_id);
     if (existing >= 0) {
         // Update mutable fields on the existing resident.
-        sqlite3_stmt* st = nullptr;
-        const char* upd =
-            "UPDATE residents SET name=?, home_floor=?, role=?, "
-            "updated_at=CURRENT_TIMESTAMP WHERE id=?;";
+        sqlite3_stmt* st  = nullptr;
+        const char*   upd = "UPDATE residents SET name=?, home_floor=?, secondary_floor=?, role=?, "
+                            "updated_at=CURRENT_TIMESTAMP WHERE id=?;";
         if (sqlite3_prepare_v2(db_, upd, -1, &st, nullptr) != SQLITE_OK) {
             LOG_ERROR("db", "prepare upsert-by-ext_id (update) failed: %s", sqlite3_errmsg(db_));
             return -1;
         }
-        sqlite3_bind_text (st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int  (st, 2, home_floor);
-        sqlite3_bind_text (st, 3, role.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 4, existing);
+        sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(st, 2, home_floor);
+        sqlite3_bind_int(st, 3, secondary_floor);
+        sqlite3_bind_text(st, 4, role.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 5, existing);
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
         if (rc != SQLITE_DONE) {
@@ -743,17 +820,18 @@ int64_t ResidentDB::upsert_resident_by_ext_id(const std::string& ext_id,
     }
 
     // Insert new resident carrying ext_id.
-    sqlite3_stmt* st = nullptr;
-    const char* ins =
-        "INSERT INTO residents (name, home_floor, role, ext_id) VALUES (?,?,?,?);";
+    sqlite3_stmt* st  = nullptr;
+    const char*   ins = "INSERT INTO residents (name, home_floor, secondary_floor, role, ext_id) "
+                        "VALUES (?,?,?,?,?);";
     if (sqlite3_prepare_v2(db_, ins, -1, &st, nullptr) != SQLITE_OK) {
         LOG_ERROR("db", "prepare upsert-by-ext_id (insert) failed: %s", sqlite3_errmsg(db_));
         return -1;
     }
     sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int (st, 2, home_floor);
-    sqlite3_bind_text(st, 3, role.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 4, ext_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 2, home_floor);
+    sqlite3_bind_int(st, 3, secondary_floor);
+    sqlite3_bind_text(st, 4, role.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 5, ext_id.c_str(), -1, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
@@ -763,24 +841,21 @@ int64_t ResidentDB::upsert_resident_by_ext_id(const std::string& ext_id,
     return sqlite3_last_insert_rowid(db_);
 }
 
-bool ResidentDB::add_embedding(int64_t resident_id,
-                               const std::string& source,
+bool ResidentDB::add_embedding(int64_t resident_id, const std::string& source,
                                const std::vector<float>& vec) {
     if (!db_ || resident_id < 0 || vec.empty()) return false;
-    sqlite3_stmt* st = nullptr;
-    const char* ins =
-        "INSERT INTO embeddings (resident_id, source, dim, vector) "
-        "VALUES (?,?,?,?);";
+    sqlite3_stmt* st  = nullptr;
+    const char*   ins = "INSERT INTO embeddings (resident_id, source, dim, vector) "
+                        "VALUES (?,?,?,?);";
     if (sqlite3_prepare_v2(db_, ins, -1, &st, nullptr) != SQLITE_OK) {
         LOG_ERROR("db", "prepare add_embedding failed: %s", sqlite3_errmsg(db_));
         return false;
     }
     sqlite3_bind_int64(st, 1, resident_id);
-    sqlite3_bind_text (st, 2, source.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int  (st, 3, static_cast<int>(vec.size()));
-    sqlite3_bind_blob (st, 4, vec.data(),
-                       static_cast<int>(vec.size() * sizeof(float)),
-                       SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 3, static_cast<int>(vec.size()));
+    sqlite3_bind_blob(st, 4, vec.data(), static_cast<int>(vec.size() * sizeof(float)),
+                      SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
@@ -792,8 +867,8 @@ bool ResidentDB::add_embedding(int64_t resident_id,
 
 bool ResidentDB::delete_embeddings(int64_t resident_id) {
     if (!db_ || resident_id < 0) return false;
-    sqlite3_stmt* st = nullptr;
-    const char* del = "DELETE FROM embeddings WHERE resident_id=?;";
+    sqlite3_stmt* st  = nullptr;
+    const char*   del = "DELETE FROM embeddings WHERE resident_id=?;";
     if (sqlite3_prepare_v2(db_, del, -1, &st, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_int64(st, 1, resident_id);
     int rc = sqlite3_step(st);
@@ -819,7 +894,7 @@ void ResidentDB::close() {
     }
     read_only_ = false;
 #ifdef RESIDENT_DB_TEST_HOOK
-    snapshot_test_hook_ = nullptr;
+    snapshot_test_hook_     = nullptr;
     snapshot_test_hook_ctx_ = nullptr;
 #endif
 }

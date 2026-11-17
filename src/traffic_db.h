@@ -66,7 +66,7 @@ struct PromoteRequest {
     std::int64_t visitor_id           = -1;
     std::int64_t existing_resident_id = -1;
     std::string  new_name;
-    int          home_floor = 0;
+    int          home_floor = -1;
     std::string  role       = "staff";
     std::string  resident_db_path;
     std::string  resident_schema_path = "db/schema.sql";
@@ -85,7 +85,7 @@ struct PromotionSuggestion {
     std::int64_t visitor_id  = -1;
     std::int64_t resident_id = -1;
     std::string  resident_name;
-    int          home_floor     = 0;
+    int          home_floor     = -1;
     float        max_similarity = 0.0f;
     int          trip_count     = 0;
 };

@@ -508,9 +508,9 @@ std::string websocket_client_frame(const std::string& text, unsigned char opcode
 }
 
 bool floor_to_register_value(int floor, std::int64_t& value) {
-    // home_floor <= 0 is the project's "no floor" sentinel. Limit the shift to
-    // a positive signed 64-bit JSON integer so there is no undefined overflow.
-    if (floor <= 0 || floor > 62) return false;
+    // floor < 0 is the "no floor" sentinel; 0 = Basement ('B') -> bit 0 (1).
+    // Limit the shift to a positive signed 64-bit JSON integer (<= 62).
+    if (floor < 0 || floor > 62) return false;
     value = std::int64_t{1} << floor;
     return true;
 }
@@ -631,7 +631,7 @@ bool SocketIoClient::send_floor(int floor) {
 }
 
 bool SocketIoClient::enqueue_floor(const SocketIoFloorCommand& command) {
-    if (command.request_id.empty() || command.floor <= 0 || command.value <= 0) return false;
+    if (command.request_id.empty() || command.floor < 0 || command.value <= 0) return false;
     if (stop_ || !worker_.joinable()) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     if (queue_.size() >= config_.max_queue) {

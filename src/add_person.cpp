@@ -5,7 +5,7 @@
 // are never averaged (spec R6.2).
 //   --merge   : append the new image embeddings to the resident.
 //   --replace : delete the resident's existing embeddings, then add the new.
-// A resident is created (home_floor=0) if the name does not exist yet.
+// A resident is created (home_floor=-1) if the name does not exist yet.
 //
 // Usage:
 //   ./add_person --name X --image img1.jpg [--image img2.jpg ...]
@@ -17,13 +17,13 @@
 //                [--min-face-px N (default 40)]
 //                [--schema db/schema.sql]
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
-#include <filesystem>
-#include <algorithm>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -33,27 +33,24 @@
 
 #include "detect_pre.h"
 #include "detection.h"
-#include "scrfd_post.h"
 #include "face_align.h"
 #include "face_recog.h"
+#include "log/logger.h"
 #include "resident_db.h"
 #include "resident_enroll.h"
-#include "log/logger.h"
+#include "scrfd_post.h"
 
 namespace fs = std::filesystem;
 
 static constexpr int NPU_INPUT_W = 640;
 static constexpr int NPU_INPUT_H = 640;
 
-static bool detect_largest_face(Awnn_Context_t* ctx,
-                                const ScrfdDecoder& scrfd,
-                                const cv::Mat& img_bgr,
-                                std::vector<uint8_t>& input_buf,
+static bool detect_largest_face(Awnn_Context_t* ctx, const ScrfdDecoder& scrfd,
+                                const cv::Mat& img_bgr, std::vector<uint8_t>& input_buf,
                                 Detection& out_best) {
     PreInfo pre;
-    detect_preprocess(img_bgr, input_buf.data(),
-                      NPU_INPUT_W, NPU_INPUT_H, pre);
-    void* ins[] = { input_buf.data() };
+    detect_preprocess(img_bgr, input_buf.data(), NPU_INPUT_W, NPU_INPUT_H, pre);
+    void* ins[] = {input_buf.data()};
     awnn_set_input_buffers(ctx, ins);
     awnn_run(ctx);
     float** outs = awnn_get_output_buffers(ctx);
@@ -66,13 +63,14 @@ static bool detect_largest_face(Awnn_Context_t* ctx,
         return std::max(0.0f, d.x2 - d.x1) * std::max(0.0f, d.y2 - d.y1);
     };
     auto it = std::max_element(dets.begin(), dets.end(),
-        [&](const Detection& a, const Detection& b){ return area(a) < area(b); });
+                         [&](const Detection& a, const Detection& b) { return area(a) < area(b); });
     out_best = *it;
     return true;
 }
 
 static void print_usage(const char* prog) {
-    fprintf(stderr,
+    fprintf(
+        stderr,
         "Usage: %s --name X --image <img_or_dir> [--image ... ]\n"
         "           (--image accepts a file OR a directory; a directory is\n"
         "            scanned for .jpg/.jpeg/.png/.bmp/.webp — one resident folder)\n"
@@ -86,7 +84,8 @@ static void print_usage(const char* prog) {
         "           [--min-face-px N (default 40)]\n"
         "           [--source S     (embedding source id_photo|cabin|admin, default id_photo)]\n"
         "           [--ext-id STR   (external id / mã NV; when set, resident is keyed by ext_id)]\n"
-        "           [--home-floor N (default 0 = no floor registered)]\n"
+        "           [--home-floor <B|0..62|-1>      (default -1 = no floor registered; B = 0)]\n"
+        "           [--secondary-floor <B|0..62|-1> (default -1 = no floor registered; B = 0)]\n"
         "           [--role R       (snake_case org role: chairman|vice_president|\n"
         "                            deputy_general_director|head|director|manager|specialist|\n"
         "                            team_leader|sales|engineer|staff|intern|vip|guest_regular)]\n"
@@ -94,20 +93,20 @@ static void print_usage(const char* prog) {
         "           [--schema PATH  (schema.sql for empty DB, default db/schema.sql)]\n"
         "\n"
         "  Each image -> one embedding row (source='id_photo'), NOT averaged.\n"
-        "  New residents are created with home_floor=0 (\"no floor registered\").\n",
+        "  New residents are created with home_floor=-1, secondary_floor=-1 (\"no floor "
+        "registered\").\n",
         prog);
 }
 
 // Result line for the web (spec enroll phase A): a single JSON object on stdout
 // so the Node caller can JSON.parse the last line. No PII beyond what the caller
 // already has (ext_id/resident_id/counts). Emitted only with --json.
-static void print_json_result(bool ok, int64_t resident_id,
-                              const std::string& ext_id, int embeddings,
-                              const char* error) {
+static void print_json_result(bool ok, int64_t resident_id, const std::string& ext_id,
+                              int embeddings, const char* error) {
     // Minimal manual JSON (no dependency); values here are numeric/ascii ids.
     printf("{\"ok\":%s", ok ? "true" : "false");
     if (resident_id >= 0) printf(",\"resident_id\":%lld", (long long)resident_id);
-    if (!ext_id.empty())  printf(",\"ext_id\":\"%s\"", ext_id.c_str());
+    if (!ext_id.empty()) printf(",\"ext_id\":\"%s\"", ext_id.c_str());
     printf(",\"embeddings\":%d", embeddings);
     if (error && error[0]) printf(",\"error\":\"%s\"", error);
     printf("}\n");
@@ -117,12 +116,13 @@ static void print_json_result(bool ok, int64_t resident_id,
 // The 14 accepted roles (schema_version 3 CHECK). Empty role is allowed
 // (falls back to the DB default 'staff').
 static bool role_is_valid(const std::string& r) {
-    static const char* kRoles[] = {
-        "chairman","vice_president","deputy_general_director","head","director",
-        "manager","specialist","team_leader","sales","engineer","staff","intern",
-        "vip","guest_regular"
-    };
-    for (const char* k : kRoles) if (r == k) return true;
+    static const char* kRoles[] = {"chairman",   "vice_president", "deputy_general_director",
+                                   "head",       "director",       "manager",
+                                   "specialist", "team_leader",    "sales",
+                                   "engineer",   "staff",          "intern",
+                                   "vip",        "guest_regular"};
+    for (const char* k : kRoles)
+        if (r == k) return true;
     return false;
 }
 
@@ -130,9 +130,8 @@ static bool role_is_valid(const std::string& r) {
 static bool is_image_file(const std::string& name) {
     std::string ext = fs::path(name).extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c){ return std::tolower(c); });
-    return ext == ".jpg" || ext == ".jpeg" || ext == ".png" ||
-           ext == ".bmp" || ext == ".webp";
+                   [](unsigned char c) { return std::tolower(c); });
+    return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp" || ext == ".webp";
 }
 
 // Expand any directory entries in `paths` into the image files they contain
@@ -152,7 +151,8 @@ static std::vector<std::string> expand_image_inputs(const std::vector<std::strin
                 if (is_image_file(f)) found.push_back(f);
             }
             std::sort(found.begin(), found.end());
-            for (auto& f : found) out.push_back(std::move(f));
+            for (auto& f : found)
+                out.push_back(std::move(f));
         } else {
             out.push_back(p);
         }
@@ -161,52 +161,85 @@ static std::vector<std::string> expand_image_inputs(const std::vector<std::strin
 }
 
 int main(int argc, char** argv) {
-    std::string name;
+    std::string              name;
     std::vector<std::string> images;
-    std::string db_path, schema_path = "db/schema.sql";
-    std::string det_model, recog_model;
-    int   recog_dim   = 512;
-    bool  recog_rgb   = true;
-    int   min_face_px = 40;
-    bool  do_replace  = false;
-    bool  do_merge    = false;
-    std::string emb_source = "id_photo";   // schema: id_photo|cabin|admin (P3-5)
-    std::string ext_id;                     // enroll phase A: external id (mã NV)
-    std::string role;                       // org role (snake_case); "" = keep default
-    int   home_floor  = HOME_FLOOR_UNSET;   // -1 sentinel not used; 0 = no floor
-    bool  json_out    = false;              // machine-readable result line (for web)
+    std::string              db_path, schema_path = "db/schema.sql";
+    std::string              det_model, recog_model;
+    int                      recog_dim   = 512;
+    bool                     recog_rgb   = true;
+    int                      min_face_px = 40;
+    bool                     do_replace  = false;
+    bool                     do_merge    = false;
+    std::string              emb_source  = "id_photo"; // schema: id_photo|cabin|admin (P3-5)
+    std::string              ext_id;                   // enroll phase A: external id (mã NV)
+    std::string              role;                     // org role (snake_case); "" = keep default
+    std::string              home_floor_arg;
+    std::string              secondary_floor_arg;
+    bool                     has_home_floor      = false;
+    bool                     has_secondary_floor = false;
+    int                      home_floor      = HOME_FLOOR_UNSET; // -1 = no floor; 0 = Basement 'B'
+    int                      secondary_floor = SECONDARY_FLOOR_UNSET;
+    bool                     json_out        = false; // machine-readable result line (for web)
 
     for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        auto next = [&](const char* w) -> const char* {
-            if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", w); exit(2); }
+        std::string a    = argv[i];
+        auto        next = [&](const char* w) -> const char* {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "missing value for %s\n", w);
+                exit(2);
+            }
             return argv[++i];
         };
-        if      (a == "--name")         name        = next("--name");
-        else if (a == "--image")        images.push_back(next("--image"));
-        else if (a == "--db")           db_path     = next("--db");
-        else if (a == "--schema")       schema_path = next("--schema");
-        else if (a == "--det-model")    det_model   = next("--det-model");
-        else if (a == "--recog-model")  recog_model = next("--recog-model");
-        else if (a == "--recog-dim")    recog_dim   = std::atoi(next("--recog-dim"));
-        else if (a == "--recog-bgr")    recog_rgb   = false;
-        else if (a == "--replace")      do_replace  = true;
-        else if (a == "--merge")        do_merge    = true;
-        else if (a == "--min-face-px")  min_face_px = std::atoi(next("--min-face-px"));
-        else if (a == "--source")       emb_source  = next("--source");
-        else if (a == "--ext-id")       ext_id      = next("--ext-id");
-        else if (a == "--home-floor")   home_floor  = std::atoi(next("--home-floor"));
-        else if (a == "--role")         role        = next("--role");
-        else if (a == "--json")         json_out    = true;
-        else if (a == "--log-level" || a == "--log-dir") { next(a.c_str()); } // consumed by resolve_log_config
-        else if (a == "-h" || a == "--help") { print_usage(argv[0]); return 0; }
-        else {
+        if (a == "--name")
+            name = next("--name");
+        else if (a == "--image")
+            images.push_back(next("--image"));
+        else if (a == "--db")
+            db_path = next("--db");
+        else if (a == "--schema")
+            schema_path = next("--schema");
+        else if (a == "--det-model")
+            det_model = next("--det-model");
+        else if (a == "--recog-model")
+            recog_model = next("--recog-model");
+        else if (a == "--recog-dim")
+            recog_dim = std::atoi(next("--recog-dim"));
+        else if (a == "--recog-bgr")
+            recog_rgb = false;
+        else if (a == "--replace")
+            do_replace = true;
+        else if (a == "--merge")
+            do_merge = true;
+        else if (a == "--min-face-px")
+            min_face_px = std::atoi(next("--min-face-px"));
+        else if (a == "--source")
+            emb_source = next("--source");
+        else if (a == "--ext-id")
+            ext_id = next("--ext-id");
+        else if (a == "--home-floor") {
+            home_floor_arg = next("--home-floor");
+            has_home_floor = true;
+        } else if (a == "--secondary-floor") {
+            secondary_floor_arg = next("--secondary-floor");
+            has_secondary_floor = true;
+        } else if (a == "--role")
+            role = next("--role");
+        else if (a == "--json")
+            json_out = true;
+        else if (a == "--log-level" || a == "--log-dir") {
+            next(a.c_str());
+        } // consumed by resolve_log_config
+        else if (a == "-h" || a == "--help") {
+            print_usage(argv[0]);
+            return 0;
+        } else {
             fprintf(stderr, "unknown arg: %s\n", a.c_str());
-            print_usage(argv[0]); return 2;
+            print_usage(argv[0]);
+            return 2;
         }
     }
-    if (name.empty() || images.empty() || db_path.empty() ||
-        det_model.empty() || recog_model.empty()) {
+    if (name.empty() || images.empty() || db_path.empty() || det_model.empty() ||
+        recog_model.empty()) {
         print_usage(argv[0]);
         return 1;
     }
@@ -217,6 +250,18 @@ int main(int argc, char** argv) {
     if (!role.empty() && !role_is_valid(role)) {
         fprintf(stderr, "invalid --role '%s' (must be one of the 14 org roles)\n", role.c_str());
         if (json_out) print_json_result(false, -1, ext_id, 0, "invalid_role");
+        return 2;
+    }
+    if (has_home_floor && !parse_floor_value(home_floor_arg, home_floor)) {
+        fprintf(stderr, "invalid --home-floor '%s' (expected B, -1, or 0..62)\n",
+                home_floor_arg.c_str());
+        if (json_out) print_json_result(false, -1, ext_id, 0, "invalid_floor");
+        return 2;
+    }
+    if (has_secondary_floor && !parse_floor_value(secondary_floor_arg, secondary_floor)) {
+        fprintf(stderr, "invalid --secondary-floor '%s' (expected B, -1, or 0..62)\n",
+                secondary_floor_arg.c_str());
+        if (json_out) print_json_result(false, -1, ext_id, 0, "invalid_floor");
         return 2;
     }
 
@@ -233,8 +278,8 @@ int main(int argc, char** argv) {
     // Logger: offline tool -> stderr only unless --log-dir given. No PII (R7):
     // never log the resident name; reference by resident_id.
     Logger::instance().init(resolve_log_config(argc, argv, LogConfig{}));
-    LOG_INFO("add", "db=%s #images=%zu input=%dx%d",
-             db_path.c_str(), images.size(), NPU_INPUT_W, NPU_INPUT_H);
+    LOG_INFO("add", "db=%s #images=%zu input=%dx%d", db_path.c_str(), images.size(), NPU_INPUT_W,
+             NPU_INPUT_H);
 
     // ---- Open the SQLite resident DB (create+schema if empty) ----------
     ResidentDB db;
@@ -246,10 +291,10 @@ int main(int argc, char** argv) {
 
     // Does this resident already exist? Key by ext_id when given (enroll phase
     // A / mobile flow), else fall back to name (legacy CLI use).
-    int64_t existing_id = ext_id.empty() ? db.find_resident(name)
-                                         : db.find_by_ext_id(ext_id);
+    int64_t existing_id = ext_id.empty() ? db.find_resident(name) : db.find_by_ext_id(ext_id);
     if (existing_id >= 0 && !do_replace && !do_merge) {
-        LOG_ERROR("add", "resident id=%lld already exists; use --replace to "
+        LOG_ERROR("add",
+                  "resident id=%lld already exists; use --replace to "
                   "overwrite its embeddings or --merge to add",
                   (long long)existing_id);
         db.close();
@@ -299,7 +344,7 @@ int main(int argc, char** argv) {
         // No PII (R7): the image path may embed the resident's name (e.g.
         // faces/<name>/frame_01.jpg), so log only the basename.
         std::string img_name = fs::path(img_path).filename().string();
-        cv::Mat img = cv::imread(img_path, cv::IMREAD_COLOR);
+        cv::Mat     img      = cv::imread(img_path, cv::IMREAD_COLOR);
         if (img.empty()) {
             LOG_WARN("add", "cannot read image %s (skip)", img_name.c_str());
             continue;
@@ -311,8 +356,7 @@ int main(int argc, char** argv) {
         }
         float fw = best.x2 - best.x1, fh = best.y2 - best.y1;
         if (fw < min_face_px || fh < min_face_px) {
-            LOG_WARN("add", "face too small %.0fx%.0f in %s (skip)",
-                     fw, fh, img_name.c_str());
+            LOG_WARN("add", "face too small %.0fx%.0f in %s (skip)", fw, fh, img_name.c_str());
             continue;
         }
 
@@ -343,13 +387,14 @@ int main(int argc, char** argv) {
     // optional old-vector deletion and every new vector as one transaction, so
     // a live catalog reader sees either the old or the full new generation.
     ResidentEnrollRequest write_req;
-    write_req.ext_id     = ext_id;
-    write_req.name       = name;
-    write_req.home_floor = home_floor;
-    write_req.role       = role.empty() ? std::string("staff") : role;
-    write_req.source     = emb_source;
-    write_req.replace    = do_replace;
-    write_req.embeddings = std::move(new_embs);
+    write_req.ext_id          = ext_id;
+    write_req.name            = name;
+    write_req.home_floor      = home_floor;
+    write_req.secondary_floor = secondary_floor;
+    write_req.role            = role.empty() ? std::string("staff") : role;
+    write_req.source          = emb_source;
+    write_req.replace         = do_replace;
+    write_req.embeddings      = std::move(new_embs);
 
     ResidentEnrollResult write_res = write_resident_enrollment(db, write_req);
     if (!write_res.ok) {
@@ -362,11 +407,10 @@ int main(int argc, char** argv) {
         return 7;
     }
     const int64_t resident_id = write_res.resident_id;
-    const int written = write_res.embeddings_written;
+    const int     written     = write_res.embeddings_written;
 
-    LOG_INFO("add", "resident id=%lld: wrote %d embedding(s)%s -> %s",
-             (long long)resident_id, written,
-             do_replace ? " (replaced old)" : (do_merge ? " (merged)" : ""),
+    LOG_INFO("add", "resident id=%lld: wrote %d embedding(s)%s -> %s", (long long)resident_id,
+             written, do_replace ? " (replaced old)" : (do_merge ? " (merged)" : ""),
              db_path.c_str());
 
     delete recognizer;

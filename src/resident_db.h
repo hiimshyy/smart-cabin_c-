@@ -9,8 +9,8 @@
 // writer thread so the realtime frame loop never blocks on disk I/O. Callers
 // push work via log_event()/touch_resident(); close() flushes and joins.
 
-#include <cstdint>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -19,35 +19,40 @@
 struct sqlite3;
 struct sqlite3_stmt;
 
-// home_floor sentinel: 0 (or <=0) means "no floor registered yet" — cabin
-// greets the resident by name but does NOT auto-call a floor (spec req §6).
-constexpr int HOME_FLOOR_UNSET = 0;
+// Floor sentinel: -1 (or <0) means "no floor registered yet" — cabin greets the
+// resident by name without auto-calling that direction. 0 means Basement ('B').
+constexpr int HOME_FLOOR_UNSET      = -1;
+constexpr int SECONDARY_FLOOR_UNSET = -1;
+
+// Parse a floor label/value: "B"/"b" -> 0, ""/"-1" -> -1, or integer 0..62.
+bool parse_floor_value(const std::string& text, int& out_floor);
 
 struct Resident {
     int64_t     id = -1;
     std::string name;
     std::string apartment;
-    int         home_floor = HOME_FLOOR_UNSET;
-    std::string language;        // "vi" | "en"
+    int         home_floor      = HOME_FLOOR_UNSET;
+    int         secondary_floor = SECONDARY_FLOOR_UNSET;
+    std::string language; // "vi" | "en"
     std::string greeting_name;
-    std::string role;            // resident | staff | vip | guest_regular
-    std::string ext_id;          // cloud id (ElevCore), "" if NULL (spec edge-core-uds)
+    std::string role;   // resident | staff | vip | guest_regular
+    std::string ext_id; // cloud id (ElevCore), "" if NULL (spec edge-core-uds)
 };
 
 struct EmbeddingRow {
-    int64_t            id = -1;
-    int64_t            resident_id = -1;
-    std::string        source;       // id_photo | cabin | admin
-    int64_t             declared_dim = 0;
-    int64_t             blob_nbytes = 0;
-    bool                metadata_valid = false; // SQLite integer types/ranges are sane
-    bool                blob_valid = false; // non-NULL blob; exact validation lives in catalog builder
-    std::vector<float>  vector;       // only allocated after safe exact-size checks
+    int64_t     id          = -1;
+    int64_t     resident_id = -1;
+    std::string source; // id_photo | cabin | admin
+    int64_t     declared_dim   = 0;
+    int64_t     blob_nbytes    = 0;
+    bool        metadata_valid = false; // SQLite integer types/ranges are sane
+    bool        blob_valid     = false; // non-NULL blob; exact validation lives in catalog builder
+    std::vector<float> vector;          // only allocated after safe exact-size checks
 };
 
 struct MatchEvent {
     int         cabin_id       = 1;
-    int64_t     resident_id    = -1;   // <0 => stored as NULL (unknown)
+    int64_t     resident_id    = -1; // <0 => stored as NULL (unknown)
     float       similarity     = -1.0f;
     float       liveness_score = -1.0f; // <0 => stored as NULL (v1)
     std::string action;                 // matched|unknown|cancelled|...
@@ -61,14 +66,14 @@ struct MatchEvent {
 // Kept here (not in cabin_config.h) so ResidentDB has no dependency on the
 // config module — the dependency flows cabin_config -> resident_db.
 struct CabinRow {
-    int64_t     id               = 1;
+    int64_t     id = 1;
     std::string name;
     std::string location;
-    std::string camera_urls;              // raw JSON array string, e.g. ["rtsp://..."]
+    std::string camera_urls; // raw JSON array string, e.g. ["rtsp://..."]
     std::string elevator_endpoint;
-    int         floors_min       = 1;
+    int         floors_min       = 0;
     int         floors_max       = 30;
-    int         gst_latency_ms   = 100;   // schema_version 2 (Nhóm A)
+    int         gst_latency_ms   = 100; // schema_version 2 (Nhóm A)
     float       match_thr        = 0.35f;
     int         confirm_streak   = 5;
     int         cooldown_ms      = 3000;
@@ -82,17 +87,28 @@ struct CabinRow {
 // set are written. Used by the REST PATCH path (spec Enroll API) and tests.
 struct CabinPatch {
     // camera_urls: raw JSON string to store (already validated by caller).
-    bool has_camera_urls = false;       std::string camera_urls;
-    bool has_elevator_endpoint = false; std::string elevator_endpoint;
-    bool has_floors_min = false;        int floors_min = 1;
-    bool has_floors_max = false;        int floors_max = 30;
-    bool has_gst_latency_ms = false;    int gst_latency_ms = 100;
-    bool has_match_thr = false;         float match_thr = 0.35f;
-    bool has_confirm_streak = false;    int confirm_streak = 5;
-    bool has_cooldown_ms = false;       int cooldown_ms = 3000;
-    bool has_unknown_after_ms = false;  int unknown_after_ms = 2000;
-    bool has_reconnect_min_ms = false;  int reconnect_min_ms = 500;
-    bool has_reconnect_max_ms = false;  int reconnect_max_ms = 10000;
+    bool        has_camera_urls = false;
+    std::string camera_urls;
+    bool        has_elevator_endpoint = false;
+    std::string elevator_endpoint;
+    bool        has_floors_min       = false;
+    int         floors_min           = 0;
+    bool        has_floors_max       = false;
+    int         floors_max           = 30;
+    bool        has_gst_latency_ms   = false;
+    int         gst_latency_ms       = 100;
+    bool        has_match_thr        = false;
+    float       match_thr            = 0.35f;
+    bool        has_confirm_streak   = false;
+    int         confirm_streak       = 5;
+    bool        has_cooldown_ms      = false;
+    int         cooldown_ms          = 3000;
+    bool        has_unknown_after_ms = false;
+    int         unknown_after_ms     = 2000;
+    bool        has_reconnect_min_ms = false;
+    int         reconnect_min_ms     = 500;
+    bool        has_reconnect_max_ms = false;
+    int         reconnect_max_ms     = 10000;
 };
 
 class ResidentDB {
@@ -110,8 +126,7 @@ public:
     // Offline tools (enroll/add/migrate) that only use the synchronous write
     // API should pass spawn_writer=false to avoid two threads sharing the
     // sqlite3 handle (see code-review P3-6). Returns false on any failure.
-    bool open(const std::string& db_path,
-              const std::string& schema_sql_path = "db/schema.sql",
+    bool open(const std::string& db_path, const std::string& schema_sql_path = "db/schema.sql",
               bool spawn_writer = true);
 
     // Open an existing DB as a dedicated catalog reader. No schema/migration/
@@ -124,19 +139,19 @@ public:
 
     // Coherent active-catalog snapshot: residents + embeddings are selected in
     // one deferred read transaction with deterministic ordering.
-    bool load_active_snapshot(std::vector<Resident>& residents,
+    bool load_active_snapshot(std::vector<Resident>&     residents,
                               std::vector<EmbeddingRow>& embeddings);
 
 #ifdef RESIDENT_DB_TEST_HOOK
     using SnapshotTestHook = bool (*)(void*);
     void set_snapshot_test_hook(SnapshotTestHook hook, void* ctx) {
-        snapshot_test_hook_ = hook; snapshot_test_hook_ctx_ = ctx;
+        snapshot_test_hook_     = hook;
+        snapshot_test_hook_ctx_ = ctx;
     }
 #endif
 
     // Load all active (active=1) residents plus their embeddings.
-    bool load_active(std::vector<Resident>& residents,
-                     std::vector<EmbeddingRow>& embeddings);
+    bool load_active(std::vector<Resident>& residents, std::vector<EmbeddingRow>& embeddings);
 
     // ---- Cabin runtime config (spec cabin-runtime-config) -------------
     // Load the cabins row for `id`. On success returns a CabinRow with
@@ -158,10 +173,9 @@ public:
 
     // ---- Phase 2 write API (enroll_faces / add_person) ----------------
     // These run synchronously on the caller thread (enroll tools are offline).
-    int64_t upsert_resident(const std::string& name,
-                            int home_floor = HOME_FLOOR_UNSET);
-    bool    add_embedding(int64_t resident_id,
-                          const std::string& source,
+    int64_t upsert_resident(const std::string& name, int home_floor = HOME_FLOOR_UNSET,
+                            int secondary_floor = SECONDARY_FLOOR_UNSET);
+    bool    add_embedding(int64_t resident_id, const std::string& source,
                           const std::vector<float>& vec);
     bool    delete_embeddings(int64_t resident_id);
 
@@ -169,13 +183,13 @@ public:
     int64_t find_by_ext_id(const std::string& ext_id) const;
 
     // Upsert keyed by ext_id (spec enroll phase A): if a resident with this
-    // ext_id exists, update name/home_floor/role on it; otherwise insert a new
-    // resident carrying ext_id. `role` must be one of the schema CHECK values;
-    // callers should validate first. Returns the resident id, or -1 on error.
-    int64_t upsert_resident_by_ext_id(const std::string& ext_id,
-                                      const std::string& name,
-                                      int home_floor,
-                                      const std::string& role);
+    // ext_id exists, update name/home_floor/secondary_floor/role on it;
+    // otherwise insert a new resident carrying ext_id. `role` must be one of
+    // the schema CHECK values; callers should validate first. Returns the
+    // resident id, or -1 on error.
+    int64_t upsert_resident_by_ext_id(const std::string& ext_id, const std::string& name,
+                                      int home_floor, const std::string& role,
+                                      int secondary_floor = SECONDARY_FLOOR_UNSET);
 
     // Look up a resident id by exact name. Returns -1 if not found.
     // Synchronous; used by migrate_fdb to decide skip vs overwrite.
@@ -184,26 +198,28 @@ public:
     // Delete a resident row (embeddings cascade via FK). Synchronous.
     // Used by offline tools to drop a resident that ended up with no usable
     // embedding (code-review P3-2).
-    bool    remove_resident(int64_t resident_id);
+    bool remove_resident(int64_t resident_id);
 
     // Wrap a batch of synchronous writes in one transaction so ~N inserts
     // don't each fsync (code-review P3-1). Offline-tool use only; do not mix
     // with the async writer thread. commit() also used after a failed batch
     // via rollback().
-    bool    begin();
-    bool    commit();
-    bool    rollback();
+    bool begin();
+    bool commit();
+    bool rollback();
 
     // Flush pending async writes and stop the writer thread.
     void close();
 
-    bool is_open() const { return db_ != nullptr; }
+    bool is_open() const {
+        return db_ != nullptr;
+    }
 
 private:
     // Background writer plumbing --------------------------------------
     struct WriteJob {
         enum class Kind { Event, Touch } kind;
-        MatchEvent event;      // valid when kind == Event
+        MatchEvent event;            // valid when kind == Event
         int64_t    resident_id = -1; // valid when kind == Touch
     };
     void writer_loop();
@@ -224,8 +240,8 @@ private:
     // separate reader connection, but load_active() remains a safe public API.
     mutable std::mutex db_mtx_;
 #ifdef RESIDENT_DB_TEST_HOOK
-    SnapshotTestHook snapshot_test_hook_ = nullptr;
-    void* snapshot_test_hook_ctx_ = nullptr;
+    SnapshotTestHook snapshot_test_hook_     = nullptr;
+    void*            snapshot_test_hook_ctx_ = nullptr;
 #endif
 
     sqlite3* db_ = nullptr;

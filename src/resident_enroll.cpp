@@ -2,8 +2,7 @@
 
 #include "resident_db.h"
 
-ResidentEnrollResult write_resident_enrollment(ResidentDB& db,
-                                                const ResidentEnrollRequest& req) {
+ResidentEnrollResult write_resident_enrollment(ResidentDB& db, const ResidentEnrollRequest& req) {
     ResidentEnrollResult out;
     if (!db.is_open()) {
         out.error = "db_not_open";
@@ -22,16 +21,17 @@ ResidentEnrollResult write_resident_enrollment(ResidentDB& db,
     // small so the transaction boundary is easy to audit.
     auto fail = [&](const char* error) {
         db.rollback();
-        out.error = error;
-        out.resident_id = -1;
+        out.error              = error;
+        out.resident_id        = -1;
         out.embeddings_written = 0;
         return out;
     };
 
-    const std::string role = req.role.empty() ? std::string("staff") : req.role;
-    int64_t resident_id = req.ext_id.empty()
-        ? db.upsert_resident(req.name, req.home_floor)
-        : db.upsert_resident_by_ext_id(req.ext_id, req.name, req.home_floor, role);
+    const std::string role        = req.role.empty() ? std::string("staff") : req.role;
+    int64_t           resident_id = req.ext_id.empty()
+                                        ? db.upsert_resident(req.name, req.home_floor, req.secondary_floor)
+                                        : db.upsert_resident_by_ext_id(req.ext_id, req.name, req.home_floor,
+                                                                       role, req.secondary_floor);
     if (resident_id < 0) return fail("db_upsert_failed");
 
     if (req.replace && !db.delete_embeddings(resident_id)) {
@@ -57,8 +57,8 @@ ResidentEnrollResult write_resident_enrollment(ResidentDB& db,
         return out;
     }
 
-    out.ok = true;
-    out.resident_id = resident_id;
+    out.ok                 = true;
+    out.resident_id        = resident_id;
     out.embeddings_written = written;
     return out;
 }

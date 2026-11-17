@@ -70,8 +70,13 @@ int main() {
     std::int64_t value = 0;
     CHECK(floor_to_register_value(5, value) && value == 32,
           "floor 5 maps to register value 2^5 = 32");
-    CHECK(!floor_to_register_value(0, value), "unset floor 0 is rejected");
+    CHECK(floor_to_register_value(0, value) && value == 1,
+          "basement floor 0 (B) maps to register value 2^0 = 1");
+    CHECK(!floor_to_register_value(-1, value), "unset floor -1 is rejected");
     CHECK(!floor_to_register_value(63, value), "floor outside signed 64-bit range is rejected");
+    floor_to_register_value(0, value);
+    CHECK(socketio_floor_command_packet(0, config, value).find("\"value\":1,") != std::string::npos,
+          "basement floor command encodes value=1");
     floor_to_register_value(5, value);
     const std::string command = socketio_floor_command_packet(0, config, value);
     CHECK(command == "420[\"Client/command\",{\"action\":\"write\","
