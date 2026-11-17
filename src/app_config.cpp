@@ -61,7 +61,7 @@ void print_usage(const char* prog) {
         "    --person-model PATH   Enable YOLO person detection + tracker\n"
         "    --person-thr F        High person score threshold (default 0.5)\n"
         "    --person-low-thr F    Low ByteTrack score threshold (default 0.1)\n"
-        "    --animal-thr F        Cat/dog alert score threshold (default 0.5)\n"
+        "    --animal-thr F        Cat/dog alert score threshold (default 0.8)\n"
         "    --person-every N      Only run YOLO every N frames (default 1)\n"
         "    --track-iou F         Min IoU for track association (default 0.3)\n"
         "    --track-max-miss N    Kill track after N missed frames (default 30)\n"

@@ -14,7 +14,7 @@ source ./env.sh >/dev/null
 [ "$FACE_CABIN_ID" = "2" ]
 [ "$FACE_CAMERA_SELECT" = "#6" ]
 [ "$FACE_CABIN_SOCKETIO" = "0" ]
-[ "$FACE_ANIMAL_THR" = "0.5" ]
+[ "$FACE_ANIMAL_THR" = "0.8" ]
 [ -z "$FACE_TRAFFIC_DB" ]
 [ "$FACE_ELEVATOR_SLAVE" = "2" ]
 [ "$FACE_TRAFFIC_VISITOR_REID" = "0" ]
@@ -78,7 +78,7 @@ for ((i = 0; i < ${#ARGS[@]}; ++i)); do
         found_record=1
     fi
     if [ "${ARGS[$i]}" = "--animal-thr" ] &&
-       [ "${ARGS[$((i + 1))]}" = "0.5" ]; then
+       [ "${ARGS[$((i + 1))]}" = "0.8" ]; then
         found_animal_thr=1
     fi
 done

@@ -41,7 +41,7 @@ export FACE_TRACKER_MODE="${FACE_TRACKER_MODE:-byte}"
 export FACE_PERSON_THR="${FACE_PERSON_THR:-0.5}"
 export FACE_PERSON_LOW_THR="${FACE_PERSON_LOW_THR:-0.1}"
 # Ngưỡng tin cậy riêng cho cảnh báo động vật (chó/mèo), độc lập với person.
-export FACE_ANIMAL_THR="${FACE_ANIMAL_THR:-0.5}"
+export FACE_ANIMAL_THR="${FACE_ANIMAL_THR:-0.8}"
 export FACE_TRACK_LOST_MS="${FACE_TRACK_LOST_MS:-1200}"
 # This installation serves physical cabin/elevator 2.
 export FACE_CABIN_ID="${FACE_CABIN_ID:-2}"

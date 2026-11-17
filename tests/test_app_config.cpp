@@ -63,7 +63,7 @@ int main() {
     auto bad_mode = parse({"app", "--tracker-mode", "sort"});
     CHECK(bad_mode.result.invalid_args, "invalid tracker mode rejected");
 
-    CHECK(d.cfg.animal_thr == 0.5f, "default animal threshold is 0.5");
+    CHECK(d.cfg.animal_thr == 0.8f, "default animal threshold is 0.8");
     auto animal_ok = parse({"app", "--animal-thr", "0.65"});
     CHECK(!animal_ok.result.invalid_args && std::fabs(animal_ok.cfg.animal_thr - 0.65f) < 1e-6f,
           "valid --animal-thr parsed");

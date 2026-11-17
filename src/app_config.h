@@ -52,7 +52,7 @@ struct AppConfig {
     float       track_iou               = 0.3f;
     float       person_thr              = 0.5f;
     float       person_low_thr          = 0.1f;
-    float       animal_thr              = 0.5f; // cat/dog alert score threshold (independent)
+    float       animal_thr              = 0.8f; // cat/dog alert score threshold (independent)
     float       ui_scale_override       = 0.0f; // 0 = auto (scale by frame.rows / 480)
     bool        recog_rgb               = true;
     bool        preview                 = true;
