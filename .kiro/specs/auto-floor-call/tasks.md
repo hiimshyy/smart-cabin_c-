@@ -111,6 +111,7 @@ Thứ tự đi từ hợp đồng IoT Core (task 0), logic thuần có unit test
   - [x] 10.2 Mở rộng `FloorCallCoordinator` (`select_target_floor`, `CabinFloorTracker`) và cho phép mã hóa tầng `0` (`"B"` -> `value=1`) trên `SocketIoClient`.
   - [x] 10.3 Cập nhật `ResidentCatalog`, `ResidentEnroll`, `add_person --secondary-floor`, `overlay.cpp` và nối luồng `CONN_DATA` trong `main.cpp`.
   - [x] 10.4 Bổ sung unit test cho `ResidentDB` v4, `ResidentEnroll`, `ResidentCatalog`, `SocketIoClient` (`B=0`) và `FloorCallCoordinator` (`secondary_floor` + `CabinFloorTracker`).
+  - [x] 10.5 Tinh chỉnh `select_target_floor` theo hướng cabin đối xứng (`direction_mismatch` khi đi ngược chiều, hỗ trợ `cur > home` về `home_floor` khi `Down`/`Unknown`, chỉ gọi tầng phụ tại `home_floor` khi `Down`, và hỗ trợ `secondary > home`).
 
 ## Notes
 

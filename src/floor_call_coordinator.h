@@ -114,7 +114,8 @@ public:
 
     // Choose destination floor from home_floor / secondary_floor given live cabin context.
     static FloorSelectionResult select_target_floor(int home_floor, int secondary_floor,
-                                                    const CabinFloorContext& context);
+                                                    const CabinFloorContext& context,
+                                                    int                      floors_min = 0);
 
     // Called once per confirmed identity.  A resident is processed at most
     // once per visit and a floor is queued at most once per visit.

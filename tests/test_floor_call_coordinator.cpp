@@ -98,56 +98,152 @@ int main() {
               "unknown cabin floor without home_floor returns no_floor");
     }
 
-    // (home=5, secondary=1): from >=5 goes down to 1; from <=1 goes up to 5.
-    CHECK(FloorCallCoordinator::select_target_floor(5, 1, ctx(5, CabinTravelDirection::Unknown))
-                  .target_floor == 1,
-          "home=5,sec=1 at floor 5 calls 1");
-    CHECK(FloorCallCoordinator::select_target_floor(5, 1, ctx(6, CabinTravelDirection::Up))
-                  .target_floor == 1,
-          "home=5,sec=1 at floor 6 calls 1");
-    CHECK(FloorCallCoordinator::select_target_floor(5, 1, ctx(1, CabinTravelDirection::Unknown))
-                  .target_floor == 5,
-          "home=5,sec=1 at floor 1 calls 5");
-    CHECK(FloorCallCoordinator::select_target_floor(5, 1, ctx(0, CabinTravelDirection::Up))
-                  .target_floor == 5,
-          "home=5,sec=1 at floor B calls 5");
-    CHECK(FloorCallCoordinator::select_target_floor(5, 1, ctx(3, CabinTravelDirection::Down))
-                  .target_floor == 1,
-          "home=5,sec=1 at intermediate floor 3 going down calls 1");
-    CHECK(FloorCallCoordinator::select_target_floor(5, 1, ctx(3, CabinTravelDirection::Up))
-                  .target_floor == 5,
-          "home=5,sec=1 at intermediate floor 3 going up calls 5");
-
-    // (home=3, secondary=0/'B'): intermediate floor 1 vs 2 + direction tie-break.
-    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(3, CabinTravelDirection::Unknown))
-                  .target_floor == 0,
-          "home=3,sec=B at floor 3 calls B (0)");
+    // (home=3, secondary=0/'B'): full direction matrix.
+    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(0, CabinTravelDirection::Up))
+                  .target_floor == 3,
+          "home=3,sec=B at floor B going up calls 3");
+    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(0, CabinTravelDirection::Down))
+                  .target_floor == 3,
+          "home=3,sec=B at floor B (bottom) going down still calls 3");
+    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(0, CabinTravelDirection::Unknown))
+                  .target_floor == 3,
+          "home=3,sec=B at floor B idle calls 3");
     CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(1, CabinTravelDirection::Up))
                   .target_floor == 3,
           "home=3,sec=B at floor 1 going up calls 3");
     CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(1, CabinTravelDirection::Unknown))
                   .target_floor == 3,
-          "home=3,sec=B at floor 1 idle calls 3 (cur <= 1 goes up)");
+          "home=3,sec=B at floor 1 idle calls 3");
     CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(1, CabinTravelDirection::Down))
                   .target_floor == 0,
           "home=3,sec=B at floor 1 going down calls B (0)");
+    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(2, CabinTravelDirection::Up))
+                  .target_floor == 3,
+          "home=3,sec=B at floor 2 going up calls 3");
+    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(2, CabinTravelDirection::Unknown))
+                  .target_floor == 3,
+          "home=3,sec=B at floor 2 idle calls 3");
     CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(2, CabinTravelDirection::Down))
                   .target_floor == 0,
           "home=3,sec=B at floor 2 going down calls B (0)");
-    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(2, CabinTravelDirection::Unknown))
+    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(3, CabinTravelDirection::Down))
                   .target_floor == 0,
-          "home=3,sec=B at floor 2 idle calls B (0)");
+          "home=3,sec=B at floor 3 going down calls B (0)");
+    {
+        auto f3_up =
+            FloorCallCoordinator::select_target_floor(3, 0, ctx(3, CabinTravelDirection::Up));
+        CHECK(f3_up.target_floor == -1 && f3_up.reason == "direction_mismatch",
+              "home=3,sec=B at floor 3 going up does not call");
+        auto f3_idle =
+            FloorCallCoordinator::select_target_floor(3, 0, ctx(3, CabinTravelDirection::Unknown));
+        CHECK(f3_idle.target_floor == -1 && f3_idle.reason == "already_at_floor",
+              "home=3,sec=B at floor 3 idle does not call");
+    }
+    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(5, CabinTravelDirection::Down))
+                  .target_floor == 3,
+          "home=3,sec=B at floor 5 (>home) going down calls 3");
+    CHECK(FloorCallCoordinator::select_target_floor(3, 0, ctx(5, CabinTravelDirection::Unknown))
+                  .target_floor == 3,
+          "home=3,sec=B at floor 5 (>home) idle calls 3");
+    {
+        auto f5_up =
+            FloorCallCoordinator::select_target_floor(3, 0, ctx(5, CabinTravelDirection::Up));
+        CHECK(f5_up.target_floor == -1 && f5_up.reason == "direction_mismatch",
+              "home=3,sec=B at floor 5 (>home) going up does not call");
+    }
 
-    // No secondary_floor when cabin is already at or above home_floor.
+    // (home=6, secondary=1): non-bottom secondary floor.
+    CHECK(FloorCallCoordinator::select_target_floor(6, 1, ctx(0, CabinTravelDirection::Down))
+                  .target_floor == 6,
+          "home=6,sec=1 at bottom floor B calls 6");
+    CHECK(FloorCallCoordinator::select_target_floor(6, 1, ctx(1, CabinTravelDirection::Up))
+                  .target_floor == 6,
+          "home=6,sec=1 at floor 1 going up calls 6");
+    CHECK(FloorCallCoordinator::select_target_floor(6, 1, ctx(1, CabinTravelDirection::Unknown))
+                  .target_floor == 6,
+          "home=6,sec=1 at floor 1 idle calls 6");
+    {
+        auto f1_down =
+            FloorCallCoordinator::select_target_floor(6, 1, ctx(1, CabinTravelDirection::Down));
+        CHECK(f1_down.target_floor == -1 && f1_down.reason == "direction_mismatch",
+              "home=6,sec=1 at floor 1 going down does not call (user may want B)");
+    }
+    CHECK(FloorCallCoordinator::select_target_floor(6, 1, ctx(3, CabinTravelDirection::Down))
+                  .target_floor == 1,
+          "home=6,sec=1 at intermediate floor 3 going down calls 1");
+    CHECK(FloorCallCoordinator::select_target_floor(6, 1, ctx(3, CabinTravelDirection::Up))
+                  .target_floor == 6,
+          "home=6,sec=1 at intermediate floor 3 going up calls 6");
+    CHECK(FloorCallCoordinator::select_target_floor(6, 1, ctx(3, CabinTravelDirection::Unknown))
+                  .target_floor == 6,
+          "home=6,sec=1 at intermediate floor 3 idle calls 6");
+    CHECK(FloorCallCoordinator::select_target_floor(6, 1, ctx(6, CabinTravelDirection::Down))
+                  .target_floor == 1,
+          "home=6,sec=1 at floor 6 going down calls 1");
+    {
+        auto f6_idle =
+            FloorCallCoordinator::select_target_floor(6, 1, ctx(6, CabinTravelDirection::Unknown));
+        CHECK(f6_idle.target_floor == -1 && f6_idle.reason == "already_at_floor",
+              "home=6,sec=1 at floor 6 idle does not call");
+        auto f7_up =
+            FloorCallCoordinator::select_target_floor(6, 1, ctx(7, CabinTravelDirection::Up));
+        CHECK(f7_up.target_floor == -1 && f7_up.reason == "direction_mismatch",
+              "home=6,sec=1 at floor 7 going up does not call");
+    }
+    CHECK(FloorCallCoordinator::select_target_floor(6, 1, ctx(7, CabinTravelDirection::Down))
+                  .target_floor == 6,
+          "home=6,sec=1 at floor 7 going down calls 6");
+
+    // Symmetric case: secondary_floor > home_floor (home=1, secondary=6).
+    CHECK(FloorCallCoordinator::select_target_floor(1, 6, ctx(1, CabinTravelDirection::Up))
+                  .target_floor == 6,
+          "home=1,sec=6 at floor 1 going up calls 6");
+    {
+        auto f1_idle =
+            FloorCallCoordinator::select_target_floor(1, 6, ctx(1, CabinTravelDirection::Unknown));
+        CHECK(f1_idle.target_floor == -1 && f1_idle.reason == "already_at_floor",
+              "home=1,sec=6 at floor 1 idle does not call");
+    }
+    CHECK(FloorCallCoordinator::select_target_floor(1, 6, ctx(3, CabinTravelDirection::Up))
+                  .target_floor == 6,
+          "home=1,sec=6 at floor 3 going up calls 6");
+    CHECK(FloorCallCoordinator::select_target_floor(1, 6, ctx(3, CabinTravelDirection::Down))
+                  .target_floor == 1,
+          "home=1,sec=6 at floor 3 going down calls 1");
+    CHECK(FloorCallCoordinator::select_target_floor(1, 6, ctx(3, CabinTravelDirection::Unknown))
+                  .target_floor == 1,
+          "home=1,sec=6 at floor 3 idle calls primary (1)");
+    CHECK(FloorCallCoordinator::select_target_floor(1, 6, ctx(6, CabinTravelDirection::Down))
+                  .target_floor == 1,
+          "home=1,sec=6 at floor 6 going down calls 1");
+    CHECK(FloorCallCoordinator::select_target_floor(1, 6, ctx(6, CabinTravelDirection::Unknown))
+                  .target_floor == 1,
+          "home=1,sec=6 at floor 6 idle calls primary (1)");
+
+    // Single-floor resident (no secondary_floor): direction-aware.
     {
         auto at_home =
             FloorCallCoordinator::select_target_floor(3, -1, ctx(3, CabinTravelDirection::Unknown));
         CHECK(at_home.target_floor == -1 && at_home.reason == "already_at_floor",
               "home=3,sec=-1 at floor 3 is suppressed (already_at_floor)");
-        auto above_home =
-            FloorCallCoordinator::select_target_floor(3, -1, ctx(5, CabinTravelDirection::Down));
-        CHECK(above_home.target_floor == -1 && above_home.reason == "no_secondary_floor",
-              "home=3,sec=-1 at floor 5 is suppressed (no_secondary_floor)");
+        auto below_down =
+            FloorCallCoordinator::select_target_floor(3, -1, ctx(2, CabinTravelDirection::Down));
+        CHECK(below_down.target_floor == -1 && below_down.reason == "direction_mismatch",
+              "home=3,sec=-1 at floor 2 going down is suppressed (direction_mismatch)");
+        CHECK(FloorCallCoordinator::select_target_floor(3, -1, ctx(0, CabinTravelDirection::Down))
+                      .target_floor == 3,
+              "home=3,sec=-1 at bottom floor B calls 3 regardless of direction");
+        CHECK(FloorCallCoordinator::select_target_floor(3, -1, ctx(5, CabinTravelDirection::Down))
+                      .target_floor == 3,
+              "home=3,sec=-1 at floor 5 going down calls 3");
+        CHECK(
+            FloorCallCoordinator::select_target_floor(3, -1, ctx(5, CabinTravelDirection::Unknown))
+                    .target_floor == 3,
+            "home=3,sec=-1 at floor 5 idle calls 3");
+        auto above_up =
+            FloorCallCoordinator::select_target_floor(3, -1, ctx(5, CabinTravelDirection::Up));
+        CHECK(above_up.target_floor == -1 && above_up.reason == "direction_mismatch",
+              "home=3,sec=-1 at floor 5 going up is suppressed (direction_mismatch)");
     }
 
     // CabinFloorTracker hall-call memory overrides stale 8480 direction.
@@ -182,16 +278,16 @@ int main() {
         coordinator.on_presence({}, 12000.0); // close visit 2
         coordinator.on_presence({40}, 12100.0);
         const size_t before = queued.size();
-        auto d_b = coordinator.on_confirmed(40, 600, 3, 0, ctx(3, CabinTravelDirection::Unknown),
+        auto d_b = coordinator.on_confirmed(40, 600, 3, 0, ctx(3, CabinTravelDirection::Down),
                                             0.95f, 12110.0);
         CHECK(d_b.state == FloorCallState::Queued && d_b.floor == 0 &&
                   queued.size() == before + 1 && queued.back().floor == 0 &&
                   queued.back().value == 1,
-              "resident (home=3,sec=B) at floor 3 queues Basement 0 with value=1");
-        auto d_s1 = coordinator.on_confirmed(41, 601, 5, 1, ctx(5, CabinTravelDirection::Unknown),
+              "resident (home=3,sec=B) at floor 3 going down queues Basement 0 with value=1");
+        auto d_s1 = coordinator.on_confirmed(41, 601, 5, 1, ctx(5, CabinTravelDirection::Down),
                                              0.94f, 12120.0);
         CHECK(d_s1.state == FloorCallState::Queued && d_s1.floor == 1 && queued.back().value == 2,
-              "resident (home=5,sec=1) at floor 5 queues floor 1 with value=2");
+              "resident (home=5,sec=1) at floor 5 going down queues floor 1 with value=2");
         auto d_sup = coordinator.on_confirmed(42, 602, 3, -1, ctx(3, CabinTravelDirection::Unknown),
                                               0.94f, 12130.0);
         CHECK(d_sup.state == FloorCallState::Suppressed && d_sup.reason == "already_at_floor" &&

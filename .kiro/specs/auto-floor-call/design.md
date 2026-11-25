@@ -161,19 +161,20 @@ Quy ước index tầng thống nhất trên `residents` (`home_floor`, `seconda
 - `8215` (`HALL_CALLS_UP`) và `8225` (`HALL_CALLS_DOWN`): hướng gọi tầng tại `current_floor`, lưu nhớ tối đa `15000 ms` sau khi bit tắt (vì bit Hall Call có thể tắt khi cửa mở).
 - `8480` (`STATUS`): dự phòng chiều `up/down` khi không có Hall Call gần nhất ở `current_floor`.
 
-Quy tắc `FloorCallCoordinator::select_target_floor(home_floor, secondary_floor, context)`:
+Quy tắc `FloorCallCoordinator::select_target_floor(home_floor, secondary_floor, context, floors_min)`:
 
 1. Nếu cả `home_floor < 0` và `secondary_floor < 0` → `SUPPRESSED` (`no_floor`).
 2. Nếu chưa xác định được `current_floor` từ `CONN_DATA` (ví dụ mới khởi động hoặc mất kết nối Socket.IO) → fallback gọi `home_floor` (nếu `home_floor >= 0`), ngược lại `SUPPRESSED` (`no_floor`).
-3. Nếu `current_floor >= home_floor`:
-   - Có `secondary_floor >= 0` và `current_floor > secondary_floor` → gọi `secondary_floor` (đi xuống).
-   - Ngược lại → `SUPPRESSED` (`already_at_floor` nếu `current_floor == home_floor`, hoặc `no_secondary_floor` nếu `current_floor > home_floor`).
-4. Nếu `current_floor <= secondary_floor` hoặc chưa có `secondary_floor`:
-   - Gọi `home_floor` (nếu `home_floor >= 0`), ngược lại `SUPPRESSED` (`no_floor` / `already_at_floor`).
-5. Nếu ở tầng trung gian (`secondary_floor < current_floor < home_floor`):
-   - Hướng `Down` → gọi `secondary_floor`.
-   - Hướng `Up` → gọi `home_floor`.
-   - Chưa rõ hướng (thang đứng yên không có Hall Call): nếu `current_floor <= 1` (tầng B hoặc tầng 1) thì gọi `home_floor` (lên), ngược lại từ tầng 2 trở lên ưu tiên gọi `secondary_floor` (xuống).
+3. **Chỉ có 1 tầng** (`only_floor`, ví dụ chỉ có `home_floor` và `secondary_floor = -1`):
+   - `cur == only_floor` → `SUPPRESSED` (`already_at_floor`).
+   - `cur < only_floor`: nếu ở tầng đáy (`cur <= floors_min`) hoặc hướng `Up` / `Unknown` → gọi `only_floor`; nếu hướng `Down` (ở tầng `> floors_min`) → `SUPPRESSED` (`direction_mismatch`).
+   - `cur > only_floor`: nếu hướng `Down` / `Unknown` → gọi `only_floor`; nếu hướng `Up` → `SUPPRESSED` (`direction_mismatch`).
+4. **Có đủ 2 tầng khác nhau** (hỗ trợ đối xứng cả `secondary < home` và `secondary > home`; đặt `low = min(home, sec)`, `high = max(home, sec)`, `primary = home_floor`):
+   - `cur < low`: nếu ở tầng đáy (`cur <= floors_min`) hoặc hướng `Up` / `Unknown` → gọi `primary`; hướng `Down` (ở tầng `> floors_min`) → `SUPPRESSED` (`direction_mismatch`).
+   - `cur == low`: hướng `Up` → gọi `high`; hướng `Down` → gọi `high` nếu ở tầng đáy (`cur <= floors_min`), ngược lại `SUPPRESSED` (`direction_mismatch`); hướng `Unknown` → `SUPPRESSED` (`already_at_floor`) nếu `cur == primary`, ngược lại gọi `high`.
+   - Tầng trung gian (`low < cur < high`): hướng `Up` → gọi `high`; hướng `Down` → gọi `low`; hướng `Unknown` → gọi `primary`.
+   - `cur == high`: hướng `Down` → gọi `low`; hướng `Up` → `SUPPRESSED` (`direction_mismatch`); hướng `Unknown` → `SUPPRESSED` (`already_at_floor`) nếu `cur == primary`, ngược lại gọi `low`.
+   - `cur > high`: hướng `Down` hoặc `Unknown` → gọi `primary`; hướng `Up` → `SUPPRESSED` (`direction_mismatch`).
 
 #### Thứ tự deterministic
 

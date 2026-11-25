@@ -130,7 +130,8 @@ bool FloorCallCoordinator::encode_floor(int floor, std::int64_t& value) {
 }
 
 FloorSelectionResult FloorCallCoordinator::select_target_floor(int home_floor, int secondary_floor,
-                                                               const CabinFloorContext& context) {
+                                                               const CabinFloorContext& context,
+                                                               int floors_min) {
     const bool has_home = (home_floor >= 0);
     const bool has_sec  = (secondary_floor >= 0);
     if (!has_home && !has_sec) return {-1, "no_floor"};
@@ -140,22 +141,57 @@ FloorSelectionResult FloorCallCoordinator::select_target_floor(int home_floor, i
                         : FloorSelectionResult{-1, "no_floor"};
     }
 
-    const int cur = context.current_floor;
-    if (has_home && cur >= home_floor) {
-        if (has_sec && cur > secondary_floor) return {secondary_floor, ""};
-        return {-1, cur == home_floor ? "already_at_floor" : "no_secondary_floor"};
-    }
-    if (!has_home) {
-        if (cur > secondary_floor) return {secondary_floor, ""};
-        return {-1, cur == secondary_floor ? "already_at_floor" : "no_floor"};
-    }
-    if (!has_sec || cur <= secondary_floor) return {home_floor, ""};
+    const int  cur       = context.current_floor;
+    const auto dir       = context.direction;
+    const bool at_bottom = (cur <= floors_min);
 
-    // Intermediate floor: secondary_floor < cur < home_floor.
-    if (context.direction == CabinTravelDirection::Down) return {secondary_floor, ""};
-    if (context.direction == CabinTravelDirection::Up) return {home_floor, ""};
-    if (cur <= 1) return {home_floor, ""};
-    return {secondary_floor, ""};
+    // Single-floor resident (only home_floor, only secondary_floor, or equal values).
+    if (!has_home || !has_sec || home_floor == secondary_floor) {
+        const int only_floor = has_home ? home_floor : secondary_floor;
+        if (cur == only_floor) return {-1, "already_at_floor"};
+        if (cur < only_floor) {
+            if (at_bottom || dir != CabinTravelDirection::Down) return {only_floor, ""};
+            return {-1, "direction_mismatch"};
+        }
+        // cur > only_floor
+        if (dir != CabinTravelDirection::Up) return {only_floor, ""};
+        return {-1, "direction_mismatch"};
+    }
+
+    // Two distinct registered floors: symmetric handling for both
+    // secondary < home (typical) and secondary > home.
+    const int low     = (home_floor < secondary_floor) ? home_floor : secondary_floor;
+    const int high    = (home_floor > secondary_floor) ? home_floor : secondary_floor;
+    const int primary = home_floor;
+
+    if (cur < low) {
+        if (at_bottom || dir != CabinTravelDirection::Down) return {primary, ""};
+        return {-1, "direction_mismatch"};
+    }
+    if (cur == low) {
+        if (dir == CabinTravelDirection::Up) return {high, ""};
+        if (dir == CabinTravelDirection::Down) {
+            return at_bottom ? FloorSelectionResult{high, ""}
+                             : FloorSelectionResult{-1, "direction_mismatch"};
+        }
+        return (cur == primary) ? FloorSelectionResult{-1, "already_at_floor"}
+                                : FloorSelectionResult{high, ""};
+    }
+    if (cur < high) {
+        // Intermediate floor: low < cur < high.
+        if (dir == CabinTravelDirection::Up) return {high, ""};
+        if (dir == CabinTravelDirection::Down) return {low, ""};
+        return {primary, ""};
+    }
+    if (cur == high) {
+        if (dir == CabinTravelDirection::Down) return {low, ""};
+        if (dir == CabinTravelDirection::Up) return {-1, "direction_mismatch"};
+        return (cur == primary) ? FloorSelectionResult{-1, "already_at_floor"}
+                                : FloorSelectionResult{low, ""};
+    }
+    // cur > high
+    if (dir != CabinTravelDirection::Up) return {primary, ""};
+    return {-1, "direction_mismatch"};
 }
 
 void FloorCallCoordinator::start_visit_locked(double now_ms) {
@@ -240,7 +276,7 @@ FloorCallDecision FloorCallCoordinator::on_confirmed(int subject_key, std::int64
                 make_decision_locked(resident_id, -1, FloorCallState::Rejected, "invalid_resident");
         } else {
             const FloorSelectionResult sel =
-                select_target_floor(home_floor, secondary_floor, context);
+                select_target_floor(home_floor, secondary_floor, context, config_.floors_min);
             if (sel.target_floor < 0) {
                 decision =
                     make_decision_locked(resident_id, -1, FloorCallState::Suppressed, sel.reason);
