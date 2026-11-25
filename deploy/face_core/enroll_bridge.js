@@ -55,7 +55,12 @@ const VALID_ROLES = new Set([
  * @param {string} p.imagePath  Đường dẫn ảnh HOẶC thư mục cư dân (add_person quét mọi ảnh).
  * @returns {Promise<{ok:boolean, resident_id?:number, ext_id?:string, embeddings?:number, error?:string}>}
  */
-function enrollFace({ imagePath, extId, name, homeFloor, role }) {
+function formatFloorArg(val) {
+  if (typeof val === 'string' && val.trim()) return val.trim();
+  return Number.isInteger(val) && val >= -1 && val <= 62 ? String(val) : '-1';
+}
+
+function enrollFace({ imagePath, extId, name, homeFloor, secondaryFloor, role }) {
   return new Promise((resolve) => {
     if (!imagePath) return resolve({ ok: false, error: 'no_image_path' });
     if (!extId)     return resolve({ ok: false, error: 'no_ext_id' });
@@ -68,19 +73,20 @@ function enrollFace({ imagePath, extId, name, homeFloor, role }) {
 
     // add_person nhận toàn flag (không positional). Dựng mảng flag:
     const argv = [
-      '--name',        String(name || ''),
-      '--image',       String(imagePath),
-      '--ext-id',      String(extId),
-      '--home-floor',  String(Number.isFinite(homeFloor) ? homeFloor : 0),
-      '--db',          RES_DB,
-      '--schema',      SCHEMA,
-      '--det-model',   DET_MODEL,
-      '--recog-model', REC_MODEL,
-      '--recog-dim',   '512',
+      '--name',            String(name || ''),
+      '--image',           String(imagePath),
+      '--ext-id',          String(extId),
+      '--home-floor',      formatFloorArg(homeFloor),
+      '--secondary-floor', formatFloorArg(secondaryFloor),
+      '--db',              RES_DB,
+      '--schema',          SCHEMA,
+      '--det-model',       DET_MODEL,
+      '--recog-model',     REC_MODEL,
+      '--recog-dim',       '512',
       '--recog-bgr',
-      '--replace',     // enroll lại cùng ext_id -> thay embedding cũ (idempotent)
+      '--replace',         // enroll lại cùng ext_id -> thay embedding cũ (idempotent)
       '--json',
-      '--log-level',   'error',
+      '--log-level',       'error',
     ];
     if (roleArg) { argv.push('--role', roleArg); }
 

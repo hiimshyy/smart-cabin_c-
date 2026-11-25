@@ -10,7 +10,7 @@
 //
 // API (mọi phản hồi JSON dạng iot_core: {status:"true", data} | {status:"false", mess}):
 //   GET    /api/faces              danh sách
-//   POST   /api/faces              thêm  {name, residentId, role, priorityFloor, images:[dataURL]}
+//   POST   /api/faces              thêm  {name, residentId, role, priorityFloor, secondaryFloor?, images:[dataURL]}
 //   PUT    /api/faces/:id          sửa   (cùng body; images rỗng = giữ ảnh cũ)
 //   DELETE /api/faces/:id          xoá bản ghi + thư mục ảnh
 //   GET    /api/faces/:id/image    ảnh đầu tiên trong thư mục cư dân
@@ -23,7 +23,7 @@ const path = require('path')
 require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true })
 const { MongoClient, ObjectId } = require('mongodb')
 const { enrollFace, deleteResident } = require('./enroll_bridge')
-const { handleCameras } = require('./cameras')
+const { handleCameras, call } = require('./cameras')
 
 const PORT = parseInt(process.env.FACE_PORT, 10) || 3010
 const STORAGE_DIR = process.env.FACE_STORAGE_DIR || '/home/orangepi/faces'
@@ -86,6 +86,7 @@ const toFace = (doc) => {
     residentId: doc.resident_id || '',
     role: doc.role || 'Staff',
     priorityFloor: doc.priority_floor !== undefined ? String(doc.priority_floor) : '1',
+    secondaryFloor: doc.secondary_floor ? String(doc.secondary_floor) : '',
     faceLink: doc.face_link || '',
     hasImage: Boolean(doc.has_image),
     imageCount: doc.face_link ? imagesIn(doc.face_link).length : 0,
@@ -100,16 +101,40 @@ const toFace = (doc) => {
   }
 }
 
+// Tầng ưu tiên / tầng phụ là TÊN tầng theo Cấu hình tầng (vd. "B"). face_recog_app gọi thang bằng
+// `1 << floor` lên thanh ghi gọi tầng (bit 0 = vị trí 1), nên floor = vị trí − 1 của tên đó trong
+// floor_configs (PostgreSQL embody_devices, func_get_floor_configs — cùng bảng tab Thiết bị dùng). Chưa có
+// cấu hình nào chứa tên thì tên là số (bản ghi cũ) → giữ cách cũ parseInt. Các trạm khác nhau mà cùng tên
+// lại khác vị trí thì lấy trạm đầu và ghi log.
+const homeFloorOf = async (floor) => {
+  const name = String(floor ?? '').trim().toLowerCase()
+  const found = (await call('func_get_floor_configs'))
+    .map((row) => ({ station: `${row.device_sn}/${row.slaveid}`, at: (row.labels || []).findIndex((label) => String(label).toLowerCase() === name) }))
+    .filter((item) => item.at >= 0)
+
+  if (found.length) {
+    if (found.some((item) => item.at !== found[0].at)) {
+      console.log(`[ENROLL] tang ${floor} o vi tri khac nhau giua cac tram: ${found.map((item) => `${item.station}=${item.at + 1}`).join(', ')} — dung ${found[0].station}`)
+    }
+    return found[0].at
+  }
+  if (/^\d{1,3}$/.test(name)) return parseInt(name, 10)
+  throw new Error(`tang ${floor} khong co trong cau hinh tang`)
+}
+
 // Gọi add_person cho thư mục cư dân rồi ghi kết quả vào bản ghi. Không ném lỗi — enroll hỏng
 // thì bản ghi vẫn lưu, trạng thái 'failed' kèm lý do để UI hiện.
 const enroll = async (id, doc) => {
   let result
   try {
+    const homeFloor = doc.priority_floor ? await homeFloorOf(doc.priority_floor) : -1
+    const secondaryFloor = doc.secondary_floor ? await homeFloorOf(doc.secondary_floor) : -1
     result = await enrollFace({
       imagePath: doc.face_link,
       extId: doc.resident_id,
       name: doc.name,
-      homeFloor: parseInt(doc.priority_floor, 10) || 0,
+      homeFloor,
+      secondaryFloor,
       role: doc.role
     })
   } catch (error) {
@@ -134,13 +159,21 @@ const readFaceBody = (body) => {
   const residentId = String(body.residentId ?? body.resident_id ?? '').trim()
   const role = String(body.role ?? '').trim() || 'Staff'
   const priorityFloor = String(body.priorityFloor ?? '').trim()
+  // Tầng phụ: không bắt buộc, truyền xuống add_person --secondary-floor (-1 khi rỗng).
+  // undefined = giữ nguyên khi sửa, '' = xoá.
+  // 17/10: là TÊN tầng theo Cấu hình tầng (vd. "B"), 1..6 ký tự chữ/số/-, không còn bắt buộc là số.
+  const secondaryFloor = body.secondaryFloor === undefined ? undefined : String(body.secondaryFloor ?? '').trim()
   const images = Array.isArray(body.images) ? body.images.filter(Boolean)
     : (body.imageBase64 || body.image ? [body.imageBase64 || body.image] : [])
 
   if (!name) throw new Error('Thieu ten')
   if (!/^[a-zA-Z0-9_-]+$/.test(residentId)) throw new Error('Ma cu dan chi gom chu, so, - hoac _')
-  if (!/^\d{1,3}$/.test(priorityFloor) || Number(priorityFloor) < 1) throw new Error('Tang uu tien phai la so nguyen tu 1')
-  return { name, residentId, role, priorityFloor, images }
+  if (!/^[a-zA-Z0-9-]{1,6}$/.test(priorityFloor)) throw new Error('Tang uu tien phai la ten tang 1-6 ky tu (chu, so hoac -)')
+  if (secondaryFloor) {
+    if (!/^[a-zA-Z0-9-]{1,6}$/.test(secondaryFloor)) throw new Error('Tang phu phai la ten tang 1-6 ky tu (chu, so hoac -)')
+    if (secondaryFloor.toLowerCase() === priorityFloor.toLowerCase()) throw new Error('Tang phu phai khac tang uu tien')
+  }
+  return { name, residentId, role, priorityFloor, secondaryFloor, images }
 }
 
 // ── HTTP ────────────────────────────────────────────────────────────────────
@@ -210,6 +243,7 @@ const routes = async (req, res) => {
       resident_id: input.residentId,
       role: input.role,
       priority_floor: input.priorityFloor,
+      secondary_floor: input.secondaryFloor || '',
       face_link: dir,
       has_image: true,
       image_count: imagesIn(dir).length,
@@ -272,6 +306,7 @@ const routes = async (req, res) => {
       resident_id: input.residentId,
       role: input.role,
       priority_floor: input.priorityFloor,
+      secondary_floor: input.secondaryFloor === undefined ? (existing.secondary_floor || '') : input.secondaryFloor,
       face_link: dir,
       has_image: imagesIn(dir).length > 0,
       image_count: imagesIn(dir).length,
