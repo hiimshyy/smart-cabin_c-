@@ -168,7 +168,7 @@ Khóa bản ghi: `<session_hex>-<seq>`, trong đó `session_hex` là số ngẫu
 - Disk guard dùng `statvfs` trên thư mục DB và thư mục ảnh, kiểm tra mỗi 60 s.
 - Purge mỗi giờ: xóa bản ghi quá hạn theo lô 500 dòng mỗi transaction; chuyển visitor quá hạn sang `expired` và xóa embedding; xóa ảnh quá hạn hoặc vượt tổng dung lượng, cũ nhất trước.
 - `close()`: nhận các bản ghi `shutdown` từ assembler, flush, rồi join.
-- Metrics đưa vào `system_metrics`: `traffic_q`, `traffic_drop`, `open_trips`, `open_calls`, `reg_age_ms`, `reg_inv`, `run_mismatch`, `visitors`, `traffic_err`.
+- Metrics định kỳ do `system_metrics` phát riêng ở dòng `[traffic] health`: `occupancy` (khi bật), `open_trips`, `open_calls`, `visitors`, `reg_age_ms`, `reg_inv`, `run_mismatch`, `q`, `drop`, `err` (tách khỏi dòng `[sys]`).
 
 ## Data Models
 

@@ -299,29 +299,7 @@ void SystemMetrics::worker_loop() {
         if (message_len < 0) message_len = 0;
         if (message_len >= static_cast<int>(sizeof(message)))
             message_len = static_cast<int>(sizeof(message)) - 1;
-        const SystemOccupancySnapshot occupancy = occupancy_snapshot();
-        if (occupancy.enabled && message_len < static_cast<int>(sizeof(message))) {
-            message_len +=
-                std::snprintf(message + message_len, sizeof(message) - message_len,
-                              " occupancy=%d%s", occupancy.count, occupancy.uncertain ? "?" : "");
-        }
-        const SystemTrafficSnapshot traffic = traffic_snapshot();
-        if (traffic.enabled && message_len < static_cast<int>(sizeof(message))) {
-            const int added = std::snprintf(
-                message + message_len, sizeof(message) - message_len,
-                " traffic_q=%zu traffic_drop=%llu open_trips=%zu open_calls=%zu "
-                "reg_age_ms=%lld reg_inv=%llu run_mismatch=%llu visitors=%llu traffic_err=%llu",
-                traffic.queue_size, (unsigned long long)traffic.dropped, traffic.open_trips,
-                traffic.open_calls, (long long)traffic.register_age_ms,
-                (unsigned long long)traffic.register_invalid,
-                (unsigned long long)traffic.run_counter_mismatch,
-                (unsigned long long)traffic.visitors_active,
-                (unsigned long long)traffic.write_errors);
-            if (added > 0) {
-                message_len = std::min<int>(sizeof(message) - 1, message_len + added);
-            }
-        }
-        if (memory_high) {
+        if (memory_high && message_len < static_cast<int>(sizeof(message))) {
             message_len +=
                 std::snprintf(message + message_len, sizeof(message) - message_len,
                               " ram_avail_mb=%llu", (unsigned long long)current.ram_available_mb);
@@ -334,6 +312,36 @@ void SystemMetrics::worker_loop() {
             std::snprintf(message + message_len, sizeof(message) - message_len, " partial=true");
         }
         LOG_INFO("sys", "%s", message);
+
+        const SystemOccupancySnapshot occupancy = occupancy_snapshot();
+        const SystemTrafficSnapshot   traffic   = traffic_snapshot();
+        if (traffic.enabled) {
+            if (occupancy.enabled) {
+                LOG_INFO("traffic",
+                         "health occupancy=%d%s open_trips=%zu open_calls=%zu visitors=%llu "
+                         "reg_age_ms=%lld reg_inv=%llu run_mismatch=%llu q=%zu drop=%llu err=%llu",
+                         occupancy.count, occupancy.uncertain ? "?" : "", traffic.open_trips,
+                         traffic.open_calls, (unsigned long long)traffic.visitors_active,
+                         (long long)traffic.register_age_ms,
+                         (unsigned long long)traffic.register_invalid,
+                         (unsigned long long)traffic.run_counter_mismatch, traffic.queue_size,
+                         (unsigned long long)traffic.dropped,
+                         (unsigned long long)traffic.write_errors);
+            } else {
+                LOG_INFO(
+                    "traffic",
+                    "health open_trips=%zu open_calls=%zu visitors=%llu "
+                    "reg_age_ms=%lld reg_inv=%llu run_mismatch=%llu q=%zu drop=%llu err=%llu",
+                    traffic.open_trips, traffic.open_calls,
+                    (unsigned long long)traffic.visitors_active, (long long)traffic.register_age_ms,
+                    (unsigned long long)traffic.register_invalid,
+                    (unsigned long long)traffic.run_counter_mismatch, traffic.queue_size,
+                    (unsigned long long)traffic.dropped, (unsigned long long)traffic.write_errors);
+            }
+        } else if (occupancy.enabled) {
+            LOG_INFO("occupancy", "health count=%d%s", occupancy.count,
+                     occupancy.uncertain ? "?" : "");
+        }
 
         const auto now = std::chrono::steady_clock::now();
         if (now - last_warning >= std::chrono::minutes(1)) {

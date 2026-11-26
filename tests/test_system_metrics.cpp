@@ -67,6 +67,7 @@ int main() {
     metrics.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(1150));
     metrics.set_occupancy(4, true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     SystemTrafficSnapshot traffic;
     traffic.enabled              = true;
     traffic.queue_size           = 3;
@@ -94,24 +95,38 @@ int main() {
     std::fclose(capture);
     Logger::instance().shutdown();
 
-    bool               saw_disabled_sample = false;
-    bool               saw_enabled_sample  = false;
-    bool               saw_traffic_sample  = false;
+    bool               saw_clean_sys_sample      = false;
+    bool               sys_remained_clean        = true;
+    bool               saw_occupancy_only_sample = false;
+    bool               saw_traffic_sample        = false;
     std::istringstream lines(log);
     std::string        line;
     while (std::getline(lines, line)) {
-        if (line.find("threads=") == std::string::npos) continue;
-        if (line.find("occupancy=") == std::string::npos) saw_disabled_sample = true;
-        if (line.find("occupancy=4?") != std::string::npos) saw_enabled_sample = true;
-        if (line.find("traffic_q=3") != std::string::npos &&
-            line.find("visitors=7") != std::string::npos &&
-            line.find("traffic_err=2") != std::string::npos) {
+        if (line.find("[sys]") != std::string::npos && line.find("threads=") != std::string::npos) {
+            saw_clean_sys_sample = true;
+            if (line.find("occupancy=") != std::string::npos ||
+                line.find("open_trips=") != std::string::npos) {
+                sys_remained_clean = false;
+            }
+        }
+        if (line.find("[occupancy]") != std::string::npos &&
+            line.find("health count=4?") != std::string::npos) {
+            saw_occupancy_only_sample = true;
+        }
+        if (line.find("[traffic]") != std::string::npos &&
+            line.find("health occupancy=4?") != std::string::npos &&
+            line.find("open_trips=2 open_calls=1 visitors=7") != std::string::npos &&
+            line.find("reg_age_ms=420 reg_inv=5 run_mismatch=1") != std::string::npos &&
+            line.find("q=3 drop=1 err=2") != std::string::npos) {
             saw_traffic_sample = true;
         }
     }
-    CHECK(saw_disabled_sample, "system metrics omit occupancy until feature is enabled");
-    CHECK(saw_enabled_sample, "system metrics include enabled occupancy state");
-    CHECK(saw_traffic_sample, "system metrics include enabled traffic counters");
+    CHECK(saw_clean_sys_sample && sys_remained_clean,
+          "[sys] logs host/process metrics only without occupancy or traffic fields");
+    CHECK(saw_occupancy_only_sample,
+          "[occupancy] logs standalone health line when traffic is disabled");
+    CHECK(saw_traffic_sample,
+          "[traffic] logs dedicated health line with occupancy and short queue/error keys");
     std::printf("\n[test_system_metrics] %d checks, %d failed\n", checks, failed);
     return failed ? 1 : 0;
 }
