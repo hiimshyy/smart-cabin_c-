@@ -133,7 +133,8 @@ Phiên bản hiện tại xuất dữ liệu qua công cụ trên thiết bị, 
 **Hình ảnh gợi ý:** 4 biểu tượng tương ứng.
 
 **Ghi chú người thuyết trình:** Cảnh báo động vật hiện chỉ ghi trên thiết bị, chưa đẩy ra ứng dụng
-hay hệ thống ngoài. Bộ đếm người chưa qua thử nghiệm tải nhiều người và thử nghiệm dài hạn; không hứa
+hay hệ thống ngoài. Ảnh cảnh báo là nguyên khung hình camera nên có thể có hình người trong cabin; ảnh
+chỉ dùng cho gỡ lỗi nội bộ và R&D của DAT Group và chưa có xóa tự động. Bộ đếm người chưa qua thử nghiệm tải nhiều người và thử nghiệm dài hạn; không hứa
 độ chính xác. Số đếm phụ thuộc góc camera: nếu camera không thấy hết cửa hoặc nhiều người chồng lên
 nhau thì số đếm có thể lệch.
 
@@ -149,13 +150,14 @@ nhau thì số đếm có thể lệch.
   - SCRFD 2.5G: phát hiện khuôn mặt và 5 điểm mốc;
   - MobileFaceNet: trích đặc trưng khuôn mặt 512 chiều.
 - Theo dõi từng người qua nhiều khung hình (ByteTrack), giữ danh tính khi người quay lưng.
-- Hiệu năng đo trên webcam USB: khoảng 25 FPS cho phát hiện + nhận diện khuôn mặt;
-  phát hiện khuôn mặt ~10–17 ms, nhận diện ~3 ms/khuôn mặt.
+- Tốc độ xử lý ở chế độ vận hành (3 mô hình + theo dõi): `[CẦN ĐIỀN: FPS chế độ vận hành]`.
 
 **Hình ảnh gợi ý:** ảnh bo mạch, sơ đồ 3 mô hình.
 
-**Ghi chú người thuyết trình:** Con số hiệu năng là đo nội bộ trên webcam USB. Khi bật thêm phát hiện
-người và theo dõi, tốc độ khoảng 15 FPS. Hiệu năng trên camera IP thực tế tại công trình:
+**Ghi chú người thuyết trình:** Thời gian chạy trên NPU đo nội bộ trên webcam USB, ở chế độ chỉ phát
+hiện + nhận diện khuôn mặt (không dùng cho vận hành): phát hiện khuôn mặt ~10–17 ms, nhận diện ~3 ms
+mỗi khuôn mặt. Không đưa con số FPS khi mục FPS trên slide chưa được điền. Hiệu năng trên
+camera IP thực tế tại công trình:
 `[CẦN ĐIỀN: FPS và độ trễ đo trên camera RTSP tại công trình]`. Độ chính xác nhận diện:
 `[CẦN ĐIỀN: tỉ lệ nhận nhầm / bỏ sót đo trên bộ dữ liệu thật]`.
 
@@ -172,7 +174,8 @@ người và theo dõi, tốc độ khoảng 15 FPS. Hiệu năng trên camera I
   theo từng công trình; chỉ bật sau khi hoàn tất thủ tục pháp lý.
 - Dữ liệu lưu lượng, mẫu khuôn mặt khách vãng lai, ảnh khuôn mặt theo chuyến và nhật ký hệ thống
   có thời hạn lưu cấu hình được và tự động xóa khi hết hạn.
-- Dữ liệu cư dân và nhật ký nhận diện cư dân được giữ đến khi xóa thủ công.
+- Dữ liệu cư dân, nhật ký nhận diện cư dân, ảnh cảnh báo chó/mèo và video sự kiện (nếu bật) được giữ
+  đến khi xóa thủ công.
 - Hỗ trợ đơn vị vận hành đáp ứng Luật Bảo vệ dữ liệu cá nhân số 91/2025/QH15.
 
 **Hình ảnh gợi ý:** biểu tượng khiên/ổ khóa, sơ đồ "dữ liệu ở lại tòa nhà".
@@ -220,7 +223,9 @@ một kênh có bảo mật.
 
 **Hình ảnh gợi ý:** sơ đồ lắp đặt trong cabin. `[CẦN ĐIỀN: sơ đồ vị trí lắp camera và thiết bị]`
 
-**Ghi chú người thuyết trình:** Quy trình khảo sát – lắp đặt – đăng ký cư dân – nghiệm thu:
+**Ghi chú người thuyết trình:** Thiết bị AI và IoT Core phải đặt trong mạng cô lập (VLAN riêng hoặc
+VPN), không mở ra Internet, vì kết nối giữa hai bên chưa mã hóa và chưa xác thực. Không hứa thời điểm bổ
+sung mã hóa hay xác thực. Quy trình khảo sát – lắp đặt – đăng ký cư dân – nghiệm thu:
 `[CẦN ĐIỀN: quy trình và thời gian triển khai chuẩn]`.
 
 ---

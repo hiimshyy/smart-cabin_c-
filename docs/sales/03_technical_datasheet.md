@@ -73,15 +73,23 @@ Mỗi tiến trình phần mềm phục vụ một cabin.
 
 ## 4. Hiệu năng
 
-Số liệu đo nội bộ trên webcam USB:
+Phần mềm có hai chế độ chạy:
 
-| Chỉ số | Giá trị |
-|---|---|
-| Tốc độ toàn luồng (phát hiện + nhận diện khuôn mặt) | ~25 FPS |
-| Tốc độ khi bật thêm phát hiện người và theo dõi | ~15 FPS |
-| Thời gian phát hiện khuôn mặt trên NPU | ~10–17 ms |
-| Thời gian nhận diện trên NPU | ~3 ms / khuôn mặt |
-| Thời gian đăng ký một ảnh (sau lần khởi tạo NPU đầu tiên) | ~20–30 ms |
+- **Chế độ vận hành**: YOLOv5s (phát hiện người) + SCRFD + MobileFaceNet + theo dõi người. Đây là
+  chế độ dùng tại công trình.
+- **Chế độ chỉ SCRFD**: phát hiện + nhận diện khuôn mặt, không phát hiện người, không theo dõi. Không
+  dùng cho vận hành.
+
+| Chỉ số | Chế độ | Giá trị |
+|---|---|---|
+| Tốc độ toàn luồng (FPS) | Chế độ vận hành | `[CẦN ĐIỀN: FPS chế độ vận hành, ghi rõ loại camera và cách đo]` |
+| Tốc độ toàn luồng (FPS) | Chế độ chỉ SCRFD | `[CẦN ĐIỀN: FPS chế độ chỉ SCRFD, ghi rõ loại camera và cách đo]` |
+| Thời gian phát hiện khuôn mặt trên NPU | Chế độ chỉ SCRFD, đo nội bộ trên webcam USB | ~10–17 ms |
+| Thời gian nhận diện trên NPU | Chế độ chỉ SCRFD, đo nội bộ trên webcam USB | ~3 ms / khuôn mặt |
+| Thời gian đăng ký một ảnh (sau lần khởi tạo NPU đầu tiên) | Công cụ đăng ký | ~20–30 ms |
+
+Ở chế độ vận hành, điều phối AI theo tín hiệu cửa (mục 6) giới hạn tần suất phát hiện người: tối đa
+15 lần/giây khi cửa mở, thấp hơn khi cửa đóng. Vì vậy tốc độ xử lý thay đổi theo trạng thái cabin.
 
 Chưa đo hoặc chưa xác nhận:
 
@@ -101,7 +109,7 @@ Dung lượng lưu một mẫu đặc trưng khuôn mặt: 2 KB (512 số thực
 
 | Hạng mục | Thông số |
 |---|---|
-| Kênh điều khiển | Socket.IO tới IoT Core; IoT Core ghi lệnh xuống bộ điều khiển thang máy |
+| Kênh điều khiển | Socket.IO (ws://) tới IoT Core; IoT Core ghi lệnh xuống bộ điều khiển thang máy. Kết nối chưa mã hóa và chưa xác thực (xem mục 11) |
 | Bộ điều khiển đã tích hợp | INVT (theo bảng thanh ghi của bộ điều khiển) |
 | Bộ điều khiển khác | `[CẦN ĐIỀN]` |
 | Giao tiếp vật lý IoT Core ↔ bộ điều khiển | `[CẦN ĐIỀN]` |
@@ -167,8 +175,8 @@ kiểm chứng tại công trình. Không dùng số đếm này cho cam kết v
 
 | Tính năng | Thông số |
 |---|---|
-| Cảnh báo chó/mèo | Ngưỡng tin cậy 0,8 mặc định; giãn cách 3 s mỗi loài; ghi cảnh báo và ảnh chụp có khung trên thiết bị. Gửi cảnh báo ra hệ thống ngoài: chưa có |
-| Ghi video theo sự kiện (mặc định tắt) | Ghi khi có người; gồm 1 s trước lúc phát hiện; dừng sau khi cabin trống 3 s; 15 FPS; chiều rộng 960 px; ghi trên luồng riêng |
+| Cảnh báo chó/mèo | Ngưỡng tin cậy 0,8 mặc định; giãn cách 3 s mỗi loài; ghi cảnh báo và lưu nguyên khung hình camera (JPEG, có vẽ khung quanh con vật) trên thiết bị. Ảnh có thể có hình mọi người đang ở trong cabin (xem mục 11). Gửi cảnh báo ra hệ thống ngoài: chưa có |
+| Ghi video theo sự kiện (mặc định tắt) | Ghi khi có người; gồm 1 s trước lúc phát hiện; dừng sau khi cabin trống 3 s; 15 FPS; chiều rộng 960 px; ghi trên luồng riêng. Video có hình mọi người trong cabin (xem mục 11) |
 | Giám sát thiết bị | Mỗi 30 s ghi CPU, RAM, ổ đĩa, nhiệt độ CPU/NPU, trạng thái đếm người và nhật ký lưu lượng |
 | Nhật ký hệ thống | File theo ngày, giữ 14 ngày (mặc định); không chứa thông tin cá nhân |
 | Màn hình xem trực tiếp | Tùy chọn, hiển thị khung người, khung mặt, tên chào và tầng (font không dấu); vận hành thường chạy không màn hình |
@@ -210,9 +218,14 @@ kiểm chứng tại công trình. Không dùng số đếm này cho cam kết v
 | Dọn dữ liệu hết hạn | Tự động mỗi giờ cho dữ liệu lưu lượng, mẫu khách vãng lai và ảnh theo chuyến |
 | Bảo vệ ổ đĩa | Ngừng lưu ảnh khi còn dưới 4 096 MB trống; ngừng ghi bản ghi lưu lượng khi dưới 1 024 MB |
 | Thời hạn giữ nhật ký nhận diện cư dân | Phiên bản hiện tại chưa có xóa tự động; giữ đến khi xóa thủ công. `[CẦN ĐIỀN: chính sách và cách xóa định kỳ]` |
+| Ảnh cảnh báo chó/mèo | Bật trong chế độ vận hành. Mỗi lần cảnh báo lưu nguyên khung hình camera, nên ảnh có thể có hình bất kỳ ai đang ở trong cabin, kể cả người chưa đăng ký. Lưu trên thiết bị, quyền file 0600; phần mềm không gửi ảnh này qua mạng. Mục đích: gỡ lỗi nội bộ và nghiên cứu phát triển (R&D) của DAT Group, không cung cấp ra bên ngoài |
+| Thời hạn giữ ảnh cảnh báo chó/mèo | Phiên bản hiện tại chưa có xóa tự động. `[CẦN ĐIỀN: thời hạn lưu và cách xóa ảnh cảnh báo chó/mèo]` |
+| Thời hạn giữ video sự kiện (nếu bật) | Phiên bản hiện tại chưa có xóa tự động. `[CẦN ĐIỀN: thời hạn lưu và cách xóa video sự kiện]` |
 | Mã hóa dữ liệu lưu trữ | `[CẦN ĐIỀN]` |
 | Xác thực truy cập API quản trị trên thiết bị | Chưa có trong phiên bản hiện tại; chỉ đặt thiết bị trong mạng nội bộ được kiểm soát |
 | Mã hóa kết nối API quản trị trên thiết bị | Chưa có (HTTP) trong phiên bản hiện tại |
+| Mã hóa kết nối thiết bị ↔ IoT Core | Chưa có trong phiên bản hiện tại: kết nối Socket.IO qua ws://, không TLS. Lệnh gọi tầng và dữ liệu thanh ghi cửa/tầng truyền dạng không mã hóa |
+| Xác thực kết nối thiết bị ↔ IoT Core | Chưa có trong phiên bản hiện tại: thiết bị chỉ gửi mã thiết bị khi đăng ký nhận dữ liệu, không có thông tin xác thực; thiết bị không xác thực máy chủ IoT Core. Bắt buộc đặt thiết bị và IoT Core trong mạng cô lập (mục 14) |
 
 ---
 
@@ -236,7 +249,8 @@ kiểm chứng tại công trình. Không dùng số đếm này cho cam kết v
 - Đếm người và dữ liệu chuyến từng hành khách chưa được kiểm chứng thực địa. Số đếm có thể lệch khi
   camera không thấy hết cửa hoặc người chồng lấn.
 - API quản trị trên thiết bị chưa có xác thực và chưa mã hóa kết nối.
-- Nhật ký nhận diện cư dân chưa có xóa tự động.
+- Kết nối thiết bị ↔ IoT Core chưa mã hóa và chưa xác thực.
+- Nhật ký nhận diện cư dân, ảnh cảnh báo chó/mèo và video sự kiện chưa có xóa tự động.
 - NPU một lõi dùng chung: khi đang đăng ký khuôn mặt, tốc độ xử lý có thể chững lại trong thời gian ngắn.
 
 ---
@@ -247,6 +261,7 @@ kiểm chứng tại công trình. Không dùng số đếm này cho cam kết v
 |---|---|
 | Camera | 1 camera IP trong cabin, nhìn thấy vùng cửa và khuôn mặt người bước vào |
 | Mạng | Thiết bị AI kết nối được tới camera và IoT Core `[CẦN ĐIỀN: yêu cầu mạng cụ thể]` |
+| Cô lập mạng | Bắt buộc: thiết bị AI và IoT Core nằm trong mạng cô lập (VLAN riêng hoặc VPN), không mở ra Internet, vì kết nối giữa hai bên và API quản trị trên thiết bị chưa mã hóa, chưa xác thực |
 | Kết nối thang máy | IoT Core kết nối bộ điều khiển thang máy `[CẦN ĐIỀN: phần cứng gateway và cách đấu nối]` |
 | Nguồn điện trong cabin | `[CẦN ĐIỀN]` |
 | Bảo hành, bảo trì | `[CẦN ĐIỀN]` |

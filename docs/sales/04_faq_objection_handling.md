@@ -91,6 +91,7 @@ xác thực và mã hóa nên không dùng làm điểm tích hợp với hệ t
 
 **19. Có phát hiện vật nuôi trong thang không?**
 Có. Hệ thống phát hiện chó và mèo trong cabin, ghi cảnh báo và lưu ảnh chụp sự kiện trên thiết bị.
+Ảnh chụp là nguyên khung hình camera nên có thể có hình người đang ở trong cabin (xem câu 30 và 36).
 Phiên bản hiện tại chưa gửi cảnh báo này ra ứng dụng hay hệ thống khác.
 
 **20. Có đếm được số người trong cabin không?**
@@ -109,8 +110,10 @@ SCRFD 2.5G (phát hiện khuôn mặt), MobileFaceNet (trích đặc trưng khu�
 camera IP (RTSP) trong cabin. Chi tiết xem Datasheet.
 
 **22. Tốc độ xử lý?**
-Đo nội bộ trên webcam USB: khoảng 25 FPS cho phát hiện + nhận diện khuôn mặt, khoảng 15 FPS khi bật
-thêm phát hiện người và theo dõi. Trên camera IP tại công trình: `[CẦN ĐIỀN]`.
+Tốc độ ở chế độ vận hành (phát hiện người + phát hiện và nhận diện khuôn mặt + theo dõi):
+`[CẦN ĐIỀN: FPS chế độ vận hành]`. Trên camera IP tại công trình: `[CẦN ĐIỀN]`. Thời gian chạy trên
+NPU đo nội bộ (chế độ chỉ phát hiện + nhận diện khuôn mặt, webcam USB): phát hiện khuôn mặt khoảng
+10–17 ms, nhận diện khoảng 3 ms mỗi khuôn mặt.
 
 **23. Mất Internet thì sao?**
 Xử lý AI và so khớp chạy trên thiết bị, không cần cloud. Thiết bị cần kết nối mạng nội bộ tới camera
@@ -131,7 +134,8 @@ các mô hình khi cửa đóng và cabin trống. Nếu mất tín hiệu cửa
 
 **27. Có ghi video không?**
 Có tùy chọn ghi video khi có người trong cabin (mặc định tắt), lưu trên thiết bị. Video này ghi hình
-tất cả người trong cabin, nên chỉ bật khi đơn vị vận hành đã có căn cứ pháp lý.
+tất cả người trong cabin, nên chỉ bật khi đơn vị vận hành đã có căn cứ pháp lý. Phiên bản hiện tại
+chưa có xóa video tự động (xem câu 36).
 
 **28. Theo dõi tình trạng thiết bị thế nào?**
 Thiết bị ghi định kỳ mỗi 30 s: CPU, RAM, dung lượng ổ đĩa, nhiệt độ CPU/NPU. Nhật ký hệ thống lưu
@@ -158,10 +162,20 @@ theo ngày, giữ 14 ngày (mặc định). `[CẦN ĐIỀN: kênh giám sát t�
 
 **30. Hệ thống có lưu ảnh khuôn mặt không?**
 Có, với cư dân đã đăng ký: ảnh đăng ký được lưu trên thiết bị, cùng với mẫu đặc trưng khuôn mặt dạng
-vector số dùng để so khớp. Với người chưa đăng ký, tùy cấu hình của từng công trình:
+vector số dùng để so khớp.
 
-- Khi tắt nhận diện lại khách vãng lai và tắt lưu ảnh: không lưu ảnh, không lưu mẫu khuôn mặt; hệ thống
-  chỉ ghi một sự kiện "không nhận ra" không gắn danh tính.
+Với mọi người trong cabin, kể cả người chưa đăng ký:
+
+- **Ảnh cảnh báo chó/mèo**: mỗi lần phát hiện chó hoặc mèo, thiết bị lưu nguyên khung hình camera, nên
+  ảnh có thể có hình bất kỳ ai đang ở trong cabin. Ảnh lưu trên thiết bị, phần mềm không gửi ảnh này qua
+  mạng. Ảnh dùng cho gỡ lỗi nội bộ và nghiên cứu phát triển (R&D) của DAT Group, không cung cấp ra bên
+  ngoài. Phiên bản hiện tại chưa có xóa tự động (xem câu 36).
+- **Video sự kiện** (nếu bật, mặc định tắt): ghi hình tất cả người trong cabin (xem câu 27).
+
+Riêng mẫu và ảnh khuôn mặt của người chưa đăng ký, tùy cấu hình của từng công trình:
+
+- Khi tắt nhận diện lại khách vãng lai và tắt lưu ảnh theo chuyến: không lưu mẫu khuôn mặt, không lưu
+  ảnh khuôn mặt theo chuyến; hệ thống chỉ ghi một sự kiện "không nhận ra" không gắn danh tính.
 - Khi bật: thiết bị lưu mẫu đặc trưng khuôn mặt của khách (giữ 90 ngày từ lần thấy cuối) và có thể lưu
   ảnh khuôn mặt 112×112 theo chuyến (giữ 30 ngày), gắn mã số ẩn danh, không có tên.
 
@@ -183,6 +197,10 @@ trong từng hợp đồng: `[CẦN ĐIỀN]`. Trước khi vận hành, đơn v
 
 1. Niêm yết thông báo tại thang máy: mục đích thu thập, phạm vi xử lý, đầu mối liên hệ.
 2. Có căn cứ xử lý cho từng cư dân đăng ký (ví dụ văn bản đồng ý). `[CẦN ĐIỀN: mẫu văn bản đồng ý]`
+   Văn bản đồng ý về sử dụng hình ảnh mà cư dân ký khi vào ở cần nêu đủ các mục đích: chọn tầng tự
+   động, thống kê lưu lượng, ảnh cảnh báo chó/mèo dùng cho gỡ lỗi nội bộ và R&D của DAT Group, video sự
+   kiện (nếu bật). Thông báo niêm yết ở mục 1 cũng cần nêu các mục đích này cho khách đến tòa nhà.
+   Soạn và thu văn bản đồng ý là trách nhiệm của đơn vị vận hành tòa nhà.
 3. Xác định thời hạn lưu và quy trình xóa khi có yêu cầu.
 4. Kiểm soát người được truy cập thiết bị và dữ liệu.
 5. Thực hiện các nghĩa vụ khác theo Luật và Nghị định hướng dẫn (ví dụ hồ sơ đánh giá tác động xử lý
@@ -192,21 +210,25 @@ trong từng hợp đồng: `[CẦN ĐIỀN]`. Trước khi vận hành, đơn v
 Camera nhìn thấy mọi người trong cabin, và thiết bị so khuôn mặt của mọi người với danh sách cư dân.
 Tính năng nhận diện lại khách vãng lai qua nhiều chuyến (để thống kê lưu lượng) là tùy chọn, bật hay
 tắt theo từng công trình, chỉ nên bật sau khi hoàn tất thủ tục pháp lý. Khi tắt, người không khớp không
-bị lưu ảnh hay mẫu khuôn mặt. Khi bật, thiết bị lưu mẫu khuôn mặt của khách vãng lai kèm một mã số ẩn
-danh, không có tên (xem câu 30).
+bị lưu mẫu khuôn mặt hay ảnh khuôn mặt theo chuyến. Khi bật, thiết bị lưu mẫu khuôn mặt của khách vãng
+lai kèm một mã số ẩn danh, không có tên. Dù bật hay tắt, người không đăng ký vẫn có thể có hình trong
+ảnh cảnh báo chó/mèo và trong video sự kiện nếu bật (xem câu 30).
 
 **35. Cư dân yêu cầu xóa dữ liệu thì làm thế nào?**
 Quản trị viên xóa cư dân trên giao diện quản trị. Hệ thống xóa hồ sơ, thư mục ảnh và toàn bộ mẫu khuôn
 mặt của cư dân đó trên thiết bị. Dữ liệu khách vãng lai được xóa bằng công cụ quản trị trên thiết bị.
 
-Thao tác xóa cư dân hiện **chưa** xóa hai loại dữ liệu sau:
+Thao tác xóa cư dân hiện **chưa** xóa các dữ liệu sau:
 
 - Lịch sử chuyến đi gắn mã cư dân (tầng vào, tầng ra, thời gian) trong dữ liệu lưu lượng: giữ đến khi
   hết thời hạn lưu lượng (mặc định 730 ngày).
 - Nhật ký nhận diện (thời gian, cabin, điểm tương đồng): các dòng vẫn còn nhưng không còn liên kết với
   cư dân đã xóa.
+- Ảnh khuôn mặt theo chuyến của cư dân, khi chế độ lưu ảnh theo chuyến là "tất cả": giữ đến khi hết
+  thời hạn (mặc định 30 ngày, tối đa 5 GB).
+- Ảnh cảnh báo chó/mèo và video sự kiện (nếu bật) có hình cư dân: chưa có xóa tự động.
 
-`[CẦN ĐIỀN: quy trình xóa bổ sung cho lịch sử chuyến đi và nhật ký nhận diện khi cư dân yêu cầu xóa]`
+`[CẦN ĐIỀN: quy trình xóa bổ sung cho lịch sử chuyến đi, nhật ký nhận diện và ảnh/video khi cư dân yêu cầu xóa]`
 
 **36. Dữ liệu được giữ bao lâu?**
 
@@ -218,9 +240,11 @@ Thao tác xóa cư dân hiện **chưa** xóa hai loại dữ liệu sau:
 | Nhật ký hệ thống | 14 ngày |
 | Dữ liệu cư dân đã đăng ký | Đến khi bị xóa thủ công |
 | Nhật ký nhận diện cư dân | Phiên bản hiện tại chưa có xóa tự động; giữ đến khi xóa thủ công. `[CẦN ĐIỀN: chính sách và cách xóa định kỳ]` |
+| Ảnh cảnh báo chó/mèo (nguyên khung hình) | Phiên bản hiện tại chưa có xóa tự động. `[CẦN ĐIỀN: thời hạn lưu ảnh cảnh báo chó/mèo]` |
+| Video sự kiện (nếu bật) | Phiên bản hiện tại chưa có xóa tự động. `[CẦN ĐIỀN: thời hạn lưu video sự kiện]` |
 
 Dữ liệu lưu lượng, mẫu khách vãng lai và ảnh theo chuyến hết hạn được tự động xóa mỗi giờ. Nhật ký hệ
-thống được giữ 14 ngày.
+thống được giữ 14 ngày. Ảnh cảnh báo chó/mèo và video sự kiện chưa có xóa tự động.
 
 **37. Dữ liệu được bảo vệ như thế nào?**
 - Dữ liệu nằm trên thiết bị tại tòa nhà.
@@ -229,6 +253,10 @@ thống được giữ 14 ngày.
 - Cơ sở dữ liệu lưu lượng chỉ tài khoản dịch vụ đọc được.
 - API quản trị khuôn mặt trên thiết bị hiện chưa có xác thực và chưa mã hóa kết nối. Thiết bị phải đặt
   trong mạng nội bộ được kiểm soát, chỉ người được phép mới truy cập được mạng đó.
+- Kết nối giữa thiết bị và IoT Core (gửi lệnh gọi tầng, đọc trạng thái cửa và tầng) hiện chưa mã hóa
+  (ws://) và chưa xác thực (thiết bị chỉ gửi mã thiết bị). Thiết bị và IoT Core phải nằm trong mạng cô
+  lập (VLAN riêng hoặc VPN), không mở ra Internet.
+- Ảnh cảnh báo chó/mèo lưu trên thiết bị với quyền file chỉ tài khoản sở hữu đọc được (0600).
 - Mã hóa dữ liệu lưu trữ: `[CẦN ĐIỀN]`.
 
 ---
@@ -237,7 +265,7 @@ thống được giữ 14 ngày.
 
 | Khách nói | Cách trả lời | Căn cứ |
 |---|---|---|
-| "Lo ngại quyền riêng tư, cư dân không thích bị camera nhận diện." | Xử lý tại chỗ, không gửi video lên cloud. Chỉ cư dân đồng ý mới được đăng ký. Nhận diện lại và lưu ảnh khách vãng lai là tùy chọn, công trình có thể tắt; khi tắt, người không đăng ký không bị lưu ảnh hay mẫu khuôn mặt. Nhật ký hệ thống không ghi tên. Cư dân không muốn tham gia vẫn đi thang bằng nút bấm. Lưu ý nội bộ: cấu hình triển khai mẫu hiện tại đang **bật** cả hai tính năng này; chỉ hứa "tắt" khi cấu hình bàn giao đã được xác nhận tắt. | Mục C.30, C.31, C.34; `[CẦN ĐIỀN: cấu hình bàn giao cho khách hàng]` |
+| "Lo ngại quyền riêng tư, cư dân không thích bị camera nhận diện." | Xử lý tại chỗ, không gửi video lên cloud. Chỉ cư dân đồng ý mới được đăng ký. Nhận diện lại và lưu ảnh khách vãng lai là tùy chọn, công trình có thể tắt; khi tắt, người không đăng ký không bị lưu mẫu khuôn mặt hay ảnh khuôn mặt theo chuyến. Nói rõ: ảnh cảnh báo chó/mèo là nguyên khung hình nên có thể có hình người trong cabin; ảnh nằm trên thiết bị, chỉ dùng cho gỡ lỗi nội bộ và R&D của DAT Group, không cung cấp ra ngoài. Văn bản đồng ý của cư dân do tòa nhà soạn cần nêu mục đích này. Nhật ký hệ thống không ghi tên. Cư dân không muốn tham gia vẫn đi thang bằng nút bấm. Lưu ý nội bộ: cấu hình triển khai mẫu hiện tại đang **bật** cả hai tính năng này; chỉ hứa "tắt" khi cấu hình bàn giao đã được xác nhận tắt. | Mục C.30, C.31, C.33, C.34; `[CẦN ĐIỀN: cấu hình bàn giao cho khách hàng]` |
 | "Nhận nhầm người thì gọi sai tầng." | Hệ thống chỉ xác nhận khi khớp ổn định qua nhiều khung hình, ngưỡng điều chỉnh theo cabin. Nếu nhận nhầm, thang dừng thêm ở một tầng không cần thiết; nút bấm vẫn dùng được. Số liệu độ chính xác: hẹn gửi sau. | Mục A.8, A.10; `[CẦN ĐIỀN: số liệu độ chính xác]` |
 | "Cầm ảnh in là lừa được." | Trả lời thẳng: phiên bản hiện tại chưa có chống giả mạo bằng ảnh/video. Vì sản phẩm chỉ chọn tầng, không mở cửa hay cấp quyền ra vào, nên giả mạo chỉ làm thang dừng thêm ở một tầng. Không hứa tính năng chống giả mạo khi chưa có lộ trình. | Datasheet mục 13; `[CẦN ĐIỀN: lộ trình chống giả mạo, nếu có]` |
 | "Thang máy của tôi hãng khác." | Hiện đã tích hợp bộ điều khiển INVT qua IoT Core. Với hãng khác, đề nghị khảo sát kỹ thuật trước khi cam kết. | `[CẦN ĐIỀN: danh sách hãng tương thích]` |
@@ -257,9 +285,15 @@ thống được giữ 14 ngày.
   ra ứng dụng hay hỗ trợ nhiều camera mỗi cabin: phiên bản hiện tại chưa có các tính năng này.
 - Không nói giao diện/API quản trị trên thiết bị có xác thực hoặc mã hóa kết nối: phiên bản hiện tại
   chưa có cả hai.
+- Không nói kết nối giữa thiết bị và IoT Core có mã hóa hoặc xác thực: phiên bản hiện tại chưa có cả
+  hai. Không hứa thời điểm bổ sung các tính năng này.
 - Không nói nhận diện lại khách vãng lai "mặc định tắt" khi chưa xác nhận cấu hình bàn giao.
-- Không nói xóa cư dân là xóa toàn bộ dữ liệu liên quan: lịch sử chuyến đi và nhật ký nhận diện vẫn còn
-  (xem câu 35).
+- Không nói người không đăng ký không bao giờ bị chụp ảnh hay ghi hình: ảnh cảnh báo chó/mèo là nguyên
+  khung hình camera, và video sự kiện (nếu bật) ghi hình mọi người trong cabin.
+- Không nói mọi dữ liệu đều tự động xóa khi hết hạn: ảnh cảnh báo chó/mèo, video sự kiện, nhật ký nhận
+  diện và dữ liệu cư dân chưa có xóa tự động.
+- Không nói xóa cư dân là xóa toàn bộ dữ liệu liên quan: lịch sử chuyến đi, nhật ký nhận diện, ảnh theo
+  chuyến (chế độ "tất cả") và ảnh/video có hình cư dân vẫn còn (xem câu 35).
 - Không trình bày đếm người và dữ liệu từng hành khách như tính năng đã hoàn thiện.
 - Không cam kết "tuân thủ pháp luật" thay khách hàng; chỉ nói sản phẩm hỗ trợ đơn vị vận hành thực hiện
   nghĩa vụ.

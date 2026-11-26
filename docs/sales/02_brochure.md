@@ -58,7 +58,7 @@ Toàn bộ xử lý AI chạy ngay trên thiết bị, không gửi video lên c
 | Phần cứng xử lý | Orange Pi A733, NPU tích hợp |
 | Mô hình AI | YOLOv5s (người, chó/mèo), SCRFD 2.5G (khuôn mặt), MobileFaceNet (đặc trưng 512 chiều) |
 | Camera | Camera IP qua RTSP/HTTP |
-| Tốc độ xử lý (đo trên webcam USB) | ~25 FPS phát hiện + nhận diện khuôn mặt; ~15 FPS khi bật thêm phát hiện người và theo dõi |
+| Tốc độ xử lý (chế độ vận hành: phát hiện người + khuôn mặt + theo dõi) | `[CẦN ĐIỀN: FPS chế độ vận hành]` |
 | Bộ điều khiển thang máy đã tích hợp | INVT (qua IoT Core). Hãng khác: `[CẦN ĐIỀN]` |
 | Số cư dân tối đa | `[CẦN ĐIỀN]` |
 | Độ chính xác nhận diện | `[CẦN ĐIỀN]` |
@@ -70,7 +70,10 @@ Chi tiết xem tài liệu **Thông số kỹ thuật (Datasheet)**.
 - Lưu đặc trưng khuôn mặt dạng vector số; nhật ký hệ thống chỉ ghi mã số, không ghi tên hay ảnh.
 - Nhận diện lại khách vãng lai và lưu ảnh khuôn mặt khách: tùy chọn, bật hay tắt theo từng công trình.
 - Dữ liệu lưu lượng, dữ liệu khách vãng lai, ảnh theo chuyến và nhật ký hệ thống: thời hạn lưu cấu hình
-  được, tự động xóa khi hết hạn. Dữ liệu cư dân và nhật ký nhận diện: giữ đến khi xóa thủ công.
+  được, tự động xóa khi hết hạn. Dữ liệu cư dân, nhật ký nhận diện, ảnh cảnh báo chó/mèo và video sự
+  kiện (nếu bật): giữ đến khi xóa thủ công.
+- Ảnh cảnh báo chó/mèo là nguyên khung hình camera, lưu trên thiết bị, chỉ dùng cho gỡ lỗi nội bộ và
+  R&D của DAT Group.
 - Hỗ trợ đơn vị vận hành thực hiện nghĩa vụ theo Luật Bảo vệ dữ liệu cá nhân số 91/2025/QH15.
 
 ### Phù hợp với
