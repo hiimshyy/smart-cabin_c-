@@ -12,7 +12,7 @@
 **1. AIoT Elevator - Smart Cabin là gì?**
 Là thiết bị AI đặt trong cabin thang máy. Thiết bị xem video từ camera trong cabin, nhận ra cư dân đã
 đăng ký và tự gửi lệnh chọn tầng của cư dân đó tới bộ điều khiển thang máy. Thiết bị cũng ghi dữ liệu
-lưu lượng thang máy và đếm người vào/ra cabin. Sản phẩm do Công ty DAT Group phát triển.
+lưu lượng thang máy. Sản phẩm do Công ty DAT Group phát triển.
 
 **2. Có phải thay thang máy hoặc bộ điều khiển không?**
 Không thay thang máy. Cần lắp camera IP trong cabin, thiết bị AI và kết nối IoT Core tới bộ điều khiển
@@ -37,6 +37,12 @@ cùng tầng chỉ tạo một lệnh. Các tầng khác nhau được gửi l�
 Mỗi cư dân có tầng chính và có thể khai báo thêm tầng phụ (ví dụ tầng hầm B). Hệ thống chọn tầng theo
 vị trí và chiều chạy hiện tại của thang: vào thang ở tầng 7 khi thang đi xuống thì gọi B, vào ở B thì
 gọi tầng 7.
+
+**7a. Vì sao có lúc cư dân được nhận ra nhưng thang không tự chọn tầng?**
+Hệ thống không gọi tầng khi thang đang chạy ngược chiều với tầng cần đến. Ví dụ: cư dân chỉ khai báo
+tầng 7, vào thang ở tầng 3 khi thang đang đi xuống. Trong lượt đi thang đó hệ thống không xét lại cư dân
+này; cư dân bấm nút như bình thường. Lượt đi thang kết thúc khi cabin trống 5 giây. Hệ thống cũng không
+gọi tầng khi cabin đang ở đúng tầng của cư dân hoặc tầng nằm ngoài dải tầng đã cấu hình.
 
 **8. Nếu hệ thống gọi sai tầng?**
 Lệnh của hệ thống chỉ thêm một tầng; cư dân vẫn bấm được tầng khác. Hệ thống không tự hủy tầng đã
@@ -73,22 +79,25 @@ Mỗi cabin cần camera riêng; mỗi tiến trình phần mềm phục vụ m�
 `[CẦN ĐIỀN: cấu hình phần cứng cho tòa nhà nhiều thang]`
 
 **17. Dữ liệu lưu lượng thang máy dùng để làm gì?**
-Ban quản lý biết được tầng đi – tầng đến phổ biến, giờ cao điểm theo từng chiều, thời gian chuyến,
-số người trong cabin và thời gian chờ tại sảnh. Dữ liệu gắn cờ khi thang ở chế độ bảo trì, lỗi, khóa,
-báo cháy hoặc quá tải. Phiên bản hiện tại xuất file CSV, chưa có giao diện báo cáo web.
+Ban quản lý biết được tầng đi – tầng đến phổ biến theo điểm dừng, giờ cao điểm theo từng chiều, thời
+gian chuyến và thời gian chờ tại sảnh. Dữ liệu gắn cờ khi thang ở chế độ bảo trì, lỗi, khóa, báo cháy
+hoặc quá tải. Dữ liệu chuyến đi của từng hành khách và số người trong cabin đang hoàn thiện, chưa kiểm
+chứng thực địa. Phiên bản hiện tại xuất file CSV, chưa có giao diện báo cáo web.
 
 **18. Có kết nối với phần mềm quản lý tòa nhà (BMS) hoặc ứng dụng cư dân không?**
-Hiện có API REST để quản lý đăng ký khuôn mặt và xuất dữ liệu lưu lượng dạng CSV. Tích hợp khác:
-`[CẦN ĐIỀN]`.
+Phiên bản hiện tại chưa có giao diện tích hợp dành cho hệ thống bên ngoài. Dữ liệu lưu lượng xuất được
+dạng file CSV. Thiết bị có API REST nội bộ phục vụ giao diện quản trị đăng ký khuôn mặt; API này chưa có
+xác thực và mã hóa nên không dùng làm điểm tích hợp với hệ thống bên ngoài. Tích hợp khác: `[CẦN ĐIỀN]`.
 
 **19. Có phát hiện vật nuôi trong thang không?**
 Có. Hệ thống phát hiện chó và mèo trong cabin, ghi cảnh báo và lưu ảnh chụp sự kiện trên thiết bị.
 Phiên bản hiện tại chưa gửi cảnh báo này ra ứng dụng hay hệ thống khác.
 
 **20. Có đếm được số người trong cabin không?**
-Có, bằng cách đếm lượt đi qua vùng cửa. Khi điều kiện không cho phép đếm chắc chắn (mất camera, mất
-dấu người ở vùng cửa), hệ thống đánh dấu số đếm là "không chắc chắn". Camera cần nhìn thấy toàn bộ cửa;
-nhiều người chồng lấn có thể bị đếm thiếu. Độ chính xác: `[CẦN ĐIỀN]`.
+Tính năng đang hoàn thiện, chưa kiểm chứng thực địa. Phần mềm đếm lượt đi qua vùng cửa; khi điều kiện
+không cho phép đếm chắc chắn (mất camera, mất dấu người ở vùng cửa), hệ thống đánh dấu số đếm là
+"không chắc chắn". Camera cần nhìn thấy toàn bộ cửa; nhiều người chồng lấn có thể bị đếm thiếu.
+Độ chính xác: `[CẦN ĐIỀN]`.
 
 ---
 
@@ -149,9 +158,14 @@ theo ngày, giữ 14 ngày (mặc định). `[CẦN ĐIỀN: kênh giám sát t�
 
 **30. Hệ thống có lưu ảnh khuôn mặt không?**
 Có, với cư dân đã đăng ký: ảnh đăng ký được lưu trên thiết bị, cùng với mẫu đặc trưng khuôn mặt dạng
-vector số dùng để so khớp. Với người chưa đăng ký: mặc định không lưu ảnh và không lưu mẫu khuôn mặt;
-hệ thống chỉ ghi một sự kiện "không nhận ra" không gắn danh tính. Lưu ảnh khuôn mặt theo chuyến đi là
-tùy chọn, mặc định tắt.
+vector số dùng để so khớp. Với người chưa đăng ký, tùy cấu hình của từng công trình:
+
+- Khi tắt nhận diện lại khách vãng lai và tắt lưu ảnh: không lưu ảnh, không lưu mẫu khuôn mặt; hệ thống
+  chỉ ghi một sự kiện "không nhận ra" không gắn danh tính.
+- Khi bật: thiết bị lưu mẫu đặc trưng khuôn mặt của khách (giữ 90 ngày từ lần thấy cuối) và có thể lưu
+  ảnh khuôn mặt 112×112 theo chuyến (giữ 30 ngày), gắn mã số ẩn danh, không có tên.
+
+Cấu hình tại công trình của quý khách: `[CẦN ĐIỀN: bật/tắt nhận diện lại khách vãng lai và lưu ảnh khách]`.
 
 **31. Dữ liệu có gửi lên cloud không?**
 Không gửi video. Nhận diện, so khớp, dữ liệu cư dân và dữ liệu lưu lượng nằm trên thiết bị tại tòa nhà.
@@ -176,33 +190,46 @@ trong từng hợp đồng: `[CẦN ĐIỀN]`. Trước khi vận hành, đơn v
 
 **34. Người không đăng ký có bị nhận diện không?**
 Camera nhìn thấy mọi người trong cabin, và thiết bị so khuôn mặt của mọi người với danh sách cư dân.
-Nếu không khớp, mặc định không lưu ảnh hay mẫu khuôn mặt của người đó. Tính năng nhận diện lại khách
-vãng lai qua nhiều chuyến (để thống kê lưu lượng) là tùy chọn, mặc định tắt, chỉ nên bật sau khi hoàn
-tất thủ tục pháp lý. Khi bật, khách vãng lai được gán một mã số ẩn danh, không có tên.
+Tính năng nhận diện lại khách vãng lai qua nhiều chuyến (để thống kê lưu lượng) là tùy chọn, bật hay
+tắt theo từng công trình, chỉ nên bật sau khi hoàn tất thủ tục pháp lý. Khi tắt, người không khớp không
+bị lưu ảnh hay mẫu khuôn mặt. Khi bật, thiết bị lưu mẫu khuôn mặt của khách vãng lai kèm một mã số ẩn
+danh, không có tên (xem câu 30).
 
 **35. Cư dân yêu cầu xóa dữ liệu thì làm thế nào?**
 Quản trị viên xóa cư dân trên giao diện quản trị. Hệ thống xóa hồ sơ, thư mục ảnh và toàn bộ mẫu khuôn
 mặt của cư dân đó trên thiết bị. Dữ liệu khách vãng lai được xóa bằng công cụ quản trị trên thiết bị.
 
+Thao tác xóa cư dân hiện **chưa** xóa hai loại dữ liệu sau:
+
+- Lịch sử chuyến đi gắn mã cư dân (tầng vào, tầng ra, thời gian) trong dữ liệu lưu lượng: giữ đến khi
+  hết thời hạn lưu lượng (mặc định 730 ngày).
+- Nhật ký nhận diện (thời gian, cabin, điểm tương đồng): các dòng vẫn còn nhưng không còn liên kết với
+  cư dân đã xóa.
+
+`[CẦN ĐIỀN: quy trình xóa bổ sung cho lịch sử chuyến đi và nhật ký nhận diện khi cư dân yêu cầu xóa]`
+
 **36. Dữ liệu được giữ bao lâu?**
 
 | Dữ liệu | Thời hạn mặc định (cấu hình được) |
 |---|---|
-| Dữ liệu lưu lượng (chuyến, điểm dừng, gọi tầng) | 730 ngày |
+| Dữ liệu lưu lượng (chuyến, điểm dừng, gọi tầng, chuyến gắn mã cư dân) | 730 ngày |
 | Mẫu khuôn mặt khách vãng lai (nếu bật) | 90 ngày từ lần thấy cuối; sau đó chỉ còn mã số ẩn danh |
 | Ảnh khuôn mặt theo chuyến (nếu bật) | 30 ngày, tối đa 5 GB |
 | Nhật ký hệ thống | 14 ngày |
-| Dữ liệu cư dân đã đăng ký | Đến khi bị xóa |
-| Nhật ký nhận diện cư dân | `[CẦN ĐIỀN: chính sách và cách xóa định kỳ]` |
+| Dữ liệu cư dân đã đăng ký | Đến khi bị xóa thủ công |
+| Nhật ký nhận diện cư dân | Phiên bản hiện tại chưa có xóa tự động; giữ đến khi xóa thủ công. `[CẦN ĐIỀN: chính sách và cách xóa định kỳ]` |
 
-Dữ liệu hết hạn được hệ thống tự động xóa mỗi giờ.
+Dữ liệu lưu lượng, mẫu khách vãng lai và ảnh theo chuyến hết hạn được tự động xóa mỗi giờ. Nhật ký hệ
+thống được giữ 14 ngày.
 
 **37. Dữ liệu được bảo vệ như thế nào?**
 - Dữ liệu nằm trên thiết bị tại tòa nhà.
 - Nhật ký hệ thống chỉ ghi mã số, không ghi tên, tên chào, căn hộ, vector khuôn mặt hay đường dẫn ảnh.
   Thông tin đăng nhập camera được ẩn trong nhật ký.
 - Cơ sở dữ liệu lưu lượng chỉ tài khoản dịch vụ đọc được.
-- Mã hóa dữ liệu lưu trữ và kết nối quản trị: `[CẦN ĐIỀN]`.
+- API quản trị khuôn mặt trên thiết bị hiện chưa có xác thực và chưa mã hóa kết nối. Thiết bị phải đặt
+  trong mạng nội bộ được kiểm soát, chỉ người được phép mới truy cập được mạng đó.
+- Mã hóa dữ liệu lưu trữ: `[CẦN ĐIỀN]`.
 
 ---
 
@@ -210,7 +237,7 @@ Dữ liệu hết hạn được hệ thống tự động xóa mỗi giờ.
 
 | Khách nói | Cách trả lời | Căn cứ |
 |---|---|---|
-| "Lo ngại quyền riêng tư, cư dân không thích bị camera nhận diện." | Xử lý tại chỗ, không gửi video lên cloud. Chỉ cư dân đồng ý mới được đăng ký. Người không đăng ký mặc định không bị lưu ảnh hay mẫu khuôn mặt. Nhật ký không ghi tên. Cư dân không muốn tham gia vẫn đi thang bằng nút bấm. | Mục C.30, C.31, C.34 |
+| "Lo ngại quyền riêng tư, cư dân không thích bị camera nhận diện." | Xử lý tại chỗ, không gửi video lên cloud. Chỉ cư dân đồng ý mới được đăng ký. Nhận diện lại và lưu ảnh khách vãng lai là tùy chọn, công trình có thể tắt; khi tắt, người không đăng ký không bị lưu ảnh hay mẫu khuôn mặt. Nhật ký hệ thống không ghi tên. Cư dân không muốn tham gia vẫn đi thang bằng nút bấm. Lưu ý nội bộ: cấu hình triển khai mẫu hiện tại đang **bật** cả hai tính năng này; chỉ hứa "tắt" khi cấu hình bàn giao đã được xác nhận tắt. | Mục C.30, C.31, C.34; `[CẦN ĐIỀN: cấu hình bàn giao cho khách hàng]` |
 | "Nhận nhầm người thì gọi sai tầng." | Hệ thống chỉ xác nhận khi khớp ổn định qua nhiều khung hình, ngưỡng điều chỉnh theo cabin. Nếu nhận nhầm, thang dừng thêm ở một tầng không cần thiết; nút bấm vẫn dùng được. Số liệu độ chính xác: hẹn gửi sau. | Mục A.8, A.10; `[CẦN ĐIỀN: số liệu độ chính xác]` |
 | "Cầm ảnh in là lừa được." | Trả lời thẳng: phiên bản hiện tại chưa có chống giả mạo bằng ảnh/video. Vì sản phẩm chỉ chọn tầng, không mở cửa hay cấp quyền ra vào, nên giả mạo chỉ làm thang dừng thêm ở một tầng. Không hứa tính năng chống giả mạo khi chưa có lộ trình. | Datasheet mục 13; `[CẦN ĐIỀN: lộ trình chống giả mạo, nếu có]` |
 | "Thang máy của tôi hãng khác." | Hiện đã tích hợp bộ điều khiển INVT qua IoT Core. Với hãng khác, đề nghị khảo sát kỹ thuật trước khi cam kết. | `[CẦN ĐIỀN: danh sách hãng tương thích]` |
@@ -228,6 +255,12 @@ Dữ liệu hết hạn được hệ thống tự động xóa mỗi giờ.
   chưa được điền.
 - Không nói sản phẩm có chống giả mạo, có chào bằng giọng nói, có giao diện báo cáo web, có đẩy cảnh báo
   ra ứng dụng hay hỗ trợ nhiều camera mỗi cabin: phiên bản hiện tại chưa có các tính năng này.
+- Không nói giao diện/API quản trị trên thiết bị có xác thực hoặc mã hóa kết nối: phiên bản hiện tại
+  chưa có cả hai.
+- Không nói nhận diện lại khách vãng lai "mặc định tắt" khi chưa xác nhận cấu hình bàn giao.
+- Không nói xóa cư dân là xóa toàn bộ dữ liệu liên quan: lịch sử chuyến đi và nhật ký nhận diện vẫn còn
+  (xem câu 35).
+- Không trình bày đếm người và dữ liệu từng hành khách như tính năng đã hoàn thiện.
 - Không cam kết "tuân thủ pháp luật" thay khách hàng; chỉ nói sản phẩm hỗ trợ đơn vị vận hành thực hiện
   nghĩa vụ.
 - Không nêu tên khách hàng, kết quả thí điểm, giá, hoặc so sánh với đối thủ khi chưa có tài liệu được duyệt.

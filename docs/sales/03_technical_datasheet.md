@@ -13,8 +13,8 @@
 
 AIoT Elevator - Smart Cabin là thiết bị AI biên (edge) đặt trong cabin thang máy. Thiết bị đọc luồng
 video từ camera IP trong cabin, nhận diện khuôn mặt cư dân đã đăng ký và gửi lệnh chọn tầng tới bộ
-điều khiển thang máy thông qua IoT Core. Thiết bị đồng thời ghi nhật ký lưu lượng thang máy và đếm
-người vào/ra cabin. Mọi xử lý AI chạy cục bộ trên NPU của thiết bị.
+điều khiển thang máy thông qua IoT Core. Thiết bị đồng thời ghi nhật ký lưu lượng thang máy. Đếm người
+vào/ra cabin đang hoàn thiện (xem mục 8). Mọi xử lý AI chạy cục bộ trên NPU của thiết bị.
 
 Mỗi tiến trình phần mềm phục vụ một cabin.
 
@@ -115,7 +115,7 @@ Dung lượng lưu một mẫu đặc trưng khuôn mặt: 2 KB (512 số thực
 | Thời hạn lệnh trước khi gửi | 5 s; quá hạn thì hủy, không gửi bù |
 | Thời gian chờ phản hồi | 3 s; không phản hồi thì ghi nhận "không rõ kết quả", không tự gửi lại |
 | Số lệnh tối đa mỗi lượt đi thang | 16 |
-| Không gọi tầng khi | Người lạ; cư dân chưa khai báo tầng; tầng ngoài dải cấu hình; cabin đang ở đúng tầng đó |
+| Không gọi tầng khi | Người lạ; cư dân chưa khai báo tầng; tầng ngoài dải cấu hình; cabin đang ở đúng tầng đó; thang đang chạy ngược chiều với tầng cần đến (cư dân không được xét lại cho đến hết lượt đi thang) |
 | Nút bấm trong cabin | Không bị ảnh hưởng; lệnh của hệ thống chỉ thêm tầng được chọn |
 
 ---
@@ -136,9 +136,10 @@ Dung lượng lưu một mẫu đặc trưng khuôn mặt: 2 KB (512 số thực
 
 | Hạng mục | Thông số |
 |---|---|
-| Dữ liệu ghi | Điểm dừng, chuyến cabin, chuyến hành khách, gọi tầng trong cabin, gọi tầng ở sảnh |
-| Chỉ số khai thác | Ma trận tầng đi – tầng đến, lưu lượng theo giờ/chiều, thời gian chuyến, tải cabin, thời gian chờ tại sảnh |
-| Nguồn dữ liệu | Sự kiện vào/ra từ bộ đếm người, danh tính từ nhận diện, thanh ghi bộ điều khiển thang máy |
+| Dữ liệu ghi | Điểm dừng, chuyến cabin, gọi tầng trong cabin, gọi tầng ở sảnh (từ thanh ghi bộ điều khiển) |
+| Chỉ số khai thác | Ma trận tầng đi – tầng đến theo điểm dừng, lưu lượng theo giờ/chiều, thời gian chuyến, thời gian chờ tại sảnh |
+| Chuyến từng hành khách, tải cabin | Đang hoàn thiện, chưa kiểm chứng thực địa (dựa trên bộ đếm người ở mục 8 và danh tính từ nhận diện) |
+| Nguồn dữ liệu | Thanh ghi bộ điều khiển thang máy; bộ đếm người và nhận diện cho dữ liệu từng hành khách |
 | Gắn cờ chế độ đặc biệt | Bảo trì, lỗi, khóa, báo cháy, độc lập, quá tải, mất dữ liệu thanh ghi |
 | Sai số thời gian | Khoảng một chu kỳ gửi dữ liệu của gateway (đo được trung vị ~5,6 s) |
 | Lưu trữ | Cơ sở dữ liệu SQLite riêng trên thiết bị, tách khỏi dữ liệu cư dân |
@@ -148,7 +149,10 @@ Dung lượng lưu một mẫu đặc trưng khuôn mặt: 2 KB (512 số thực
 
 ---
 
-## 8. Đếm người trong cabin
+## 8. Đếm người trong cabin (đang hoàn thiện)
+
+Tính năng đã có trong phần mềm nhưng chưa hoàn tất thử nghiệm nhiều người, thử nghiệm dài hạn và
+kiểm chứng tại công trình. Không dùng số đếm này cho cam kết với khách hàng.
 
 | Hạng mục | Thông số |
 |---|---|
@@ -175,14 +179,16 @@ Dung lượng lưu một mẫu đặc trưng khuôn mặt: 2 KB (512 số thực
 
 | Hạng mục | Thông số |
 |---|---|
-| Kênh đăng ký | API REST trên thiết bị, phục vụ giao diện quản trị web; công cụ dòng lệnh trên thiết bị |
+| Kênh đăng ký | API REST trên thiết bị (HTTP, chưa có xác thực), phục vụ giao diện quản trị web; công cụ dòng lệnh trên thiết bị |
 | Ảnh đăng ký | JPG, PNG, BMP, WEBP; nhiều ảnh mỗi người; mỗi ảnh tạo một mẫu đặc trưng |
 | Thông tin cư dân | Mã cư dân, họ tên, tầng chính, tầng phụ, vai trò, tên chào, căn hộ, ngôn ngữ |
 | Hiệu lực sau đăng ký | Không cần khởi động lại; thiết bị kiểm tra thay đổi mỗi 1 s (cấu hình được) |
 | Tính toàn vẹn | Ghi đăng ký theo giao dịch nguyên tử: không có trạng thái "đăng ký dở dang" |
 | Xóa cư dân | Xóa hồ sơ, thư mục ảnh và toàn bộ mẫu đặc trưng của cư dân |
-| Khách vãng lai | Tùy chọn nhận diện lại qua nhiều chuyến (mặc định tắt); quản trị viên xem, gộp, xóa hoặc chuyển thành cư dân |
-| Cấu hình theo cabin | Camera, ngưỡng nhận diện, số khung hình xác nhận, thời gian chờ, kết nối lại, dải tầng. Thay đổi có hiệu lực sau khi khởi động lại dịch vụ |
+| Khách vãng lai | Tùy chọn nhận diện lại qua nhiều chuyến (bật/tắt theo từng công trình); quản trị viên xem, gộp, xóa hoặc chuyển thành cư dân |
+| Camera của cabin | Chọn trong phần cấu hình camera trên web; có hiệu lực sau khi khởi động lại dịch vụ |
+| Ngưỡng nhận diện | Tham số cài đặt trên từng thiết bị; có hiệu lực sau khi khởi động lại dịch vụ |
+| Tham số khác theo cabin | Số khung hình xác nhận, thời gian chờ, kết nối lại, dải tầng; có hiệu lực sau khi khởi động lại dịch vụ |
 
 ---
 
@@ -196,16 +202,17 @@ Dung lượng lưu một mẫu đặc trưng khuôn mặt: 2 KB (512 số thực
 | Nội dung nhật ký hệ thống | Chỉ mã số (mã cư dân, mã khách, mã chuyến, tầng); không có tên, tên chào, căn hộ, vector, đường dẫn ảnh |
 | Thông tin đăng nhập camera | Được ẩn trong nhật ký |
 | Quyền truy cập cơ sở dữ liệu lưu lượng | Chỉ tài khoản dịch vụ (quyền file 0600) |
-| Nhận diện lại khách vãng lai | Mặc định tắt |
-| Lưu ảnh khuôn mặt theo chuyến | Mặc định tắt; chọn tắt / chỉ khách / tất cả; ảnh 112×112 JPEG |
-| Thời hạn giữ dữ liệu lưu lượng | 730 ngày (cấu hình được) |
+| Nhận diện lại khách vãng lai | Tùy chọn, bật/tắt theo từng công trình. Khi bật: lưu mẫu đặc trưng 512 chiều của người chưa đăng ký, gắn mã số ẩn danh. Trạng thái trong cấu hình bàn giao: `[CẦN ĐIỀN]` |
+| Lưu ảnh khuôn mặt theo chuyến | Tùy chọn: tắt / chỉ khách / tất cả; ảnh 112×112 JPEG. Trạng thái trong cấu hình bàn giao: `[CẦN ĐIỀN]` |
+| Thời hạn giữ dữ liệu lưu lượng | 730 ngày (cấu hình được), gồm cả lịch sử chuyến gắn mã cư dân |
 | Thời hạn giữ mẫu khuôn mặt khách vãng lai | 90 ngày từ lần thấy cuối (cấu hình được) |
 | Thời hạn giữ ảnh khuôn mặt theo chuyến | 30 ngày, tối đa 5 GB (cấu hình được) |
-| Dọn dữ liệu hết hạn | Tự động mỗi giờ |
+| Dọn dữ liệu hết hạn | Tự động mỗi giờ cho dữ liệu lưu lượng, mẫu khách vãng lai và ảnh theo chuyến |
 | Bảo vệ ổ đĩa | Ngừng lưu ảnh khi còn dưới 4 096 MB trống; ngừng ghi bản ghi lưu lượng khi dưới 1 024 MB |
-| Thời hạn giữ nhật ký nhận diện cư dân | `[CẦN ĐIỀN: chính sách và cách xóa định kỳ]` |
+| Thời hạn giữ nhật ký nhận diện cư dân | Phiên bản hiện tại chưa có xóa tự động; giữ đến khi xóa thủ công. `[CẦN ĐIỀN: chính sách và cách xóa định kỳ]` |
 | Mã hóa dữ liệu lưu trữ | `[CẦN ĐIỀN]` |
-| Mã hóa kết nối giao diện quản trị | `[CẦN ĐIỀN]` |
+| Xác thực truy cập API quản trị trên thiết bị | Chưa có trong phiên bản hiện tại; chỉ đặt thiết bị trong mạng nội bộ được kiểm soát |
+| Mã hóa kết nối API quản trị trên thiết bị | Chưa có (HTTP) trong phiên bản hiện tại |
 
 ---
 
@@ -226,8 +233,10 @@ Dung lượng lưu một mẫu đặc trưng khuôn mặt: 2 KB (512 số thực
 - Đổi camera hoặc tham số AI cần khởi động lại dịch vụ (gián đoạn vài giây).
 - Cảnh báo chó/mèo chỉ ghi trên thiết bị.
 - Nhật ký lưu lượng xuất CSV qua công cụ trên thiết bị, chưa có báo cáo web.
-- Số đếm người có thể lệch khi camera không thấy hết cửa hoặc người chồng lấn; hệ thống đánh dấu
-  "không chắc chắn" trong các trường hợp phát hiện được.
+- Đếm người và dữ liệu chuyến từng hành khách chưa được kiểm chứng thực địa. Số đếm có thể lệch khi
+  camera không thấy hết cửa hoặc người chồng lấn.
+- API quản trị trên thiết bị chưa có xác thực và chưa mã hóa kết nối.
+- Nhật ký nhận diện cư dân chưa có xóa tự động.
 - NPU một lõi dùng chung: khi đang đăng ký khuôn mặt, tốc độ xử lý có thể chững lại trong thời gian ngắn.
 
 ---

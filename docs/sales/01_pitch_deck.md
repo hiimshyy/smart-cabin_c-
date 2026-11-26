@@ -44,7 +44,7 @@ thống kê thị trường nếu chưa có nguồn. `[CẦN ĐIỀN: số liệ
 
 - Một thiết bị AI biên (edge) đặt trong cabin, đọc luồng video từ camera IP.
 - Nhận diện khuôn mặt cư dân đã đăng ký → tự động gửi lệnh chọn tầng của cư dân đó.
-- Đồng thời thu thập dữ liệu lưu lượng thang máy và đếm người vào/ra cabin.
+- Đồng thời thu thập dữ liệu lưu lượng thang máy từ bộ điều khiển (điểm dừng, gọi tầng, thời gian chờ).
 - Toàn bộ xử lý AI chạy trên thiết bị, không gửi video lên cloud.
 - Nút bấm của thang máy vẫn hoạt động bình thường.
 
@@ -86,10 +86,13 @@ trên ngưỡng mới coi là nhận ra, để tránh nhận nhầm do một khu
   - nhiều cư dân cùng tầng chỉ tạo một lệnh;
   - nhiều tầng khác nhau được gửi lần lượt, chờ phản hồi từng lệnh.
 - Người lạ hoặc cư dân chưa khai báo tầng: không gọi tầng.
+- Thang đang chạy ngược chiều với tầng cần đến: không gọi tầng trong lượt đi đó, cư dân bấm nút.
 
 **Hình ảnh gợi ý:** minh họa 2 cư dân cùng tầng → 1 lệnh; 2 cư dân khác tầng → 2 lệnh.
 
-**Ghi chú người thuyết trình:** Lệnh gọi tầng gửi bất đồng bộ nên không làm chậm luồng xử lý camera.
+**Ghi chú người thuyết trình:** Ví dụ trường hợp ngược chiều: cư dân chỉ có tầng 7, vào thang ở tầng 3
+khi thang đang đi xuống. Hệ thống không gọi tầng 7 và không xét lại cư dân này cho đến khi kết thúc
+lượt đi thang (cabin trống 5 giây). Lệnh gọi tầng gửi bất đồng bộ nên không làm chậm luồng xử lý camera.
 Nếu lệnh hết hạn trước khi gửi được (mặc định 5 giây) thì bị hủy, không gửi lệnh cũ khi kết nối phục hồi.
 
 ---
@@ -98,18 +101,21 @@ Nếu lệnh hết hạn trước khi gửi được (mặc định 5 giây) th�
 
 **Nội dung trên slide**
 
-- Ghi lại tự động: các điểm dừng, các chuyến cabin, chuyến đi của từng hành khách,
-  các lần bấm gọi tầng trong cabin và gọi tầng ở sảnh.
-- Từ đó có: ma trận tầng đi – tầng đến, lưu lượng theo giờ và theo chiều, thời gian chuyến,
-  số người trong cabin, thời gian chờ tại sảnh.
+- Ghi lại tự động từ bộ điều khiển thang máy: các điểm dừng, các chuyến cabin, các lần bấm gọi tầng
+  trong cabin và gọi tầng ở sảnh.
+- Từ đó có: ma trận tầng đi – tầng đến theo điểm dừng, lưu lượng theo giờ và theo chiều,
+  thời gian chuyến, thời gian chờ tại sảnh.
 - Gắn cờ khi thang ở chế độ bảo trì, lỗi, khóa, báo cháy, độc lập hoặc quá tải.
 - Lưu cục bộ trên thiết bị, xuất file CSV theo khoảng ngày.
+- Đang hoàn thiện (chưa kiểm chứng thực địa): chuyến đi của từng hành khách và số người trong cabin.
 
 **Hình ảnh gợi ý:** biểu đồ cột lưu lượng theo giờ, ma trận tầng. `[CẦN ĐIỀN: biểu đồ mẫu dựng từ dữ liệu thật đã ẩn danh, nếu có]`
 
-**Ghi chú người thuyết trình:** Dữ liệu gọi tầng lấy trực tiếp từ bộ điều khiển thang máy nên vẫn có
-khi camera bỏ sót người. Thời gian chờ có sai số khoảng một chu kỳ gửi dữ liệu của gateway (đo được
-khoảng 5,6 giây). Phiên bản hiện tại xuất dữ liệu qua công cụ trên thiết bị, chưa có giao diện báo cáo web.
+**Ghi chú người thuyết trình:** Dữ liệu điểm dừng và gọi tầng lấy trực tiếp từ bộ điều khiển thang máy,
+không phụ thuộc camera. Thời gian chờ có sai số khoảng một chu kỳ gửi dữ liệu của gateway (đo được
+khoảng 5,6 giây). Chuyến đi từng hành khách và số người trong cabin dựa trên bộ đếm người, bộ đếm này
+chưa qua thử nghiệm dài hạn tại công trình nên không trình bày như tính năng đã hoàn thiện.
+Phiên bản hiện tại xuất dữ liệu qua công cụ trên thiết bị, chưa có giao diện báo cáo web.
 
 ---
 
@@ -117,16 +123,19 @@ khoảng 5,6 giây). Phiên bản hiện tại xuất dữ liệu qua công cụ
 
 **Nội dung trên slide**
 
-- **Đếm người vào/ra cabin** qua vùng cửa, có đánh dấu mức tin cậy khi dữ liệu không chắc chắn.
 - **Cảnh báo chó/mèo trong cabin**: ghi cảnh báo và lưu ảnh chụp sự kiện, không tốn thêm lượt chạy AI.
 - **Ghi video theo sự kiện** (tùy chọn): tự ghi khi có người, gồm 1 giây trước lúc phát hiện.
 - **Giám sát sức khỏe thiết bị**: CPU, RAM, ổ đĩa, nhiệt độ CPU/NPU được ghi định kỳ.
 
+- **Đếm người vào/ra cabin** (đang hoàn thiện, chưa kiểm chứng thực địa): đếm qua vùng cửa,
+  có đánh dấu mức tin cậy khi dữ liệu không chắc chắn.
+
 **Hình ảnh gợi ý:** 4 biểu tượng tương ứng.
 
 **Ghi chú người thuyết trình:** Cảnh báo động vật hiện chỉ ghi trên thiết bị, chưa đẩy ra ứng dụng
-hay hệ thống ngoài. Bộ đếm người phụ thuộc góc camera: nếu camera không thấy hết cửa hoặc nhiều người
-chồng lên nhau thì số đếm có thể lệch, khi đó hệ thống đánh dấu "không chắc chắn".
+hay hệ thống ngoài. Bộ đếm người chưa qua thử nghiệm tải nhiều người và thử nghiệm dài hạn; không hứa
+độ chính xác. Số đếm phụ thuộc góc camera: nếu camera không thấy hết cửa hoặc nhiều người chồng lên
+nhau thì số đếm có thể lệch.
 
 ---
 
@@ -159,15 +168,21 @@ người và theo dõi, tốc độ khoảng 15 FPS. Hiệu năng trên camera I
 - Xử lý AI hoàn toàn trên thiết bị trong tòa nhà; không gửi video lên cloud.
 - Lưu đặc trưng khuôn mặt dạng vector số để so khớp.
 - Nhật ký hệ thống chỉ ghi mã số, không ghi tên, căn hộ, vector hay ảnh.
-- Nhận diện lại khách vãng lai và lưu ảnh khuôn mặt là **tùy chọn, mặc định tắt**.
-- Thời hạn giữ dữ liệu cấu hình được và tự động xóa khi hết hạn.
+- Nhận diện lại khách vãng lai và lưu ảnh khuôn mặt khách là **tính năng tùy chọn**, bật hay tắt
+  theo từng công trình; chỉ bật sau khi hoàn tất thủ tục pháp lý.
+- Dữ liệu lưu lượng, mẫu khuôn mặt khách vãng lai, ảnh khuôn mặt theo chuyến và nhật ký hệ thống
+  có thời hạn lưu cấu hình được và tự động xóa khi hết hạn.
+- Dữ liệu cư dân và nhật ký nhận diện cư dân được giữ đến khi xóa thủ công.
 - Hỗ trợ đơn vị vận hành đáp ứng Luật Bảo vệ dữ liệu cá nhân số 91/2025/QH15.
 
 **Hình ảnh gợi ý:** biểu tượng khiên/ổ khóa, sơ đồ "dữ liệu ở lại tòa nhà".
 
 **Ghi chú người thuyết trình:** Dữ liệu khuôn mặt là dữ liệu cá nhân nhạy cảm. Đơn vị vận hành tòa nhà
 cần thông báo tại thang máy và có căn cứ xử lý (ví dụ sự đồng ý của cư dân) trước khi đăng ký khuôn
-mặt. Chi tiết trong tài liệu FAQ. Không cam kết thay khách hàng về tuân thủ pháp lý.
+mặt. Không nói "mặc định tắt" cho nhận diện lại khách vãng lai: phần mềm gốc để tắt, nhưng cấu hình
+triển khai mẫu hiện tại đang bật cả nhận diện lại và lưu ảnh khách.
+`[CẦN ĐIỀN: xác nhận trạng thái bật/tắt hai tính năng này trong cấu hình bàn giao cho khách hàng]`.
+Chi tiết trong tài liệu FAQ. Không cam kết thay khách hàng về tuân thủ pháp lý.
 
 ---
 
@@ -179,12 +194,15 @@ mặt. Chi tiết trong tài liệu FAQ. Không cam kết thay khách hàng về
 - Mỗi cư dân có thể có nhiều ảnh; mỗi ảnh tạo một mẫu đặc trưng, so khớp lấy mẫu giống nhất.
 - Người mới được nhận diện ngay sau khi đăng ký, không cần khởi động lại (hệ thống kiểm tra thay đổi mỗi 1 giây).
 - Xóa cư dân trên web thì dữ liệu khuôn mặt của cư dân đó trên thiết bị cũng bị xóa.
-- Các tham số vận hành từng cabin (camera, ngưỡng nhận diện, ...) lưu trong cơ sở dữ liệu cấu hình.
+- Camera của từng cabin chọn trong phần cấu hình camera trên web; ngưỡng nhận diện là tham số cài đặt
+  trên từng thiết bị.
 
 **Hình ảnh gợi ý:** `[CẦN ĐIỀN: ảnh chụp màn hình giao diện quản trị web]`
 
 **Ghi chú người thuyết trình:** Đổi camera hoặc tham số AI cần khởi động lại dịch vụ (gián đoạn vài
-giây). Thêm/xóa cư dân thì không cần khởi động lại.
+giây). Thêm/xóa cư dân thì không cần khởi động lại. API quản trị khuôn mặt trên thiết bị hiện chưa có
+xác thực và chạy HTTP không mã hóa; chỉ dùng trong mạng nội bộ được kiểm soát, không giới thiệu như
+một kênh có bảo mật.
 
 ---
 

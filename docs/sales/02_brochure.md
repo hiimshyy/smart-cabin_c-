@@ -22,8 +22,8 @@ Toàn bộ xử lý AI chạy ngay trên thiết bị, không gửi video lên c
 - **Không cần bấm nút**: cư dân bước vào, hệ thống tự chọn tầng chính hoặc tầng phụ (ví dụ tầng hầm)
   theo chiều chạy của thang.
 - **Nút bấm vẫn hoạt động**: hệ thống chỉ thêm tầng được chọn, không thay thế bảng nút.
-- **Dữ liệu vận hành thang máy**: tầng đi – tầng đến, lưu lượng theo giờ, thời gian chờ tại sảnh,
-  số người trong cabin; xuất file CSV.
+- **Dữ liệu vận hành thang máy**: tầng đi – tầng đến theo điểm dừng, lưu lượng theo giờ,
+  thời gian chờ tại sảnh; xuất file CSV.
 - **Dữ liệu khuôn mặt ở lại tòa nhà**: nhận diện, so khớp và lưu dữ liệu khuôn mặt trên thiết bị tại chỗ.
 - **Thêm cư dân không gián đoạn**: đăng ký qua web, có hiệu lực ngay mà không cần khởi động lại.
 
@@ -33,8 +33,8 @@ Toàn bộ xử lý AI chạy ngay trên thiết bị, không gửi video lên c
 |---|---|
 | Gọi tầng tự động | Mỗi cư dân một lần mỗi lượt đi; nhiều người cùng tầng chỉ tạo một lệnh |
 | Tầng chính + tầng phụ | Chọn tầng theo tầng hiện tại và chiều chạy của thang |
-| Nhật ký lưu lượng | Điểm dừng, chuyến cabin, chuyến hành khách, gọi tầng trong cabin và ở sảnh |
-| Đếm người | Đếm lượt vào/ra qua vùng cửa, có đánh dấu mức tin cậy |
+| Nhật ký lưu lượng | Điểm dừng, chuyến cabin, gọi tầng trong cabin và ở sảnh |
+| Đếm người, chuyến từng hành khách | Đang hoàn thiện, chưa kiểm chứng thực địa |
 | Cảnh báo vật nuôi | Phát hiện chó/mèo trong cabin, ghi cảnh báo kèm ảnh chụp |
 | Ghi video sự kiện | Tùy chọn, tự ghi khi có người trong cabin |
 | Tiết kiệm tài nguyên | Mô hình AI chạy theo tín hiệu cửa, tạm ngừng khi cabin trống và cửa đóng |
@@ -68,8 +68,9 @@ Chi tiết xem tài liệu **Thông số kỹ thuật (Datasheet)**.
 ### Quyền riêng tư
 
 - Lưu đặc trưng khuôn mặt dạng vector số; nhật ký hệ thống chỉ ghi mã số, không ghi tên hay ảnh.
-- Nhận diện lại khách vãng lai và lưu ảnh khuôn mặt: tùy chọn, mặc định tắt.
-- Thời hạn lưu dữ liệu cấu hình được, tự động xóa khi hết hạn.
+- Nhận diện lại khách vãng lai và lưu ảnh khuôn mặt khách: tùy chọn, bật hay tắt theo từng công trình.
+- Dữ liệu lưu lượng, dữ liệu khách vãng lai, ảnh theo chuyến và nhật ký hệ thống: thời hạn lưu cấu hình
+  được, tự động xóa khi hết hạn. Dữ liệu cư dân và nhật ký nhận diện: giữ đến khi xóa thủ công.
 - Hỗ trợ đơn vị vận hành thực hiện nghĩa vụ theo Luật Bảo vệ dữ liệu cá nhân số 91/2025/QH15.
 
 ### Phù hợp với
