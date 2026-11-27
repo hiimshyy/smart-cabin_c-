@@ -12,6 +12,7 @@ This file provides guidance to the AI agent when working with code in this repos
 
 ## Hard rules
 
+- Multi-machine workflow: before starting a task or modifying any file, always check `git status` and sync with `origin/main` (`git fetch origin` and `git pull --ff-only origin main` when clean; if local and remote diverged or have conflicting dirty files, stop and ask the user before overwriting).
 - Never modify `src/log/log.h` — it is the NPU SDK log-mute shim, not the app logger. Use `src/log/logger.h` for app logging.
 - Never log PII: no resident names, `greeting_name`, apartment, embedding vectors, or image paths. Log numeric IDs only.
 - Keep the main frame loop non-blocking: network, disk logging, recording, and DB writes go through worker threads with bounded drop-oldest queues. Swap catalogs only at frame boundaries.

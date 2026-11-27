@@ -80,7 +80,7 @@ face_recog_app/
 ├── config/                         # Cấu hình vùng đếm người (occupancy_cam<id>.json)
 ├── db/                             # schema.sql, traffic_schema.sql (các file *.db gitignored)
 ├── model/                          # scrfd_2.5g, w600k_mbf, yolov5s_rt (.nb cho A733)
-├── docs/Address_Elevator.md        # Bảng tham chiếu thanh ghi biến tần thang máy INVT
+├── docs/                           # Tài liệu thanh ghi INVT (Address_Elevator.md) & bộ sales kit (sales/)
 └── tests/                          # Unit tests độc lập + run_tests.sh
 ```
 
