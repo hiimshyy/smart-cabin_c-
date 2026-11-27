@@ -150,15 +150,15 @@ nhau thì số đếm có thể lệch.
   - SCRFD 2.5G: phát hiện khuôn mặt và 5 điểm mốc;
   - MobileFaceNet: trích đặc trưng khuôn mặt 512 chiều.
 - Theo dõi từng người qua nhiều khung hình (ByteTrack), giữ danh tính khi người quay lưng.
-- Tốc độ xử lý ở chế độ vận hành (3 mô hình + theo dõi): `[CẦN ĐIỀN: FPS chế độ vận hành]`.
+- Tốc độ xử lý ở chế độ vận hành (3 mô hình + theo dõi): trung vị **~24,5 FPS** (đo trên luồng camera IP RTSP 1920×1080 @ 25 FPS).
 
 **Hình ảnh gợi ý:** ảnh bo mạch, sơ đồ 3 mô hình.
 
-**Ghi chú người thuyết trình:** Thời gian chạy trên NPU đo nội bộ trên webcam USB, ở chế độ chỉ phát
-hiện + nhận diện khuôn mặt (không dùng cho vận hành): phát hiện khuôn mặt ~10–17 ms, nhận diện ~3 ms
-mỗi khuôn mặt. Không đưa con số FPS khi mục FPS trên slide chưa được điền. Hiệu năng trên
-camera IP thực tế tại công trình:
-`[CẦN ĐIỀN: FPS và độ trễ đo trên camera RTSP tại công trình]`. Độ chính xác nhận diện:
+**Ghi chú người thuyết trình:** Số liệu trích xuất từ 15 ngày nhật ký vận hành thực tế trên camera IP RTSP
+1920×1080 @ 25 FPS (có bật điều phối AI theo cửa): tốc độ toàn luồng đạt trung vị 24,5 FPS khi có người
+trong cabin (P10–P95: 23,7–25,0 FPS) và 24,8 FPS khi cabin trống; thời gian chạy từng mô hình trên NPU
+gồm YOLOv5s trung vị ~36,2 ms (P95: 64,7 ms), SCRFD ~10,7 ms (P95: 13,8 ms), MobileFaceNet P95 ~3,7 ms.
+Độ chính xác nhận diện:
 `[CẦN ĐIỀN: tỉ lệ nhận nhầm / bỏ sót đo trên bộ dữ liệu thật]`.
 
 ---

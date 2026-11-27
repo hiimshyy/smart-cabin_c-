@@ -82,10 +82,15 @@ Phần mềm có hai chế độ chạy:
 
 | Chỉ số | Chế độ | Giá trị |
 |---|---|---|
-| Tốc độ toàn luồng (FPS) | Chế độ vận hành | `[CẦN ĐIỀN: FPS chế độ vận hành, ghi rõ loại camera và cách đo]` |
+| Tốc độ toàn luồng (FPS) | Chế độ vận hành (camera IP RTSP 1920×1080 @ 25 FPS, 15 ngày nhật ký vận hành) | Trung vị 24,5 FPS khi có người (P10–P95: 23,7–25,0 FPS; 8 649 mẫu); 24,8 FPS khi cabin trống |
 | Tốc độ toàn luồng (FPS) | Chế độ chỉ SCRFD | `[CẦN ĐIỀN: FPS chế độ chỉ SCRFD, ghi rõ loại camera và cách đo]` |
-| Thời gian phát hiện khuôn mặt trên NPU | Chế độ chỉ SCRFD, đo nội bộ trên webcam USB | ~10–17 ms |
-| Thời gian nhận diện trên NPU | Chế độ chỉ SCRFD, đo nội bộ trên webcam USB | ~3 ms / khuôn mặt |
+| Tiền xử lý khung hình (letterbox 640×640) | Chế độ vận hành, RTSP 1920×1080 | Trung vị 6,2 ms (P95: 9,9 ms) |
+| Thời gian phát hiện người + chó/mèo (YOLOv5s trên NPU) | Chế độ vận hành, RTSP 1920×1080 | Trung vị 36,2 ms (P95: 64,7 ms; 7 264 mẫu) |
+| Thời gian phát hiện khuôn mặt (SCRFD 2.5G trên NPU) | Chế độ vận hành, RTSP 1920×1080 | Trung vị 10,7 ms (P95: 13,8 ms; 8 239 mẫu) |
+| Thời gian trích đặc trưng (MobileFaceNet trên NPU) | Chế độ vận hành, RTSP 1920×1080 | P95: 3,7 ms / cửa sổ có nhận diện (~3 ms / khuôn mặt trên USB) |
+| Thời gian từ lúc bước qua vùng cửa đến khi gửi lệnh chọn tầng | Chế độ vận hành tại công trình | Trung vị ~1,2 s (P25–P75: 0,75–4,3 s, tùy thời điểm người dùng hướng mặt về camera; 109 lượt). Riêng từ lúc đủ 5 khung hình xác nhận đến khi phát lệnh Socket.IO: trung vị 106 ms (P95: 234 ms; 180 lệnh) |
+| Thời gian nạp nóng danh sách cư dân mới (hot-reload) | Chế độ vận hành | Trung vị 1,8 ms (tối đa 4,7 ms) |
+| Tài nguyên tiến trình khi vận hành 24/7 | Chế độ vận hành (41 748 mẫu chu kỳ 30 s) | CPU tiến trình trung vị 10,1% (P95: 15,7%); RAM tiến trình trung vị 183 MB (P95: 402 MB) |
 | Thời gian đăng ký một ảnh (sau lần khởi tạo NPU đầu tiên) | Công cụ đăng ký | ~20–30 ms |
 
 Ở chế độ vận hành, điều phối AI theo tín hiệu cửa (mục 6) giới hạn tần suất phát hiện người: tối đa
@@ -95,8 +100,6 @@ Chưa đo hoặc chưa xác nhận:
 
 | Chỉ số | Giá trị |
 |---|---|
-| FPS và độ trễ trên camera RTSP tại công trình | `[CẦN ĐIỀN]` |
-| Thời gian từ lúc bước vào cabin đến khi gửi lệnh chọn tầng | `[CẦN ĐIỀN]` |
 | Tỉ lệ nhận nhầm (FAR) / tỉ lệ bỏ sót (FRR) | `[CẦN ĐIỀN]` |
 | Số cư dân tối đa đã kiểm chứng | `[CẦN ĐIỀN]` |
 | Độ chính xác đếm người | `[CẦN ĐIỀN]` |

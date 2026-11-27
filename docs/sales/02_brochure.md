@@ -58,7 +58,7 @@ Toàn bộ xử lý AI chạy ngay trên thiết bị, không gửi video lên c
 | Phần cứng xử lý | Orange Pi A733, NPU tích hợp |
 | Mô hình AI | YOLOv5s (người, chó/mèo), SCRFD 2.5G (khuôn mặt), MobileFaceNet (đặc trưng 512 chiều) |
 | Camera | Camera IP qua RTSP/HTTP |
-| Tốc độ xử lý (chế độ vận hành: phát hiện người + khuôn mặt + theo dõi) | `[CẦN ĐIỀN: FPS chế độ vận hành]` |
+| Tốc độ xử lý (chế độ vận hành: phát hiện người + khuôn mặt + theo dõi) | ~24,5 FPS (trung vị trên camera IP RTSP 1920×1080 @ 25 FPS) |
 | Bộ điều khiển thang máy đã tích hợp | INVT (qua IoT Core). Hãng khác: `[CẦN ĐIỀN]` |
 | Số cư dân tối đa | `[CẦN ĐIỀN]` |
 | Độ chính xác nhận diện | `[CẦN ĐIỀN]` |

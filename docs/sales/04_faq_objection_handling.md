@@ -50,7 +50,10 @@ chọn. Hủy tầng đã chọn theo chức năng có sẵn của thang máy: `
 
 **9. Mất bao lâu từ khi bước vào đến khi tầng được chọn?**
 Hệ thống xác nhận danh tính khi khuôn mặt khớp ổn định qua 5 khung hình liên tiếp (mặc định).
-Thời gian thực tế tại công trình: `[CẦN ĐIỀN: thời gian đo thực tế]`.
+Từ nhật ký vận hành thực tế tại công trình, thời gian tính từ lúc bước qua vùng cửa đến khi thiết bị gửi
+lệnh chọn tầng có trung vị khoảng **1,2 giây** (phụ thuộc thời điểm cư dân hướng mặt về phía camera);
+riêng từ lúc khớp đủ 5 khung hình liên tiếp đến khi lệnh được gửi đi qua mạng nội bộ chỉ mất trung vị
+khoảng **0,1 giây** (P95: ~0,23 giây).
 
 **10. Độ chính xác nhận diện là bao nhiêu?**
 `[CẦN ĐIỀN: tỉ lệ nhận nhầm / bỏ sót đo trên dữ liệu thật]`. Ngưỡng nhận diện điều chỉnh được theo
@@ -110,10 +113,12 @@ SCRFD 2.5G (phát hiện khuôn mặt), MobileFaceNet (trích đặc trưng khu�
 camera IP (RTSP) trong cabin. Chi tiết xem Datasheet.
 
 **22. Tốc độ xử lý?**
-Tốc độ ở chế độ vận hành (phát hiện người + phát hiện và nhận diện khuôn mặt + theo dõi):
-`[CẦN ĐIỀN: FPS chế độ vận hành]`. Trên camera IP tại công trình: `[CẦN ĐIỀN]`. Thời gian chạy trên
-NPU đo nội bộ (chế độ chỉ phát hiện + nhận diện khuôn mặt, webcam USB): phát hiện khuôn mặt khoảng
-10–17 ms, nhận diện khoảng 3 ms mỗi khuôn mặt.
+Theo nhật ký vận hành thực tế 15 ngày trên camera IP RTSP 1920×1080 @ 25 FPS (bật phát hiện người +
+phát hiện và nhận diện khuôn mặt + theo dõi + điều phối theo cửa): tốc độ toàn luồng đạt trung vị
+**24,5 FPS** khi có người đang được theo dõi trong cabin (P10–P95: 23,7–25,0 FPS) và **24,8 FPS** khi
+cabin trống. Thời gian xử lý từng mô hình trên NPU: phát hiện người YOLOv5s trung vị ~36,2 ms
+(P95: 64,7 ms), phát hiện khuôn mặt SCRFD trung vị ~10,7 ms (P95: 13,8 ms), trích đặc trưng khuôn mặt
+MobileFaceNet P95 ~3,7 ms (~3 ms mỗi khuôn mặt).
 
 **23. Mất Internet thì sao?**
 Xử lý AI và so khớp chạy trên thiết bị, không cần cloud. Thiết bị cần kết nối mạng nội bộ tới camera
