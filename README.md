@@ -1,479 +1,243 @@
-# SCRFD + MobileFaceNet — Orange Pi A733 NPU
+# Smart Elevator Cabin AI Core — Orange Pi A733 NPU
 
-Realtime face detection + recognition chạy trên Orange Pi A733 (NPU v3).
-Pipeline: USB / RTSP camera → **SCRFD 2.5g_bnkps 640** → align 5-landmarks → **MobileFaceNet 112** → cosine match.
+Ứng dụng nhận diện khuôn mặt, đếm người, cảnh báo động vật, tự động gọi tầng và ghi nhật ký di chuyển thang máy chạy thời gian thực trên **Orange Pi A733 (NPU VIPLite)**.
 
-## Nguồn dữ liệu: SQLite (vận hành) vs `.fdb` (test/dev)
+**Pipeline vận hành:**
+RTSP / USB Camera → Letterbox `640×640` → **YOLOv5s** (person + cat/dog, điều tiết theo cửa thang `8472`) + **ByteTrack** → **SCRFD 2.5g** (`640×640`) → Align 5-landmarks (`112×112`) → **MobileFaceNet** (`512-D`) → **MatchEngine** (multi-embedding max-cosine) → **InteractionManager** → **FloorCallCoordinator** (Socket.IO `8193-<slave>`) + **Occupancy / Traffic Log** (`SQLite WAL`).
 
-Hệ thống có **lớp dữ liệu cư dân trên SQLite** (`db/schema.sql`) là nguồn chân
-lý cho vận hành cabin: nhiều embedding/người (multi-embedding, lấy max cosine,
-KHÔNG trung bình), `home_floor`, `greeting_name`, và audit log `match_events`.
+---
 
-- **Vận hành thật** → dùng `--resident-db <sqlite>`. State machine tương tác
-  (streak + cooldown) chống nhấp nháy; mỗi lần confirm ghi 1 `match_events`.
-- **Test/dev nhanh** → `.fdb` cũ qua `--face-db` (1 embedding trung bình/người,
-  KHÔNG tầng/ngôn ngữ/audit). Không dùng cho cabin thật.
+## 1. Kiến trúc dữ liệu & Quy ước tầng (`schema_version = 4`)
 
-Quy trình khởi tạo (sau `source env.sh`):
+### Nguồn dữ liệu cư dân (`db/residents.db`, schema `db/schema.sql`)
+- **Chế độ vận hành (`--resident-db`)**: dùng SQLite WAL làm nguồn dữ liệu chuẩn. Mỗi cư dân có thể có nhiều vector embedding (`source = id_photo | cabin | admin`); `MatchEngine` lấy **max cosine** trên toàn bộ embedding của người đó (không lấy trung bình).
+- **Quy ước chỉ số tầng thống nhất** trên `residents` (`home_floor`, `secondary_floor`), `cabins` và thanh ghi gọi tầng `8193-<slave>`:
+  - `-1` (`HOME_FLOOR_UNSET` / `SECONDARY_FLOOR_UNSET`): chưa đăng ký tầng (chỉ nhận diện/audit, không tự gọi hướng đó; overlay hiện `F?`).
+  - `0`: tầng hầm **`B`** (mã hóa bit `0` → `value = 1`; overlay hiện `FB`). `cabins.floors_min` mặc định là `0`.
+  - `1..62`: tầng nổi (mã hóa `value = 2^floor`; ví dụ tầng `5` → `value = 32`).
+- **Role tổ chức** (`schema_version 3`): 14 giá trị `snake_case` (`chairman`, `vice_president`, `deputy_general_director`, `head`, `director`, `manager`, `specialist`, `team_leader`, `sales`, `engineer`, `staff`, `intern`, `vip`, `guest_regular`).
+- **Cầu nối Web (`deploy/face_core/`)**: dịch vụ Node `face_core` (triển khai tại `/edge/face_core/` dưới PM2, giao diện web `Embody Edge` qua Nginx HTTPS) lưu hồ sơ vào MongoDB và gọi `enroll_bridge.js` → spawn `./add_person --replace --ext-id ... --home-floor ... --secondary-floor ...` ghi atomic vào `db/residents.db`.
+- **Chế độ `.fdb` cũ (`--face-db`)**: chỉ giữ cho mục đích test/dev đơn giản (1 vector/người, không tầng, không audit log).
 
-```bash
-# Enroll từ folder ảnh thẳng vào SQLite (mỗi ảnh 1 embedding):
-face_enroll faces db/residents.db
+### Hot-reload danh sách cư dân
+Ở chế độ `--resident-db`, `ResidentCatalogReloader` kiểm tra thay đổi trên SQLite mỗi `1000 ms` (chỉnh qua `--resident-reload-ms`, đặt `0` để tắt). Khi có thay đổi thực chất về metadata (`name`, `home_floor`, `secondary_floor`, `role`, `ext_id`...) hoặc embedding, app dựng `MatchEngine` mới và hoán đổi tại ranh giới frame mà **không cần restart service**. Các ghi nhận audit (`match_events`, `last_seen_at`, `match_count`) không kích hoạt build lại matcher.
 
-face_set_floor "Cao Tien Sy" 7 "anh Sy"   # điền tầng + tên chào
-face_cabin                                 # chạy realtime vận hành
-face_events                                # xem audit log
-```
+---
 
-Enroll/add luôn tạo resident với `home_floor=0` ("chưa đăng ký tầng": cabin
-vẫn chào tên nhưng không auto-gọi tầng) — nhớ `face_set_floor` sau đó.
+## 2. Cấu trúc thư mục
 
-Chi tiết spec: `.kiro/specs/resident-db-layer/`.
-
-## Config vận hành: DB-driven (bảng `cabins`)
-
-Config vận hành từng cabin lưu trong **bảng `cabins`** của SQLite (schema_version 2),
-không còn hardcode qua CLI. Web/app đổi được các tham số này từ xa (qua REST API — đang
-làm cùng spec Enroll API); app đọc lúc khởi động theo `--cabin-id`. Thứ tự ưu tiên:
-**CLI > DB > default** (CLI chỉ để dev override; truyền `--source`/`--match-thr`... sẽ đè giá trị DB).
-
-Web/app **chỉnh được** (Nhóm A, cột trong `cabins`):
-
-| Setting | Cột `cabins` | Ràng buộc |
-|---|---|---|
-| RTSP camera URL | `camera_urls` (JSON array, v1 dùng [0]) | scheme rtsp/http/https; **pipeline GStreamer bị từ chối** |
-| RTSP jitter latency | `gst_latency_ms` | ≥ 0 (default 100) |
-| Match threshold | `match_thr` | [0.05, 0.95] (default 0.35) |
-| Confirm streak | `confirm_streak` | ≥ 1 (default 5) |
-| Cooldown ms | `cooldown_ms` | ≥ 0 (default 3000) |
-| Unknown timeout ms | `unknown_after_ms` | ≥ 0 (default 2000) |
-| Reconnect backoff min/max | `reconnect_min_ms` / `reconnect_max_ms` | min ≥ 1, min ≤ max |
-| Elevator endpoint, dải tầng | `elevator_endpoint`, `floors_min/max` | min ≤ max |
-
-Web **KHÔNG chỉnh** (Nhóm C — gắn thiết bị/triển khai): đường dẫn model, `--recog-dim`,
-DB/log path, và **chuỗi GStreamer pipeline tùy ý** (chống command-injection). Đổi các thứ này
-vẫn qua CLI/env trên Pi.
-
-**Đổi RTSP / config khi đang chạy 24/7**: ghi DB → **khởi động lại service** để áp dụng
-(v1 restart-to-apply qua systemd `Restart=always`, chưa hot-reload). Đổi camera chỉ ghi cột
-`cabins`, không đụng residents/embeddings. Gián đoạn khi restart ~vài giây — chấp nhận vì đổi
-camera là thao tác hiếm.
-
-Chi tiết spec: `.kiro/specs/cabin-runtime-config/`.
-
-
-## Hot-reload resident sau enroll
-
-Ở chế độ `--resident-db`, app tự kiểm tra thay đổi residents/embeddings mỗi 1000 ms. Sau khi
-`add_person`/web enroll commit SQLite, app build catalog mới rồi swap matcher + metadata tại ranh
-giới frame; **không cần restart để nhận diện người mới**. Transaction enroll là atomic nên app chỉ
-thấy toàn bộ generation cũ hoặc mới, không thấy resident có embedding dở dang.
-
-```bash
-face_cabin                                      # hot reload mặc định 1000 ms
-./face_recog_app ... --resident-reload-ms 250  # đổi interval
-./face_recog_app ... --resident-reload-ms 0    # tắt, quay về load-once
-```
-
-Trong lúc web spawn `add_person`, hai process có thể cùng dùng NPU nên FPS có thể khựng ngắn; sau
-khi enroll xong `add_person` giải phóng NPU và app tiếp tục với catalog mới. Reload DB bản thân không
-reload model/NPU. Log vận hành dùng tag `db-reload`, chỉ ghi generation/count/latency, không ghi PII.
-Hot-reload này **chỉ áp dụng resident/embedding**; đổi camera/AI config vẫn restart-to-apply.
-
-Kiểm tra vận hành/rollback:
-
-```bash
-grep 'db-reload' logs/face-cabin-$(date +%F).log
-# success: generation=N residents=... embeddings=... latency_ms=...
-# lỗi: "keeping generation=N" nghĩa là matcher cũ vẫn hoạt động và app sẽ retry
-./face_recog_app ... --resident-reload-ms 0   # rollback về load-once nếu cần
-```
-
-Các log trên chỉ chứa generation/count/latency/resident_id hoặc track_id, không chứa tên cư dân,
-tên chào, căn hộ, vector hay đường dẫn ảnh.
-
-Chi tiết spec: `.kiro/specs/resident-hot-reload/`.
-
-## Kết quả benchmark (USB webcam)
-
-| Chỉ số | SCRFD + Recognition |
-|---|---|
-| End-to-end FPS | **~25 FPS** |
-| Detect NPU latency | **~10-17 ms** |
-| Recog NPU latency | ~3 ms / face |
-| Postproc (16800 anchors) | 0.1-0.2 ms |
-| Preprocess (letterbox 640) | ~1 ms |
-| Capture MJPG (bottleneck) | 15-19 ms |
-
-Same-person cosine similarity: **~0.79-0.80**. Recommended `--match-thr = 0.35`.
-
-Model size: **947 KB** (nhẹ hơn ArcFace ResNet50 ~20×).
-
-## Cấu trúc thư mục
-
-```
+```text
 face_recog_app/
-├── README.md
-├── Makefile
-├── env.sh                        # source vào để có shortcut face_run, ...
-├── .gitignore
+├── Makefile                        # Build 6 binary + format/lint targets
+├── env.sh                          # Biến môi trường & hàm shell vận hành/dev
+├── face-recog-app.service          # Systemd unit chạy production (KillSignal=SIGTERM)
+├── AGENTS.md                       # Quy tắc làm việc cho AI agent / developer
 │
 ├── src/
-│   ├── main.cpp                  # realtime app (detect + recognize)
-│   ├── enroll_faces.cpp          # offline: folder ảnh → .fdb DB
-│   ├── capture_person.cpp        # chụp N ảnh 1 người từ camera
-│   ├── add_person.cpp            # thêm/update 1 người vào DB có sẵn
-│   ├── detect_pre.{h,cpp}        # letterbox → 640×640 HWC BGR uint8
-│   ├── detection.h               # struct Detection (shared)
-│   ├── scrfd_post.{h,cpp}        # SCRFD 9-output decode + NMS
-│   ├── face_align.{h,cpp}        # affine 5-lmk → 112×112 (ArcFace canonical)
-│   ├── face_recog.{h,cpp}        # NPU context → embedding 512-D L2-norm
-│   ├── face_db.{h,cpp}           # .fdb binary DB + cosine match top-1
-│   └── log/log.h                 # mute awnn verbose log
+│   ├── main.cpp                    # Vòng lặp frame chính & điều phối các worker
+│   ├── app_config.{h,cpp}          # Parse CLI & cấu hình ứng dụng
+│   ├── cabin_config.{h,cpp}        # Đọc/hợp nhất config bảng cabins (CLI > DB > default)
+│   ├── video_io.{h,cpp}            # Luồng đọc camera USB / RTSP GStreamer + reconnect backoff
+│   ├── detect_pre.{h,cpp}          # Letterbox 640×640 BGR uint8
+│   ├── yolo_post.{h,cpp}           # Decode YOLOv5s COCO (person + cat/dog)
+│   ├── byte_tracker.{h,cpp}        # ByteTrack + Kalman filter + Hungarian assignment
+│   ├── person_tracker.{h,cpp}      # Quản lý track người & kết hợp nhận diện theo track
+│   ├── face_track_assoc.{h,cpp}    # Ghép bbox mặt SCRFD vào person track
+│   ├── scrfd_post.{h,cpp}          # Decode SCRFD 2.5g 9-output + NMS
+│   ├── face_align.{h,cpp}          # Căn chỉnh 5-landmarks → 112×112
+│   ├── face_recog.{h,cpp}          # NPU inference MobileFaceNet 512-D L2-norm
+│   ├── resident_db.{h,cpp}         # SQLite WAL, schema migration v1→v4, async event writer
+│   ├── resident_catalog.{h,cpp}    # Snapshot validate + FNV-1a digest + hot-reload
+│   ├── resident_enroll.{h,cpp}     # Transaction enroll all-or-nothing
+│   ├── match_engine.{h,cpp}        # Multi-embedding cosine matcher
+│   ├── interaction.{h,cpp}         # State machine streak + cooldown + unknown timeout
+│   ├── door_inference.{h,cpp}      # Điều tiết NPU theo trạng thái cửa thang (8472)
+│   ├── floor_call_coordinator.{h,cpp} # Chọn tầng chính/phụ theo hướng & chống gọi lặp
+│   ├── socketio_client.{h,cpp}     # Socket.IO v4 WebSocket client (CONN_DATA + Client/command)
+│   ├── elevator_registers.{h,cpp}  # Giải mã thanh ghi INVT (8465, 8471, 8472, 8480, 8211..8225)
+│   ├── elevator_state.{h,cpp}      # State machine điểm dừng & chuyến chạy thang máy
+│   ├── occupancy_*.{h,cpp}         # Đếm người ra/vào vùng cửa & lưu trạng thái bền vững
+│   ├── call_tracker.{h,cpp}        # Theo dõi vòng đời Car Call / Hall Call
+│   ├── trip_assembler.{h,cpp}      # Ghép chuyến đi hành khách + kết quả gọi tầng
+│   ├── visitor_gallery.{h,cpp}     # Re-ID khách vãng lai ẩn danh (tùy chọn)
+│   ├── traffic_db.{h,cpp}          # SQLite DB nhật ký giao thông thang máy (db/traffic.db)
+│   ├── traffic_log_writer.{h,cpp}  # Worker ghi traffic + JPEG mặt + dọn dẹp theo hạn lưu
+│   ├── event_video_recorder.{h,cpp}# Worker ghi clip AVI thô khi có người
+│   ├── animal_snapshot_writer.{h,cpp} # Worker lưu ảnh cảnh báo chó/mèo
+│   ├── system_metrics.{h,cpp}      # Giám sát CPU/RAM/nhiệt độ/disk & health log định kỳ
+│   ├── overlay.{h,cpp}             # Vẽ bbox, track ID, nhãn tầng F<home>/<sec> & HUD
+│   ├── add_person.cpp              # CLI thêm/cập nhật 1 cư dân vào SQLite (dùng cho web/CLI)
+│   ├── enroll_faces.cpp            # CLI nạp hàng loạt thư mục ảnh vào SQLite
+│   ├── capture_person.cpp          # CLI chụp mẫu khuôn mặt từ camera
+│   ├── traffic_admin.cpp           # CLI xuất CSV & quản trị visitor trên db/traffic.db
+│   ├── probe_models.cpp            # CLI kiểm tra input/output tensor của file .nb
+│   └── log/
+│       ├── logger.{h,cpp}          # Logger ứng dụng (xoay file theo ngày, giữ 14 ngày)
+│       └── log.h                   # Shim tắt log ồn của NPU SDK (KHÔNG chỉnh sửa)
 │
-├── model/
-│   ├── face_det/
-│   │   └── scrfd_2.5g_bnkps640_uint8_a733.nb   # detection (947 KB)
-│   └── face_recog/
-│       └── w600k_mbf_uint8_a733.nb             # recognition (2.7 MB)
-│
-├── faces/                        # ảnh enroll: <name>/frame_*.jpg
-├── build/                        # object files (.gitignore)
-├── db/                           # database files (.fdb)
-│
-├── face_recog_app                # binary compile ra ở root
-├── enroll_faces, capture_person, add_person
-│
-└── legacy/                       # snapshots + tài liệu cũ
+├── deploy/face_core/               # Cầu nối Node (face_core.js, enroll_bridge.js) đồng bộ /edge/face_core
+├── scripts/get_camera_url.js       # Lấy RTSP URL từ bảng elevator_cameras (PostgreSQL)
+├── config/                         # Cấu hình vùng đếm người (occupancy_cam<id>.json)
+├── db/                             # schema.sql, traffic_schema.sql (các file *.db gitignored)
+├── model/                          # scrfd_2.5g, w600k_mbf, yolov5s_rt (.nb cho A733)
+├── docs/Address_Elevator.md        # Bảng tham chiếu thanh ghi biến tần thang máy INVT
+└── tests/                          # Unit tests độc lập + run_tests.sh
 ```
 
-## Cách chạy nhanh — dùng `env.sh`
+---
+
+## 3. Build, Kiểm tra Style & Unit Test
+
+Tất cả lệnh chạy từ thư mục gốc của repo:
 
 ```bash
-# 1 lần mỗi session (hoặc thêm vào ~/.bashrc):
+# Build cả 6 binary: face_recog_app, enroll_faces, capture_person, add_person, probe_models, traffic_admin
+make -j4
+
+# Chạy toàn bộ unit test (output biên dịch ra /tmp/scabin_tests)
+bash tests/run_tests.sh
+
+# Kiểm tra định dạng code & static analysis (cần cài clang-format, clang-tidy)
+make format-check
+make lint
+```
+
+**Yêu cầu môi trường build:**
+- Orange Pi A733 với NPU driver VIPLite (`libVIPhal`, `libNBGlinker`) và `/home/orangepi/ai-sdk`.
+- OpenCV 4 (`pkg-config opencv4`), SQLite3 (`libsqlite3-dev`), GStreamer RTSP plugins.
+
+---
+
+## 4. Vận hành & Sử dụng nhanh với `env.sh`
+
+### Dịch vụ systemd (Production)
+Service `face-recog-app.service` khởi chạy qua `source env.sh && face_cabin` (lưu ý ứng dụng chủ động bỏ qua `SIGINT`, chỉ dừng bằng `SIGTERM`):
+
+```bash
+sudo systemctl status face-recog-app --no-pager
+sudo systemctl restart face-recog-app
+journalctl -u face-recog-app -f
+```
+
+### Các hàm tiện ích sau khi `source env.sh`
+
+```bash
 source env.sh
 
-# Sau đó có 9 lệnh ngắn gọn:
-face_help                          # in cheat sheet
-face_run                           # chạy realtime với DB mặc định
-face_run_rtsp URL                  # chạy realtime với RTSP camera
-face_capture alice 5               # chụp 5 frames của alice
-face_add bob /path/bob.jpg         # thêm bob từ ảnh
-face_add alice new.jpg --merge     # trộn ảnh mới với embedding cũ
-face_enroll                        # rebuild toàn bộ DB từ faces/
-face_bench 100                     # bench 100 frames + summary
-face_bench_rtsp URL 200            # bench trên RTSP
-face_ls                            # liệt kê DB + folders enroll
+# --- Vận hành cabin ---
+face_cabin [URL] [DB] [THR]          # Chạy đầy đủ qua RTSP (tự lấy URL từ PostgreSQL nếu bỏ trống)
+face_residents [DB]                  # Xem danh sách cư dân trong SQLite
+face_events [DB] [N]                 # Xem N bản ghi match_events gần nhất (mặc định 20)
+face_set_resident NAME [FLAGS]       # Sửa nhanh metadata cư dân (--floor, --greeting, --role, --active...)
+
+# --- Quản lý dữ liệu cư dân (SQLite db/residents.db) ---
+face_capture NAME [COUNT] [MIN_PX]   # Chụp ảnh mẫu từ USB cam vào faces/<NAME>/
+face_add NAME IMG [IMG...] [--replace|--merge]  # Thêm/cập nhật cư dân từ file hoặc thư mục ảnh
+face_enroll [DIR] [DB]               # Nạp toàn bộ faces/<subfolder>/ vào SQLite (mỗi ảnh 1 vector)
+
+# --- Dev / Benchmark ---
+face_usb [DB] [THR]                  # Chạy pipeline đầy đủ (YOLO + tracker + recog) trên USB cam
+face_run_lite [DB] [THR]             # Chạy SCRFD-only (không YOLO/tracker) trên USB cam
+face_run_rtsp URL [DB] [THR] [LAT]   # Chạy pipeline đầy đủ với RTSP URL truyền tay
+face_detect                          # Chạy riêng SCRFD detect-only
+face_bench [N]                       # Benchmark N frames pipeline đầy đủ (USB)
+face_bench_lite [N]                  # Benchmark N frames SCRFD-only (USB)
+face_bench_rtsp URL [N] [DB]         # Benchmark N frames trên luồng RTSP
+face_ls                              # Liệt kê file DB và số ảnh trong faces/
+face_help                            # In hướng dẫn tóm tắt
 ```
 
-`face_cabin` tự ghi video raw khi tracker xác nhận có người vào `recordings/`.
-Mỗi clip gồm 1 giây trước lúc xác nhận và dừng sau khi cabin trống liên tục 3 giây.
-File đang ghi có hậu tố `.partial.avi`; khi đóng thành công sẽ đổi thành `.avi`.
-
+### Dùng trực tiếp CLI `./add_person` (hỗ trợ tầng chính, tầng phụ & tầng hầm `B`)
 ```bash
-# Đổi nơi lưu/thời gian giữ phần cabin trống rồi source lại:
-export FACE_RECORD_DIR=/mnt/data/cabin-clips
-export FACE_RECORD_PRE_MS=1000
-export FACE_RECORD_EMPTY_MS=5000
-export FACE_RECORD_FPS=15
-export FACE_RECORD_WIDTH=960
-source env.sh
-
-# Tắt record tự động:
-export FACE_RECORD_DIR=""
-source env.sh
-```
-
-Khi chạy binary trực tiếp, dùng `--record-dir DIR`; tùy chọn đi kèm là
-`--record-pre-ms`, `--record-empty-ms`, `--record-fps` và `--record-width`.
-Recorder cần `--person-model`, ghi frame trước overlay để dataset không chứa
-box/HUD, và encode trên worker riêng để không chặn inference loop.
-
-Để AI Core trực tiếp gọi tầng qua IoT Core Socket.IO sau khi nhận diện thành công:
-
-```bash
-export FACE_IOT_WS='ws://127.0.0.1:3000/socket.io/?EIO=4&transport=websocket'
-export FACE_IOT_DEVICE_CODE='2026010900100098'
-export FACE_IOT_FLOOR_ADDRESS='8193-2' # thang máy/slave số 2
-export FACE_IOT_REQUEST_ID='ai-core'
-source env.sh
-face_cabin
-```
-
-Khi có `--iot-ws` và `--person-model`, AI Core cũng subscribe `CONN_DATA` cho thiết bị này.
-Giá trị thô `8472-2` dùng bit 5 để bắt đầu YOLO lúc cửa mở, bit 6 để nhận biết cửa đóng.
-SCRFD chỉ chạy sau khi YOLO xác nhận người; recognition vẫn theo từng track. Khi cửa đóng và
-không còn người sau grace, các model ngừng inference nhưng vẫn giữ context đã load. Nếu dữ liệu
-cửa bị cũ/mất kết nối, YOLO quét dự phòng thưa. Log `[scheduler]` cho biết state và số lần
-thực thi từng model. Để quay về lịch inference cũ, đặt `FACE_ADAPTIVE_INFERENCE=0` rồi gọi
-`face_cabin` (hoặc dùng `--no-adaptive-inference` khi chạy binary trực tiếp).
-
-Lệnh gửi là `Client/command` với `value = 2^home_floor`; ví dụ `home_floor=5` tạo `value=32`.
-Trong một phiên cabin, mỗi resident chỉ được xét một lần và nhiều resident cùng tầng chỉ tạo một
-lệnh. Phiên kết thúc khi không còn person track trong 5 giây; có thể chỉnh bằng
-`--floor-session-empty-ms` (giá trị này phải không nhỏ hơn `--track-lost-ms`). Các lệnh khác tầng
-được gửi FIFO, chờ ACK từng lệnh. Mỗi command có `requestId` riêng dạng
-`ai-core:<cabin>:<visit>:<sequence>`.
-
-ACK cần chứa `requestId` và `success`; terminal sẽ log trạng thái `QUEUED`, `SENT`,
-`ACKED_SUCCESS`, `ACKED_ERROR` hoặc `AMBIGUOUS`. Unknown hoặc resident có `home_floor <= 0` không gọi tầng. Để tắt kênh gọi tầng, đặt
-`FACE_IOT_WS=""` trước khi
-`source env.sh`.
-
-Áp vĩnh viễn:
-```bash
-echo "source $(pwd)/env.sh" >> ~/.bashrc
-```
-
-## Cảnh báo động vật (chó/mèo)
-
-Model person YOLOv5s vốn là YOLOv5s COCO 80 lớp, nên AI Core tận dụng luôn kết quả
-inference đó để phát hiện **chó (lớp 16)** và **mèo (lớp 15)** — không tốn thêm lần
-chạy NPU. Mỗi ô lưới chỉ được tính là động vật khi lớp thắng (arg-max trên 80 lớp) là
-chó hoặc mèo, nên box người không bị nhầm thành động vật. NMS áp theo từng loài.
-
-Khi phát hiện, ứng dụng ghi log cảnh báo `[animal]` (vd `detected species=dog count=1
-score=0.82`), có cooldown 3 giây/loài để tránh spam, đồng thời lưu ảnh snapshot kèm khung
-tại `recordings/animals/YYYY-MM-DD/` qua worker nền (có thể đổi bằng `--animal-dir DIR`,
-truyền `""` để tắt). Động vật **không** đi vào person tracker / SCRFD / nhận dạng khuôn mặt.
-
-Ngưỡng tin cậy riêng, độc lập với person: `FACE_ANIMAL_THR` (mặc định `0.8`) hoặc cờ
-`--animal-thr F` khi chạy binary trực tiếp. Phát hiện động vật dùng chung nhịp inference
-với person (chỉ chạy ở frame có chạy YOLO).
-
-> Kênh đẩy cảnh báo ra ngoài (IoT/Socket.IO) sẽ bổ sung sau khi chốt contract với đội IoT;
-> hiện tại cảnh báo chỉ ghi vào log.
-
-## Nhật ký di chuyển thang máy (`elevator-traffic-log`)
-
-Tính năng thu thập dữ liệu di chuyển thang máy (điểm dừng, chuyến cabin, chuyến hành khách,
-gọi tầng trong cabin và gọi tầng ngoài) lưu cục bộ vào SQLite (`db/traffic.db`, schema
-`db/traffic_schema.sql`), tách biệt hoàn toàn với `db/residents.db`. Yêu cầu và thiết kế chi
-tiết ở `.kiro/specs/elevator-traffic-log/`.
-
-### Bật / tắt tính năng
-
-Mặc định `FACE_TRAFFIC_DB` rỗng (tắt). Cần bật bộ đếm người (`--occupancy-config`) và nên bật
-Socket.IO (`FACE_CABIN_SOCKETIO=1`) để lấy tầng từ thanh ghi INVT (`--elevator-slave`, mặc định `2`):
-
-```bash
-export FACE_CABIN_SOCKETIO=1
-export FACE_TRAFFIC_DB="$FACE_DB_DIR/traffic.db"
-export FACE_ELEVATOR_SLAVE=2
-# Nhận lại visitor qua nhiều chuyến và lưu ảnh mặt (mặc định TẮT):
-export FACE_TRAFFIC_VISITOR_REID=0
-export FACE_TRAFFIC_SAVE_FACES=off      # off | visitors | all
-source env.sh
-face_cabin
-```
-
-Nếu chạy binary trực tiếp, các cờ chính gồm `--traffic-db PATH`, `--elevator-slave N`,
-`--traffic-visitor-reid 0|1`, `--traffic-save-faces off|visitors|all`, `--traffic-floor-min 0`
-(`B=0`) .. `--traffic-floor-max 9`, `--traffic-floor-tolerance-ms 10000`,
-`--traffic-run-timeout-ms 60000`, `--traffic-call-confirm-ms 15000`, `--traffic-cabin-capacity 15`,
-và các tham số giữ dữ liệu (`--traffic-retention-days 730`, `--visitor-retention-days 90`,
-`--face-retention-days 30`, `--traffic-min-free-mb 4096`).
-
-### Export dữ liệu và sao lưu `traffic.db`
-
-```bash
-# Export CSV theo khoảng ngày (có thêm cột nhãn tầng B, 1..9):
-./traffic_admin --db db/traffic.db export --out-dir /mnt/usb/traffic_export \
-    --from 2026-11-01 --to 2026-11-30
-
-# Sao lưu nóng SQLite an toàn (trên thẻ nhớ hoặc USB):
-sqlite3 db/traffic.db ".backup '/mnt/usb/traffic_$(date +%F).db'"
-```
-
-### Xác minh danh tính và quản trị visitor (`traffic_admin`)
-
-```bash
-./traffic_admin --help
-./traffic_admin visitors list --status active --limit 20
-./traffic_admin visitors show 42
-./traffic_admin visitors suggest --resident-db db/residents.db --min-trips 2 --min-sim 0.30
-./traffic_admin visitors merge 45 42
-./traffic_admin visitors promote 42 --resident-id 7 --resident-db db/residents.db
-./traffic_admin visitors promote 43 --name "Nguyen Van A" --floor 7 --resident-db db/residents.db
-./traffic_admin visitors delete 44
-```
-
-Khi `promote`, các embedding của visitor được chép sang `db/residents.db` (`source='cabin'`) và
-ứng dụng chính tự nạp lại qua cơ chế hot-reload mà không cần khởi động lại.
-
-### Checklist pháp lý trước khi bật `--traffic-visitor-reid` và `--traffic-save-faces`
-
-Embedding và ảnh khuôn mặt của người chưa đăng ký là **dữ liệu sinh trắc học** thuộc nhóm dữ liệu
-cá nhân nhạy cảm theo **Luật Bảo vệ dữ liệu cá nhân số 91/2025/QH15** (hiệu lực từ `01/01/2026`).
-Trước khi đặt `FACE_TRAFFIC_VISITOR_REID=1` hoặc `FACE_TRAFFIC_SAVE_FACES=visitors|all` ở
-production, đơn vị vận hành phải hoàn tất:
-
-1. **Thông báo tại thang máy**: niêm yết rõ mục đích thu thập, phạm vi xử lý và đầu mối liên hệ.
-2. **Căn cứ pháp lý / sự đồng ý**: xác định rõ cơ sở xử lý dữ liệu sinh trắc học theo quy định của
-   tòa nhà và pháp luật hiện hành.
-3. **Thời hạn lưu & xóa dữ liệu**: rà soát `--visitor-retention-days` (mặc định 90 ngày) và
-   `--face-retention-days` (mặc định 30 ngày), thực hiện quy trình `visitors delete` khi có yêu cầu
-   xóa từ chủ thể dữ liệu.
-4. **Kiểm soát truy cập**: giữ `db/traffic.db` và ảnh JPEG ở quyền `0600`, không sao lưu/đẩy lên
-   mạng ngoài phạm vi cho phép, và giữ thông báo log không chứa PII.
-
-## Build
-
-```bash
-make -j4          # → face_recog_app, enroll_faces, capture_person, add_person, probe_models, traffic_admin
-make clean        # xóa build/ và 6 binary
-```
-
-Yêu cầu:
-- Orange Pi A733 với NPU driver (VIPLite 2.0.3.2+)
-- OpenCV 4.6 (`pkg-config opencv4`)
-- AI SDK ở `/home/orangepi/ai-sdk` (chứa `awnn_lib.c`, `awnn_quantize.c`)
-- `libVIPhal`, `libNBGlinker` trên hệ thống
-- GStreamer plugins (rtsp) nếu dùng RTSP source
-
-## Workflow đầy đủ — từ 0 lên hệ thống nhiều người
-
-### Bước 1 — Chụp ảnh mỗi người
-
-```bash
-face_capture alice 5
-```
-
-- Mở cửa sổ preview với overlay bbox màu xanh khi detect OK
-- Auto-chụp 5 frames cách nhau 500ms khi phát hiện đúng 1 khuôn mặt to (>= 100px)
-- Bấm SPACE để chụp thủ công, Q/ESC để thoát
-
-Options CLI (nếu không dùng `env.sh`):
-```
---name X            Tên định danh (bắt buộc)
---out DIR           Thư mục gốc (default: faces)
---count N           Số frames cần chụp (default: 5)
---cam N             /dev/videoN (default: 0)
---min-face-px N     Khuôn mặt bé hơn thì skip (default: 100)
---interval-ms N     Khoảng cách tối thiểu giữa các shot (default: 500)
---no-preview        Chạy headless, không mở cửa sổ
-```
-
-Kết quả: `faces/alice/frame_01.jpg`, `frame_02.jpg`, ...
-
-### Bước 2 — Build database
-
-```bash
-face_enroll
-```
-
-Tương đương:
-```bash
-./enroll_faces \
-    --dir faces --out db/faces_all.fdb \
+./add_person --name "Nguyen Van A" --ext-id "NV001" \
+    --image /home/orangepi/faces/floor_6/NV001 \
+    --home-floor 6 --secondary-floor B --role engineer \
+    --db db/residents.db --schema db/schema.sql \
     --det-model model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb \
     --recog-model model/face_recog/w600k_mbf_uint8_a733.nb \
-    --recog-dim 512 --recog-bgr
+    --recog-dim 512 --recog-bgr --replace
 ```
+*(Cờ `--home-floor` và `--secondary-floor` nhận `B` = `0`, số nguyên `0..62`, hoặc `-1` = chưa đăng ký.)*
 
-- Duyệt mỗi subfolder → 1 identity
-- Với mỗi ảnh: SCRFD detect largest face → align 112 → embedding
-- Trung bình embeddings của cùng 1 người → 1 vector L2-norm/identity
-- Save ra `.fdb` (~2 KB/identity)
+---
 
-DB size cho 1000 identities: ~2 MB.
+## 5. Cấu hình vận hành (`cabins`) & Thứ tự ưu tiên
 
-### Bước 2b (tùy chọn) — Thêm 1 người không rebuild
+Cấu hình runtime của từng cabin lưu trong bảng `cabins` (đọc theo `--cabin-id` lúc khởi động), thứ tự ưu tiên: **CLI > SQLite `cabins` > Compile default** (thay đổi áp dụng khi restart):
+- Các cột trong `cabins`: `camera_urls`, `gst_latency_ms` (100), `match_thr` (0.35), `confirm_streak` (5), `cooldown_ms` (3000), `unknown_after_ms` (2000), `reconnect_min_ms` (500), `reconnect_max_ms` (10000), `floors_min` (0), `floors_max` (30), `elevator_endpoint`.
+- **Lưu ý khi chạy qua `face_cabin` (`env.sh`)**: nếu không truyền URL trên dòng lệnh và không đặt `FACE_CABIN_RTSP_URL`, `env.sh` gọi `scripts/get_camera_url.js` lấy URL từ bảng `elevator_cameras` (PostgreSQL, chọn theo `FACE_CAMERA_SELECT`, mặc định `#6`) rồi truyền vào `--source` — do đó ghi đè `cabins.camera_urls`.
 
-```bash
-# Từ 1 ảnh
-face_add john /path/to/john.jpg
+---
 
-# Từ nhiều ảnh (chất lượng tốt hơn)
-face_add jane jane1.jpg jane2.jpg jane3.jpg
+## 6. Tự động gọi tầng & Điều tiết suy luận theo cửa thang
 
-# Nếu tên đã có:
-face_add alice new.jpg --replace   # xóa entry cũ, thêm mới
-face_add alice new.jpg --merge     # trung bình với entry cũ
-```
+Khi bật Socket.IO (`FACE_CABIN_SOCKETIO=1` và `FACE_IOT_WS='ws://127.0.0.1:3000/socket.io/?EIO=4&transport=websocket'`), ứng dụng kết nối tới IoT Core để vừa đọc trạng thái thanh ghi (`CONN_DATA`), vừa gửi lệnh gọi tầng (`Client/command` lên `FACE_IOT_FLOOR_ADDRESS`, mặc định `8193-2`).
 
-Latency: ~250ms lần đầu (init NPU), ~20-30ms mỗi ảnh sau đó.
+### Điều tiết NPU theo cửa (`door_inference`)
+- Đọc thanh ghi `8472-<slave>` (bit 5: mở cửa, bit 6: đóng cửa).
+- Khi cửa mở → bật YOLO xác nhận người → chạy SCRFD + MobileFaceNet theo từng track. Khi cửa đóng và hết người sau thời gian trễ, tạm nghỉ suy luận (giữ nguyên NPU context trong RAM). Nếu mất tín hiệu cửa thì chuyển sang quét dự phòng thưa. Có thể tắt bằng `FACE_ADAPTIVE_INFERENCE=0` hoặc `--no-adaptive-inference`.
 
-### Bước 3 — Chạy realtime match
+### Logic chọn tầng đích chính / phụ (`FloorCallCoordinator`)
+`CabinFloorTracker` theo dõi tầng hiện tại `cur` (`8465`) và hướng di chuyển `Up / Down / Unknown` (ưu tiên nút gọi sảnh `8215`/`8225` với bộ nhớ 15 giây sau khi đèn tắt, dự phòng sang bit hướng của `8480`):
+- **Chưa có tầng nào (`home < 0` và `secondary < 0`)**: không gọi (`no_floor`).
+- **Chưa rõ tầng hiện tại của cabin** (mới khởi động / đứt kết nối): fallback gọi `home_floor` (nếu có).
+- **Cư dân có đủ 2 tầng** (đặt `low = min(home, sec)`, `high = max(home, sec)`, `primary = home_floor`):
+  - `cur < low`: hướng `Up`/`Unknown` hoặc đang ở tầng đáy (`floors_min`) → gọi `primary`; hướng `Down` (ở trên tầng đáy) → không gọi.
+  - `cur == low`: hướng `Up` → gọi `high`; hướng `Down` → gọi `high` nếu đang ở tầng đáy, ngược lại không gọi; hướng `Unknown` → không gọi nếu `cur == primary`, ngược lại gọi `high`.
+  - `low < cur < high` (tầng trung gian): hướng `Up` → gọi `high`; hướng `Down` → gọi `low`; hướng `Unknown` → gọi `primary`.
+  - `cur == high`: hướng `Down` → gọi `low`; hướng `Up` → không gọi; hướng `Unknown` → không gọi nếu `cur == primary`, ngược lại gọi `low`.
+  - `cur > high`: hướng `Down` hoặc `Unknown` → gọi `primary`; hướng `Up` → không gọi.
+- **Cư dân chỉ có 1 tầng (`only_floor`)**: ở dưới gọi lên khi `Up`/`Unknown` (hoặc ở tầng đáy); ở trên gọi xuống khi `Down`/`Unknown`; đang ở đúng tầng hoặc đi ngược hướng thì không gọi.
+- **Chống gọi lặp theo chuyến (`visit`)**: trong một phiên có người (đóng sau `--floor-session-empty-ms`, mặc định `5000 ms` cabin trống), mỗi `resident_id` chỉ xử lý 1 lần và mỗi tầng đích chỉ gửi 1 lệnh (`requestId = ai-core:<cabin>:<visit>:<seq>`).
 
-USB cam:
-```bash
-face_run
-```
+---
 
-RTSP IP camera:
-```bash
-face_run_rtsp 'rtsp://admin:pass@192.168.1.100:554/stream1'
-```
+## 7. Các tính năng giám sát & nhật ký bổ trợ
 
-Trên khung mặt hiển thị `<name> <score>` (ví dụ `alice 0.78`). Score dưới `--match-thr` → hiển thị `unknown`.
+### Ghi video sự kiện có người (`EventVideoRecorder`)
+- Mặc định **tắt** trong `env.sh` (`FACE_RECORD_DIR=""`). Đặt `export FACE_RECORD_DIR=recordings` trước khi `source env.sh` (hoặc truyền `--record-dir DIR`) để ghi clip AVI thô (trước khi vẽ overlay) kèm `1000 ms` pre-roll và đóng sau `3000 ms` cabin trống.
 
-Options:
-```
-detect.nb                 Đường dẫn SCRFD .nb (positional, default nếu bỏ qua)
-cam_id                    /dev/videoN (positional, default: 0)
---frames N                Chạy N frames rồi in bench summary và thoát
---recog-model PATH        Bật recognition, path .nb
---recog-dim N             Embedding dim (default: 512)
---recog-bgr               Feed BGR trực tiếp
---face-db PATH            Load .fdb
---match-thr F             Cosine similarity threshold (default: 0.35)
---source URL              RTSP/HTTP/file source (GStreamer). Overrides cam_id.
---gst-pipeline STR        Custom GStreamer pipeline (must end with `! appsink`)
---gst-latency MS          RTSP jitter buffer latency (default 100ms)
---windowed / --fullscreen (default: fullscreen)
-```
+### Cảnh báo động vật (chó / mèo)
+- Tận dụng đầu ra 80 lớp của YOLOv5s COCO để phát hiện mèo (lớp 15) và chó (lớp 16) với ngưỡng độc lập `--animal-thr` (`FACE_ANIMAL_THR`, mặc định `0.8`), không tốn thêm lượt chạy NPU.
+- Ghi cảnh báo `[animal]` (cooldown 3 giây/loài) và lưu ảnh snapshot vào `recordings/animals/YYYY-MM-DD/` qua worker nền (`--animal-dir ""` để tắt).
 
-Không có `--recog-model` → chạy như detect-only.
+### Đếm người (`occupancy`) & Nhật ký di chuyển (`elevator-traffic-log`)
+- Khi có file cấu hình vùng cửa `config/occupancy_cam<cabin>.json` (`--occupancy-config`), bộ đếm theo dõi số người ra/vào cabin và lưu bền vững tại `db/occupancy_state_cam<cabin>.json`.
+- Khi bật thêm `FACE_TRAFFIC_DB="$FACE_DB_DIR/traffic.db"` (`--traffic-db`), hệ thống ghi lại điểm dừng (`cabin_stops`), chuyến chạy (`cabin_runs`), lượt đi hành khách (`passenger_trips`), và cuộc gọi tầng (`car_calls`, `hall_calls`) vào `db/traffic.db` (`db/traffic_schema.sql`).
+- Công cụ quản trị & xuất báo cáo:
+  ```bash
+  ./traffic_admin --help
+  ./traffic_admin --db db/traffic.db export --out-dir /mnt/usb/traffic_export --from 2026-11-01 --to 2026-11-30
+  ./traffic_admin --db db/traffic.db visitors list --status active --limit 20
+  ./traffic_admin --db db/traffic.db visitors suggest --resident-db db/residents.db
+  ./traffic_admin --db db/traffic.db visitors promote 42 --resident-id 7 --resident-db db/residents.db
+  ```
+- **Lưu ý pháp lý (Luật Bảo vệ dữ liệu cá nhân số 91/2025/QH15)**: ảnh mặt và embedding của người chưa đăng ký là dữ liệu sinh trắc học. Trước khi bật `FACE_TRAFFIC_VISITOR_REID=1` hoặc `FACE_TRAFFIC_SAVE_FACES=visitors|all` trên hệ thống vận hành, đơn vị quản lý cần hoàn tất thông báo tại thang máy, xác lập căn cứ pháp lý, kiểm soát quyền truy cập file (`0600`) và tuân thủ thời hạn lưu giữ (`--visitor-retention-days 90`, `--face-retention-days 30`).
 
-## Tuning `--match-thr`
+---
 
-| Ngưỡng | Behavior |
-|---|---|
-| 0.20 | Cực kỳ dễ dãi — dễ nhầm người |
-| 0.35 (default) | An toàn cân bằng, self-match 0.75+ luôn pass |
-| 0.45 | Chặt — chỉ match khi rất giống (giảm false positive) |
-| 0.55 | Rất chặt — có thể miss same-person do lighting |
+## 8. Hệ thống Log vận hành
 
-Tinh chỉnh cho hệ thống thực:
-1. Chụp 5-10 ảnh khác nhau (góc, ánh sáng) của cùng 1 người
-2. Chạy `face_run` với `--match-thr 0.10` — quan sát score self-match
-3. Chọn `--match-thr = (min self-score) - 0.05`
-4. Test với người lạ — score nên < 0.30
+Ứng dụng ghi log qua `src/log/logger.h` ra `stderr` và file xoay vòng theo ngày (mặc định lưu 14 ngày tại `$FACE_CABIN_LOG_DIR`, ví dụ `logs/face-cabin-YYYY-MM-DD.log`). **Tuyệt đối không ghi PII** (không tên cư dân, căn hộ, đường dẫn ảnh cá nhân hay vector).
 
-## Model info
+Các nhóm tag chính:
+- `[sys]` (chu kỳ 30s): tài nguyên hệ thống & tiến trình (`uptime_s`, `cpu`, `proc_cpu`, `ram`, `rss_mb`, `disk`, nhiệt độ, `load`, `threads`, `fd`).
+- `[traffic] health` (chu kỳ 30s khi bật traffic): `occupancy`, `open_trips`, `open_calls`, `visitors`, `reg_age_ms`, `reg_inv`, `run_mismatch`, `q`, `drop`, `err`.
+- `[occupancy] health` (chu kỳ 30s khi chỉ bật occupancy, tắt traffic): `count`.
+- `[metrics]` & `[scheduler]`: FPS và độ trễ từng chặng (`cap`, `pre`, `yolo`, `scrfd`, `track`, `recog`, `e2e`) cùng trạng thái đóng/mở suy luận theo cửa.
+- `[event]`, `[floor-call]`, `[db-reload]`, `[animal]`, `[socketio]`, `[cam]`: các sự kiện vận hành theo thời gian thực.
 
-### SCRFD 2.5g_bnkps 640
-- Nguồn: InsightFace [SCRFD](https://github.com/deepinsight/insightface/tree/master/detection/scrfd)
-- Input: 640×640 BGR uint8 (letterbox từ frame gốc)
-- Output: 9 tensors — 3 FPN levels (strides 8/16/32) × [score, bbox, kps]
-- Số anchor: 16800 (feature-grid, 2 anchor/location)
-- Bbox format: **distance form** `(l, t, r, b)` từ anchor center
-- Score: sigmoid baked-in
+---
 
-### MobileFaceNet (w600k_mbf)
-- Nguồn: InsightFace buffalo_s bundle
-- Input: 112×112 (align từ 5 landmarks ArcFace canonical)
-- Preprocessing baked-in: mean=127.5, scale=1/127.5, reverse_channel=true → dùng flag `--recog-bgr`
-- Output: 512-D embedding, L2-normalized
+## 9. Thông tin Model NPU & Tinh chỉnh ngưỡng
 
-## Định dạng file `.fdb`
+| Thành phần | File `.nb` mặc định | Input | Vai trò |
+| :--- | :--- | :--- | :--- |
+| **YOLOv5s COCO** | `model/person_det/yolov5s_rt_uint8_a733.nb` | `640×640` | Phát hiện người (cho ByteTrack / occupancy) & chó/mèo |
+| **SCRFD 2.5g** | `model/face_det/scrfd_2.5g_bnkps640_uint8_a733.nb` | `640×640` | Phát hiện khuôn mặt + 5 điểm mốc (16800 anchors) |
+| **MobileFaceNet** | `model/face_recog/w600k_mbf_uint8_a733.nb` | `112×112` (`--recog-bgr`) | Trích xuất vector đặc trưng `512-D` chuẩn hóa L2 |
 
-Little-endian binary:
-```
-offset  size  content
-0       4     magic "FDB1"
-4       4     int32 dim (thường = 512)
-8       4     int32 count
-12      ..    entries:
-              uint16 name_len
-              char[name_len] name (UTF-8)
-              float32[dim] embedding (đã L2-normalized)
-```
-
-## Vấn đề đã biết & tương lai
-
-- **MJPG capture bottleneck**: USB MJPG capture ~15-19ms. Có thể tách capture thread (đã làm).
-- **NPU chỉ có 1 core**: detect + recognize sharing → không parallel được. Recognition đã rất nhanh (~3ms) nên không phải bottleneck.
-- **Không có drift/liveness**: chỉ dùng embedding cosine. Không phòng chống spoofing bằng ảnh in.
-- **RetinaFace đã bỏ**: các phiên bản trước dùng RetinaFace ResNet50; hiện đã chuyển hoàn toàn sang SCRFD 2.5g (nhẹ hơn 20×, nhanh hơn 5-10× trên NPU, chất lượng recognition tương đương). Snapshot code cũ ở `legacy/`.
+**Gợi ý ngưỡng `--match-thr`** (mặc định `0.35`):
+- `0.30`: nới lỏng (dùng khi ảnh đăng ký ít góc chụp, ánh sáng cabin khó).
+- `0.35`: cân bằng mặc định cho vận hành.
+- `0.45+`: chặt hơn để giảm tối đa nhận nhầm khi có đông khách vãng lai.

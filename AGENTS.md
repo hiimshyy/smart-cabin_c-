@@ -31,7 +31,9 @@ This file provides guidance to the AI agent when working with code in this repos
 
 ## Gotchas
 
-- `SIGINT` is deliberately ignored (`SIG_IGN`); only `SIGTERM` stops the app. The systemd unit uses `KillSignal=SIGINT`, so `systemctl stop` waits for `TimeoutStopSec` then SIGKILLs.
+- `SIGINT` is deliberately ignored (`SIG_IGN`); only `SIGTERM` stops the app (`face-recog-app.service` sets `KillSignal=SIGTERM` with `TimeoutStopSec=30`; manual Ctrl-C / `SIGINT` will not stop it).
+- Floor index convention (SQLite schema v4): `HOME_FLOOR_UNSET = -1` and `SECONDARY_FLOOR_UNSET = -1` mean unregistered; `0` is Basement `'B'` (encoded as bit 0 -> `value = 1`); `1..62` are above-ground floors (`value = 2^floor`). `cabins.floors_min` defaults to `0`.
 - The NPU has one core shared by the app and enroll/add tools; model load order is recog -> SCRFD -> YOLO to reduce NBG resource conflicts. Contexts are never unloaded at runtime.
 - `AppConfig` compiles with `TrackerMode::Greedy`, but `env.sh` exports `FACE_TRACKER_MODE=byte`.
 - `face-recog-app.service` launches via `source env.sh && face_cabin`; the same env is what production uses.
+- `deploy/face_core/` (`face_core.js`, `enroll_bridge.js`) mirrors the Node enrollment bridge deployed at `/edge/face_core/` (managed by root PM2), which spawns `add_person` against `db/residents.db`.

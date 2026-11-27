@@ -1,3 +1,12 @@
+# Bảng địa chỉ thanh ghi biến tần thang máy (INVT)
+
+> **Lưu ý quy ước ánh xạ trong `face_recog_app`:**
+> - Hậu tố `-1` ở cột *Địa chỉ trên Cloud* là ví dụ cho `slave = 1`. Thực tế gói `CONN_DATA` dùng khóa `<reg>-<slave>` theo `--elevator-slave` (ví dụ cabin 2 là `8465-2`, `8472-2`, `8480-2`).
+> - Lệnh gọi tầng từ AI Core ghi vào thanh ghi **`8193-<slave>`** (ví dụ `8193-2`) với `value = 2^floor_index`.
+> - Bảng gốc của hãng đếm tầng vật lý từ đáy hố thang (`Bit 0: tầng 1`). Trên công trình có **tầng hầm `B`**, hệ thống quy ước thống nhất 0-based:
+>   - Trên `8465` (`FLOOR`, giá trị 1-based): `1` → tầng hầm `B` (`floor_index = 0`), `2` → tầng `1` (`floor_index = 1`), ..., `0` = không xác định.
+>   - Trên các thanh ghi bitmask `8193`, `8211`, `8215`, `8225`: **`Bit 0` (`value = 1`) = tầng hầm `B` (`floor_index = 0`)**, `Bit 1` (`value = 2`) = tầng `1`, ..., `Bit n` (`value = 2^n`) = tầng `n`.
+
 | **Địa chỉ** **(16)** | **Địa chỉ**  **trên Cloud****(10)** | **Địa chỉ biến tần** | **Ý nghĩa** | **Diễn giải** | **Cơ số** | **Scale** | **Đơn vị** |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | *0x2013* | *8211-1* | *U0.13* | Đăng kí gọi tầng trong cabin ( tầng 1~16) **Inside call** | 000000**1**00**1**00000 Bit 0: tầng 1 Bit 1: tầng 2 …… Bit 15: tầng 16 **Gọi tầng nào thì bit tương ứng được set lên 1** | 16 |  |  |
